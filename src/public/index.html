@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>团建图文生产控制台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="liquid-bg">
+      <span class="stream stream-a"></span>
+      <span class="stream stream-b"></span>
+      <span class="stream stream-c"></span>
+    </div>
+
+    <main class="app-shell">
+      <header class="topbar glass">
+        <section>
+          <h1>团建图文生产工作流</h1>
+          <div class="subtitle">素材库、模板母版、成品包、提示词版本</div>
+        </section>
+        <nav class="tabs" aria-label="工作流导航">
+          <button class="tab active" data-tab="dashboard">素材生产</button>
+          <button class="tab" data-tab="prompts">提示词区</button>
+          <button class="tab" data-tab="products">成品库</button>
+          <button class="tab" data-tab="juguang">聚光运营</button>
+          <button class="tab" data-tab="workflow">工作流</button>
+        </nav>
+        <section class="top-actions">
+          <button class="icon-button" id="refreshBtn" title="刷新本地数据库">↻</button>
+          <span class="root-path">D:\AICode\项目推进\projects\江湖有旅人\主项目</span>
+        </section>
+      </header>
+
+      <section class="view active" id="dashboardView">
+        <div class="three-pane" id="threePane">
+          <aside class="filter-pane">
+            <div class="stats">
+              <div class="stat"><span>素材分类</span><strong id="statMaterialCategories">--</strong></div>
+              <div class="stat"><span>素材帖子</span><strong id="statMaterialItems">--</strong></div>
+              <div class="stat"><span>模板</span><strong id="statTemplates">--</strong></div>
+              <div class="stat"><span>成品</span><strong id="statProducts">--</strong></div>
+            </div>
+            <label class="check-row">
+              <input id="filterMatchSwitch" type="checkbox" checked />
+              <span>满足全部筛选</span>
+            </label>
+            <label>切换素材库</label>
+            <select id="materialLibraryFilter" class="search-input"></select>
+            <div class="filter-grid">
+              <div>
+                <label>素材类型</label>
+                <select id="materialTypeKeywordFilters" class="search-input"></select>
+              </div>
+              <div>
+                <label>行程天数</label>
+                <select id="durationKeywordFilters" class="search-input"></select>
+              </div>
+              <div>
+                <label>地点</label>
+                <select id="locationKeywordFilters" class="search-input"></select>
+              </div>
+              <div>
+                <label>活动</label>
+                <select id="activityKeywordFilters" class="search-input"></select>
+              </div>
+              <div>
+                <label>季节</label>
+                <select id="seasonKeywordFilters" class="search-input"></select>
+              </div>
+              <div>
+                <label>月份</label>
+                <select id="monthKeywordFilters" class="search-input"></select>
+              </div>
+              <div class="wide-filter">
+                <label>节日</label>
+                <select id="festivalKeywordFilters" class="search-input"></select>
+              </div>
+            </div>
+            <label>搜索素材</label>
+            <input id="materialSearch" class="search-input" placeholder="地区 / 玩法 / 标题" />
+            <div class="filter-note"><b>本地库：</b>顶部刷新会重新扫描素材库、模板库和成品库。当前队列先跑信息流素材，再跑夏季团建和团建合集。</div>
+            <select id="templateQuickSelect" class="search-input hidden-control"></select>
+            <button id="collectFilteredBtn" class="side-action" type="button">整合当前筛选素材</button>
+          </aside>
+          <div class="pane-resizer" data-resizer="left" title="拖动调整左侧宽度"></div>
+
+          <main class="work-canvas">
+            <div class="canvas-head">
+              <div>
+                <p class="label">素材预览</p>
+                <p id="materialPath" class="path-line"></p>
+              </div>
+              <div class="canvas-tools">
+                <select id="materialQuickSelect" class="search-input compact-select"></select>
+                <select id="materialSortSwitch" class="search-input compact-select" aria-label="素材排序"></select>
+              </div>
+            </div>
+            <section class="preview-block material-preview-block">
+              <div id="materialFeed" class="material-feed"></div>
+            </section>
+          </main>
+          <div class="pane-resizer" data-resizer="right" title="拖动调整右侧宽度"></div>
+
+          <aside class="detail-pane">
+            <h2>大图预览</h2>
+            <figure class="focus-preview" id="focusPreview">
+              <img id="focusPreviewImage" alt="当前预览" />
+              <textarea id="focusPreviewText" class="focus-preview-text" spellcheck="false"></textarea>
+              <figcaption>
+                <strong id="focusPreviewTitle">请选择左侧素材或模板</strong>
+              <span id="focusPreviewMeta">图片预览</span>
+              </figcaption>
+            </figure>
+            <section class="production-status" id="productionStatus" aria-live="polite"></section>
+            <textarea id="commandBox" class="command-box">继续：使用模板1 T01，处理素材库1 信息流素材，从未完成/未制作处续接，每轮最多约40张图。</textarea>
+            <div class="detail-actions">
+              <button class="action-button full" id="viewCopyBtn">查看笔记文案</button>
+              <button class="action-button full" id="copyCommandBtn">复制生产指令</button>
+              <button class="action-button full" id="openTemplateBtn">复制当前路径</button>
+              <button class="action-button full" id="copyMaterialBtn">打开所在文件夹</button>
+              <button class="action-button full" id="openProjectBtn">打开项目根目录</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="promptsView">
+        <section class="prompt-layout">
+          <aside class="panel glass prompt-menu">
+            <p class="label">提示词区</p>
+            <h2>SOP / Skills</h2>
+            <div id="promptList" class="prompt-list"></div>
+          </aside>
+          <section class="panel glass prompt-editor">
+            <div class="panel-head">
+              <div>
+                <p class="label">可编辑提示词</p>
+                <h2 id="promptTitle">请选择提示词</h2>
+                <p id="promptRole" class="path-line"></p>
+              </div>
+              <div class="button-row">
+                <select id="promptVersion" class="version-select"></select>
+                <button class="ghost-button" id="copyPromptBtn">复制</button>
+                <button class="primary-button" id="savePromptBtn">保存</button>
+              </div>
+            </div>
+            <textarea id="promptContent" class="prompt-textarea" spellcheck="false"></textarea>
+          </section>
+        </section>
+      </section>
+
+      <section class="view" id="productsView">
+        <section class="product-layout">
+          <aside class="panel glass product-filter-pane">
+            <p class="label">成品筛选</p>
+            <label>切换模板</label>
+            <select id="productTemplateFilter" class="search-input"></select>
+            <label>搜索成品</label>
+            <input id="productSearch" class="search-input" placeholder="标题 / 模板" />
+            <select id="productWorkFilter" class="search-input hidden-control"></select>
+          </aside>
+          <main class="panel glass product-preview-pane">
+            <div class="canvas-head">
+              <div>
+                <p class="label">成品预览</p>
+                <p id="productPath" class="path-line"></p>
+              </div>
+              <div class="canvas-tools one-tool">
+                <select id="productWorkQuickSelect" class="search-input compact-select" aria-label="本文件夹成品切换"></select>
+              </div>
+            </div>
+            <div id="productImages" class="material-feed product-feed"></div>
+          </main>
+          <aside class="panel glass product-detail-pane">
+            <h2>大图预览</h2>
+            <figure class="focus-preview">
+              <img id="productPreviewImage" alt="成品预览" />
+              <figcaption>
+                <strong id="productPreviewTitle">请选择成品</strong>
+                <span id="productPreviewMeta">成品图片</span>
+              </figcaption>
+            </figure>
+            <div class="detail-card">
+              <span>当前成品</span>
+              <strong id="productDetailTitle">未选择</strong>
+              <p id="productDetailMeta">未进入成品库浏览。</p>
+            </div>
+            <div class="detail-actions">
+              <button class="action-button full" id="openProductBtn">打开所在文件夹</button>
+              <button class="action-button full" id="copyProductPathBtn">复制当前路径</button>
+            </div>
+          </aside>
+        </section>
+      </section>
+
+      <section class="view" id="juguangView">
+        <section class="juguang-layout">
+          <header class="panel glass juguang-hero">
+            <div>
+              <p class="label">聚光运营中枢</p>
+              <h2>选题依据 → AI 复刻 → 投流与线索复盘</h2>
+              <p id="juguangMode" class="path-line">正在读取本地聚光资产…</p>
+            </div>
+            <button class="primary-button" id="refreshJuguangBtn">刷新聚光数据</button>
+          </header>
+          <div class="juguang-stats" id="juguangStats"></div>
+          <div class="juguang-grid">
+            <section class="panel glass">
+              <div class="panel-head">
+                <div><p class="label">下一批先做什么</p><h2>团建选题建议</h2></div>
+                <input id="juguangKeywordSearch" class="search-input juguang-search" placeholder="搜索：嘉兴 / 团建 / 心跳乐园" />
+              </div>
+              <div id="juguangRecommendations" class="juguang-list"></div>
+            </section>
+            <aside class="panel glass juguang-side">
+              <div class="detail-card"><span>接入状态</span><strong id="juguangApiStatus">未读取</strong><p id="juguangApiMessage"></p></div>
+              <div class="detail-card"><span>线索闭环（脱敏）</span><strong id="juguangLeadStatus">--</strong><p>只显示数量和笔记归因，不显示昵称、账号、电话或微信。</p></div>
+              <div class="detail-card"><span>你的固定分工</span><strong>你采集，AI 复刻</strong><p>聚光只负责选题排序、关键词匹配和效果复盘，不改变生产主线。</p></div>
+              <div><p class="label">待补齐闭环</p><ol id="juguangNextActions" class="juguang-actions"></ol></div>
+            </aside>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="workflowView">
+        <section class="panel glass workflow-panel">
+          <p class="label">工作流状态</p>
+          <h2>从文件到成品的闭环</h2>
+          <div class="flow-line">
+            <article class="flow-step"><strong>1</strong><span>读取素材库</span></article>
+            <article class="flow-step"><strong>2</strong><span>锁定模板</span></article>
+            <article class="flow-step"><strong>3</strong><span>写出图计划</span></article>
+            <article class="flow-step"><strong>4</strong><span>调用生图模型</span></article>
+            <article class="flow-step"><strong>5</strong><span>落盘成品包</span></article>
+            <article class="flow-step"><strong>6</strong><span>日志去重续接</span></article>
+          </div>
+          <div id="latestLogs" class="log-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <div class="toast" id="toast"></div>
+    <div class="context-menu" id="contextMenu">
+      <button id="contextOpenFolder" type="button">打开当前目录</button>
+      <button id="contextCopyPath" type="button">复制目录地址</button>
+      <button id="contextRename" type="button">重命名</button>
+      <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>
