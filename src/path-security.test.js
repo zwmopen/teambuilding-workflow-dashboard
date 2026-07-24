@@ -110,3 +110,22 @@ test('public file resolver prevents traversal outside the public directory', () 
   assert.equal(escaped, index);
   assert.equal(path.basename(index), 'index.html');
 });
+
+test('buildDistributionArgs only creates allowlisted transfer commands', () => {
+  assert.deepEqual(
+    server.buildDistributionArgs({ action: 'device-restock', device: '5号', type: 'traffic' }),
+    ['--device', '5号', '--type', '泛流量']
+  );
+  assert.deepEqual(
+    server.buildDistributionArgs({ action: 'official-reserve', type: 'conversion' }),
+    ['--official-account', '--type', '团建转化']
+  );
+  assert.throws(
+    () => server.buildDistributionArgs({ action: 'run-anything', device: '5号' }),
+    /不支持的分发操作/
+  );
+  assert.throws(
+    () => server.buildDistributionArgs({ action: 'device-restock', device: '--help' }),
+    /设备名称无效/
+  );
+});

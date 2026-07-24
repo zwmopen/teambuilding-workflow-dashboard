@@ -4,6 +4,7 @@ const path = require("path");
 const url = require("url");
 const childProcess = require("child_process");
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
+const { confirmOfficialUpload, getDistributionSnapshot } = require("./lib/distribution-data");
 
 const PORT = Number(process.env.PORT || 4327);
 const PROJECT_ROOT = process.env.TEAMBUILDING_ROOT || "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目";
@@ -14,6 +15,11 @@ const DATA_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运
 const STATE_FILE = path.join(DATA_ROOT, "state.json");
 const PROMPTS_FILE = path.join(DATA_ROOT, "prompt-versions.json");
 const TASK_INDEX_FILE = path.join(DATA_ROOT, "production-task-index.json");
+const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
+  || path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）", "发布空间");
+const DEVICE_TRANSFER_ROOT = process.env.DEVICE_TRANSFER_SKILL_ROOT
+  || "D:\\AICode\\AI\\skills\\技能包\\技能\\device-folder-transfer";
+const DEVICE_REGISTRY_FILE = path.join(DEVICE_TRANSFER_ROOT, "references", "device-registry.json");
 
 const imageExts = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const textExts = new Set([".txt", ".md"]);
@@ -46,7 +52,7 @@ function buildDefaultState() {
       right: 390
     },
     selectedProduct: "",
-    activeTab: "dashboard",
+    activeTab: "overview",
     updatedAt: new Date().toISOString()
   };
 }
@@ -576,6 +582,8 @@ function getDashboard(force = false, selectedLibraryPath = "") {
   const logs = getLogs();
   const prompts = readJson(PROMPTS_FILE, { prompts: [] });
   const productionTasks = buildProductionTaskIndex(materials, templates, logs, state);
+  const distribution = getDistributionSnapshot({ publishRoot: PUBLISH_ROOT });
+  distribution.devices = readJson(DEVICE_REGISTRY_FILE, { devices: [] }).devices || [];
   return {
     projectRoot: PROJECT_ROOT,
     generatedAt: new Date().toISOString(),
@@ -586,6 +594,7 @@ function getDashboard(force = false, selectedLibraryPath = "") {
     prompts,
     logs,
     productionTasks,
+    distribution,
     stats: {
       materialCategories: materials.categories.length,
       materialItems: materials.categories.reduce((sum, category) => sum + category.count, 0),
@@ -672,6 +681,57 @@ function collectMaterialLinks(libraryPath, items, filterSummary, options = {}) {
 }
 function sendJson(res, body) {
   send(res, 200, JSON.stringify(body), "application/json; charset=utf-8");
+}
+
+function buildDistributionArgs(body = {}) {
+  const type = body.type === "conversion" ? "团建转化" : "泛流量";
+  if (body.action === "official-reserve") {
+    return ["--official-account", "--type", type];
+  }
+  if (body.action !== "device-restock") throw new Error("不支持的分发操作");
+  const device = String(body.device || "").trim();
+  if (!device || device.length > 80 || device.startsWith("-") || /[\r\n\0]/.test(device)) {
+    throw new Error("设备名称无效");
+  }
+  return ["--device", device, "--type", type];
+}
+
+function runDistributionAction(args) {
+  const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "restock_device.py");
+  return new Promise((resolve, reject) => {
+    const child = childProcess.spawn("py", [script, ...args], {
+      cwd: DEVICE_TRANSFER_ROOT,
+      env: {
+        ...process.env,
+        PYTHONUTF8: "1",
+        PYTHONIOENCODING: "utf-8"
+      },
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    const limit = 64 * 1024;
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("分发操作超时，已停止等待；请检查设备端状态"));
+    }, 20 * 60 * 1000);
+    child.stdout.on("data", (chunk) => {
+      if (stdout.length < limit) stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length < limit) stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve({ ok: true, output: stdout.trim() });
+      else reject(new Error((stderr || stdout || `分发脚本退出码 ${code}`).trim()));
+    });
+  });
 }
 
 function getBody(req, maxBytes = 2_000_000) {
@@ -786,6 +846,23 @@ async function route(req, res) {
     const result = collectMaterialLinks(body.libraryPath, items, body.filterSummary || "");
     return sendJson(res, result);
   }
+  if (pathname === "/api/distribution/action" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要在界面确认本次真实分发" }));
+    const result = await runDistributionAction(buildDistributionArgs(body));
+    return sendJson(res, result);
+  }
+  if (pathname === "/api/distribution/check" && req.method === "POST") {
+    return sendJson(res, await runDistributionAction(["--check"]));
+  }
+  if (pathname === "/api/distribution/confirm-official" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认电脑上传已经完成" }));
+    return sendJson(res, confirmOfficialUpload({
+      publishRoot: PUBLISH_ROOT,
+      collection: body.collection
+    }));
+  }
   if (pathname === "/api/open" && req.method === "POST") {
     const body = JSON.parse(await getBody(req) || "{}");
     const target = body.path;
@@ -822,6 +899,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildDistributionArgs,
   collectMaterialLinks,
   getBody,
   httpServer,

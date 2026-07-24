@@ -13,6 +13,10 @@ let juguangRendered = false;
 let juguangData = null;
 let materialRenderLimit = 12;
 let productRenderLimit = 8;
+let collectionFilters = { type: "all", platform: "all", query: "" };
+let selectedCollectionName = "";
+let activeDistributionPanel = "phones";
+let deviceCheckState = { registered: null, online: null, output: "" };
 
 const LOCATION_KEYWORDS = ["上海", "杭州", "安吉", "苏州", "南京", "湖州", "桐庐", "千岛湖", "莫干山", "宁波"];
 const ACTIVITY_KEYWORDS = ["露营", "溯溪", "漂流", "烧烤", "农庄", "采摘", "徒步", "越野", "轰趴", "玩水"];
@@ -308,6 +312,7 @@ async function loadDashboard(force = false, libraryPath = "") {
   renderMaterialQuickSelect();
   renderMaterials();
   renderPrompts();
+  renderOverview();
   restoreSelection();
 }
 
@@ -1033,6 +1038,258 @@ function formatNumber(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
 }
 
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+
+function renderOverview() {
+  const container = $("#overviewStats");
+  if (!container || !dashboard) return;
+  const distribution = dashboard.distribution || { summary: {} };
+  const summary = distribution.summary || {};
+  container.innerHTML = [
+    ["待生产", dashboard.productionTasks?.summary?.pending || 0, ""],
+    ["双平台作品集", summary.dualPlatformAvailable || 0, ""],
+    ["公众号待上传", summary.officialPending || 0, summary.officialPending ? "warn" : ""],
+    ["归档入口异常", summary.douyinArchiveInvalid || 0, summary.douyinArchiveInvalid ? "warn" : ""]
+  ].map(([label, value, className]) => `
+    <article class="summary-card ${className}">
+      <span>${escapeHtml(label)}</span><strong>${formatNumber(value)}</strong>
+    </article>
+  `).join("");
+}
+
+function collectionStateClass(state) {
+  if (state === "available" || state === "archived" || state === "confirmed_published") return "good";
+  if (state === "reserved_pending_upload" || state === "unknown") return "warn";
+  if (state === "invalid") return "bad";
+  return "";
+}
+
+function renderCollectionFilters() {
+  const typeOptions = [
+    ["all", "全部"],
+    ["traffic", "游戏/泛流量"],
+    ["conversion", "团建转化"],
+    ["unclassified", "未分类"]
+  ];
+  const platformOptions = [
+    ["all", "全部状态"],
+    ["dual", "双平台可用"],
+    ["xhs", "小红书可用"],
+    ["official", "公众号可用"],
+    ["official_pending", "已领取待上传"],
+    ["douyin_archived", "抖音已归档"],
+    ["all_used", "全部已使用"]
+  ];
+  const render = (selector, options, key) => {
+    const container = $(selector);
+    if (!container) return;
+    container.innerHTML = options.map(([value, label]) => `
+      <button type="button" class="filter-chip ${collectionFilters[key] === value ? "active" : ""}" data-filter-key="${key}" data-filter-value="${value}">${label}</button>
+    `).join("");
+  };
+  render("#collectionTypeFilters", typeOptions, "type");
+  render("#collectionPlatformFilters", platformOptions, "platform");
+}
+
+function getFilteredCollections() {
+  return DistributionUI.filterCollections(
+    dashboard?.distribution?.collections || [],
+    collectionFilters
+  );
+}
+
+function renderCollections() {
+  const data = dashboard?.distribution;
+  if (!data) return;
+  const summary = data.summary || {};
+  $("#collectionStats").innerHTML = [
+    ["双平台可用", summary.dualPlatformAvailable || 0, ""],
+    ["游戏/泛流量", summary.traffic || 0, ""],
+    ["团建转化", summary.conversion || 0, ""],
+    ["归档入口", `${summary.douyinArchived || 0}${summary.douyinArchiveInvalid ? ` · 异常${summary.douyinArchiveInvalid}` : ""}`, summary.douyinArchiveInvalid ? "warn" : ""]
+  ].map(([label, value, className]) => `
+    <article class="summary-card ${className}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>
+  `).join("");
+  renderCollectionFilters();
+  const collections = getFilteredCollections();
+  const list = $("#collectionList");
+  list.innerHTML = collections.length ? collections.map((collection) => {
+    const badges = [
+      [collection.typeLabel, collection.type === "unclassified" ? "warn" : ""],
+      [`小红书 ${DistributionUI.platformStateLabel(collection.xhs)}`, collectionStateClass(collection.xhs)],
+      [`抖音 ${DistributionUI.platformStateLabel(collection.douyin)}`, collectionStateClass(collection.douyin)],
+      [`公众号 ${DistributionUI.platformStateLabel(collection.officialAccount)}`, collectionStateClass(collection.officialAccount)]
+    ];
+    return `
+      <article class="collection-row ${selectedCollectionName === collection.name ? "active" : ""}" data-collection="${escapeHtml(collection.name)}">
+        <div class="collection-count">${collection.itemCount || 0}/14</div>
+        <div class="collection-title"><strong>${escapeHtml(collection.name)}</strong><span>${collection.dualPlatformEligible ? "可用于双平台手机" : (collection.exclusionReasons?.[0] || "查看平台使用状态")}</span></div>
+        <div class="badge-line">${badges.map(([label, className]) => `<span class="state-badge ${className}">${escapeHtml(label)}</span>`).join("")}</div>
+        <button class="collection-open" type="button" aria-label="查看 ${escapeHtml(collection.name)}">›</button>
+      </article>
+    `;
+  }).join("") : `<div class="empty-state"><strong>没有匹配的作品集</strong><p>换一个类型或平台状态筛选。</p></div>`;
+  if (!selectedCollectionName || !collections.some((item) => item.name === selectedCollectionName)) {
+    selectedCollectionName = collections[0]?.name || "";
+  }
+  renderCollectionDetail(selectedCollectionName);
+}
+
+function renderCollectionDetail(name) {
+  const container = $("#collectionDetail");
+  const collection = dashboard?.distribution?.collections?.find((item) => item.name === name);
+  if (!container || !collection) {
+    if (container) container.innerHTML = `<div class="empty-state"><strong>选择一个作品集</strong><p>查看平台资格和使用记录。</p></div>`;
+    return;
+  }
+  selectedCollectionName = collection.name;
+  $$(".collection-row").forEach((row) => row.classList.toggle("active", row.dataset.collection === collection.name));
+  const platform = (label, state) => `
+    <div class="platform-state"><span>${label}</span><strong>${DistributionUI.platformStateLabel(state)}</strong></div>
+  `;
+  container.innerHTML = `
+    <h3>${escapeHtml(collection.name)}</h3>
+    <p>${escapeHtml(collection.typeLabel)} · ${collection.itemCount || 0} 条 · ${collection.fileCount || 0} 个文件 · ${formatBytes(collection.bytes)}</p>
+    <div class="platform-state-grid">
+      ${platform("小红书", collection.xhs)}
+      ${platform("抖音", collection.douyin)}
+      ${platform("公众号", collection.officialAccount)}
+      <div class="platform-state"><span>双平台手机</span><strong>${collection.dualPlatformEligible ? "可分发" : "不可分发"}</strong></div>
+      <div class="platform-state"><span>手机分发记录</span><strong>${collection.deviceHistoryCount || 0} 次</strong></div>
+      <div class="platform-state"><span>公众号记录</span><strong>${collection.officialAccountHistoryCount || 0} 次</strong></div>
+    </div>
+    ${collection.exclusionReasons?.length ? `<div class="detail-warning">${escapeHtml(collection.exclusionReasons.join("；"))}</div>` : ""}
+    <div class="detail-button-row">
+      <button type="button" data-open-collection="${escapeHtml(collection.sourcePath)}">打开源文件夹</button>
+      <button type="button" data-distribute-collection="${escapeHtml(collection.name)}">进入分发</button>
+    </div>
+  `;
+}
+
+function renderDistribution() {
+  const data = dashboard?.distribution || { summary: {}, devices: [] };
+  const summary = data.summary || {};
+  const devices = data.devices || [];
+  $("#distributionPhones").innerHTML = `
+    <div class="distribution-stats">
+      ${[["登记设备", deviceCheckState.registered ?? devices.length], ["当前在线", deviceCheckState.online ?? "点击扫描"], ["双平台库存", summary.dualPlatformAvailable || 0], ["转化备用", summary.conversion || 0]]
+        .map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${escapeHtml(value)}</strong></article>`).join("")}
+    </div>
+    ${deviceCheckState.output ? `<div class="detail-warning">${escapeHtml(deviceCheckState.output).replace(/\r?\n/g, "<br>")}</div>` : ""}
+    <div class="device-list">${devices.map((device) => `
+      <article class="device-row">
+        <div class="device-number">${device.number}号</div>
+        <div><h3>${escapeHtml(device.displayName)}</h3><p>${escapeHtml(device.ownerGroup)} · ${escapeHtml((device.platforms || []).join(" + "))}</p></div>
+        <div class="badge-line"><span class="state-badge">${device.platforms?.length === 1 ? "单平台设备" : "双平台设备"}</span></div>
+        <div class="device-actions">
+          <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}">补泛流量</button>
+          <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}">补团建转化</button>
+        </div>
+      </article>
+    `).join("")}</div>
+  `;
+  const pending = data.collections?.filter((item) => item.officialAccount === "reserved_pending_upload") || [];
+  $("#distributionOfficial").innerHTML = `
+    <div class="distribution-stats">
+      ${[["公众号活跃入口", summary.officialAvailable || 0], ["已领取待上传", summary.officialPending || 0], ["已确认上传", summary.officialConfirmed || 0], ["入口异常", data.collections?.filter((item) => item.officialAccount === "invalid").length || 0]]
+        .map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${value}</strong></article>`).join("")}
+    </div>
+    <div class="detail-warning">领取不等于发布。只有你确认电脑上传完成后，状态才会变为“已确认上传”。</div>
+    <div class="record-list">
+      ${pending.map((collection) => `<article class="official-card"><div class="device-number">待</div><div><h3>${escapeHtml(collection.name)}</h3><p>江湖有旅人团建策划师 · 已领取待电脑上传</p></div><span class="state-badge warn">等待人工确认</span><div class="device-actions"><button data-confirm-official="${escapeHtml(collection.name)}">确认上传完成</button></div></article>`).join("")}
+      <article class="official-card"><div class="device-number">${summary.officialAvailable || 0}</div><div><h3>随机领取一个公众号作品集</h3><p>优先选择小红书和抖音入口均已处理的合集</p></div><span class="state-badge good">电脑批量上传</span><div class="device-actions"><button data-official-action="execute">随机领取</button></div></article>
+    </div>
+  `;
+  $("#distributionHistory").innerHTML = renderDistributionRecords(data.deviceHistory || [], "device");
+  const archiveCollections = data.collections?.filter((item) => item.douyin === "archived" || item.douyin === "invalid") || [];
+  $("#distributionArchive").innerHTML = archiveCollections.length ? `<div class="record-list">${archiveCollections.map((item) => `
+    <article class="record-row"><div class="device-number">抖</div><div><h3>${escapeHtml(item.name)}</h3><p>${item.douyin === "archived" ? "归档入口有效，可按安全规则恢复" : "归档入口存在，但源目录不可用"}</p></div><span class="state-badge ${item.douyin === "archived" ? "good" : "bad"}">${item.douyin === "archived" ? "已归档" : "入口异常"}</span><div></div></article>
+  `).join("")}</div>` : `<div class="empty-state"><strong>暂无抖音归档</strong><p>单平台手机分发成功后的抖音入口会显示在这里。</p></div>`;
+  showDistributionPanel(activeDistributionPanel);
+}
+
+function renderDistributionRecords(rows, kind) {
+  if (!rows.length) return `<div class="empty-state"><strong>暂无分发记录</strong><p>完成一次真实分发后会显示在这里。</p></div>`;
+  return `<div class="record-list">${rows.slice(0, 80).map((row) => `
+    <article class="record-row">
+      <div class="device-number">${kind === "device" ? "机" : "公"}</div>
+      <div><h3>${escapeHtml(row["源作品集"] || row["作品集"] || "未命名")}</h3><p>${escapeHtml(row["设备名"] || row["公众号账号"] || "")} · ${escapeHtml(row["时间"] || "")}</p></div>
+      <span class="state-badge">${escapeHtml(row["接收确认"] || row["状态"] || "已记录")}</span>
+      <div></div>
+    </article>
+  `).join("")}</div>`;
+}
+
+function showDistributionPanel(panel) {
+  activeDistributionPanel = panel || "phones";
+  $$("#distributionTabs button").forEach((button) => button.classList.toggle("active", button.dataset.panel === activeDistributionPanel));
+  $$(".distribution-panel").forEach((section) => section.classList.toggle("active", section.id === `distribution${activeDistributionPanel[0].toUpperCase()}${activeDistributionPanel.slice(1)}`));
+}
+
+function applyTheme(theme) {
+  const value = ["solid", "glass", "neumorphic"].includes(theme) ? theme : "solid";
+  document.body.dataset.theme = value;
+  localStorage.setItem("tb-dashboard-theme", value);
+  $$(".theme-option").forEach((button) => button.classList.toggle("active", button.dataset.theme === value));
+}
+
+async function executeDistributionAction(payload, description) {
+  const confirmed = window.confirm(`${description}\n\n接收确认后，现有分发技能会按平台规则处理 Junction；源作品集不会删除。是否继续？`);
+  if (!confirmed) return;
+  toast("正在执行真实分发，请保持设备接收页面开启");
+  try {
+    const result = await api("/api/distribution/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, confirmed: true })
+    });
+    window.alert(result.output || "操作已完成");
+    await loadDashboard(true);
+    activateTab("distribution");
+  } catch (error) {
+    window.alert(`分发未完成：${error.message}`);
+  }
+}
+
+async function confirmOfficialCollection(collection) {
+  if (!window.confirm(`确认“${collection}”已经在电脑端上传完成？\n\n这会追加一条确认记录，不会删除源作品集。`)) return;
+  try {
+    await api("/api/distribution/confirm-official", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ collection, confirmed: true })
+    });
+    await loadDashboard(true);
+    activateTab("distribution");
+    showDistributionPanel("official");
+    toast("已记录为公众号上传完成");
+  } catch (error) {
+    window.alert(`确认失败：${error.message}`);
+  }
+}
+
+async function checkDistributionDevices() {
+  toast("正在扫描设备与库存");
+  try {
+    const result = await api("/api/distribution/check", { method: "POST" });
+    deviceCheckState = {
+      ...DistributionUI.parseDeviceCheckOutput(result.output),
+      output: result.output || ""
+    };
+    await loadDashboard(true);
+    activateTab("distribution");
+    toast(deviceCheckState.online == null ? "扫描完成，请查看结果" : `扫描完成：当前在线 ${deviceCheckState.online} 台`);
+  } catch (error) {
+    window.alert(`扫描失败：${error.message}`);
+  }
+}
+
 async function loadJuguang(force = false) {
   if (juguangData && !force) return renderJuguang();
   juguangData = await api("/api/juguang");
@@ -1091,10 +1348,12 @@ function activateTab(name) {
   $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
   $$(".view").forEach((view) => view.classList.remove("active"));
   $(`#${name}View`)?.classList.add("active");
-  if (name === "products" && !productsRendered) {
-    renderProducts();
+  if (name === "overview") renderOverview();
+  if (name === "products") {
+    renderCollections();
     productsRendered = true;
   }
+  if (name === "distribution") renderDistribution();
   if (name === "workflow" && !logsRendered) {
     renderLogs();
     logsRendered = true;
@@ -1106,6 +1365,7 @@ function activateTab(name) {
     });
     juguangRendered = true;
   }
+  if (name === "settings") applyTheme(localStorage.getItem("tb-dashboard-theme") || "solid");
   saveLocalState({ activeTab: name });
 }
 
@@ -1202,6 +1462,44 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".custom-select")) closeCustomSelects();
     if (!event.target.closest(".context-menu")) hideContextMenu();
+    const jump = event.target.closest("[data-jump]");
+    if (jump) activateTab(jump.dataset.jump);
+    const filter = event.target.closest("[data-filter-key]");
+    if (filter) {
+      collectionFilters[filter.dataset.filterKey] = filter.dataset.filterValue;
+      renderCollections();
+    }
+    const collectionRow = event.target.closest("[data-collection]");
+    if (collectionRow) renderCollectionDetail(collectionRow.dataset.collection);
+    const openCollection = event.target.closest("[data-open-collection]");
+    if (openCollection?.dataset.openCollection) openPath(openCollection.dataset.openCollection);
+    const enterDistribution = event.target.closest("[data-distribute-collection]");
+    if (enterDistribution) {
+      activateTab("distribution");
+      $("#distributionCommand").value = `分发 ${enterDistribution.dataset.distributeCollection}`;
+    }
+    const distributionTab = event.target.closest("#distributionTabs [data-panel]");
+    if (distributionTab) showDistributionPanel(distributionTab.dataset.panel);
+    const deviceAction = event.target.closest("[data-device-action]");
+    if (deviceAction) {
+      const type = deviceAction.dataset.deviceAction;
+      const typeLabel = type === "conversion" ? "团建转化" : "泛流量";
+      executeDistributionAction(
+        { action: "device-restock", device: deviceAction.dataset.device, type },
+        `将给 ${deviceAction.dataset.device} 随机补充一个${typeLabel}作品集。`
+      );
+    }
+    const officialAction = event.target.closest("[data-official-action]");
+    if (officialAction) {
+      executeDistributionAction(
+        { action: "official-reserve", type: "traffic" },
+        "将为“江湖有旅人团建策划师”随机领取一个公众号作品集，并记录为已领取待电脑上传。"
+      );
+    }
+    const confirmOfficial = event.target.closest("[data-confirm-official]");
+    if (confirmOfficial) confirmOfficialCollection(confirmOfficial.dataset.confirmOfficial);
+    const theme = event.target.closest("[data-theme]");
+    if (theme) applyTheme(theme.dataset.theme);
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeCustomSelects();
@@ -1211,6 +1509,20 @@ function bindEvents() {
     await loadDashboard(true, $("#materialLibraryFilter")?.value || "");
     toast("已刷新本地库");
   });
+  $("#overviewRefreshBtn")?.addEventListener("click", async () => {
+    await loadDashboard(true);
+    activateTab("overview");
+    toast("已刷新真实状态");
+  });
+  $("#distributionRefreshBtn")?.addEventListener("click", async () => {
+    await checkDistributionDevices();
+  });
+  $("#openPublishRootBtn")?.addEventListener("click", () => openPath(dashboard?.distribution?.publishRoot));
+  $("#collectionSearch")?.addEventListener("input", (event) => {
+    collectionFilters.query = event.target.value;
+    renderCollections();
+  });
+  $("#copyDistributionCommand")?.addEventListener("click", () => copyText($("#distributionCommand").value, "分发指令已复制"));
   $("#refreshJuguangBtn")?.addEventListener("click", async () => {
     await loadJuguang(true);
     toast("聚光数据已刷新");
@@ -1327,6 +1639,7 @@ function bindEvents() {
 
 bindEvents();
 bindPaneResizers();
+applyTheme(localStorage.getItem("tb-dashboard-theme") || "solid");
 loadDashboard().catch((error) => {
   console.error(error);
   toast("读取本地库失败");

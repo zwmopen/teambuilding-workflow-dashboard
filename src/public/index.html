@@ -14,25 +14,61 @@
     </div>
 
     <main class="app-shell">
+      <nav class="workflow-rail glass" aria-label="工作流导航">
+        <button class="tab rail-tab active" data-tab="overview" type="button" title="总览">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>
+          <span>总览</span>
+        </button>
+        <button class="tab rail-tab" data-tab="dashboard" type="button" title="素材生产">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z"/><path d="m18.5 16 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/></svg>
+          <span>素材生产</span>
+        </button>
+        <button class="tab rail-tab" data-tab="products" type="button" title="作品集">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H19v16H7.5A2.5 2.5 0 0 0 5 21.5v-16Z"/><path d="M5 18.5A2.5 2.5 0 0 1 7.5 16H19"/></svg>
+          <span>作品集</span>
+        </button>
+        <button class="tab rail-tab" data-tab="distribution" type="button" title="分发功能">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/><path d="m3 9 2-2 2 2M21 13l-2 2-2-2"/></svg>
+          <span>分发功能</span>
+        </button>
+        <button class="tab rail-tab" data-tab="review" type="button" title="发布复盘">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9M12 19V5M19 19v-7"/><path d="m4 6 5-3 5 2 6-3"/></svg>
+          <span>发布复盘</span>
+        </button>
+        <button class="tab rail-tab rail-bottom" data-tab="settings" type="button" title="设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg>
+          <span>设置</span>
+        </button>
+      </nav>
       <header class="topbar glass">
         <section>
-          <h1>团建图文生产工作流</h1>
-          <div class="subtitle">素材库、模板母版、成品包、提示词版本</div>
+          <h1>团建内容工作台</h1>
+          <div class="subtitle">本地项目 · 手动操作与 Codex 共用同一流程</div>
         </section>
-        <nav class="tabs" aria-label="工作流导航">
-          <button class="tab active" data-tab="dashboard">素材生产</button>
-          <button class="tab" data-tab="prompts">提示词区</button>
-          <button class="tab" data-tab="products">成品库</button>
-          <button class="tab" data-tab="juguang">聚光运营</button>
-          <button class="tab" data-tab="workflow">工作流</button>
-        </nav>
+        <div class="topbar-status"><span class="status-dot"></span>本地已连接</div>
         <section class="top-actions">
           <button class="icon-button" id="refreshBtn" title="刷新本地数据库">↻</button>
           <span class="root-path">D:\AICode\项目推进\projects\江湖有旅人\主项目</span>
         </section>
       </header>
 
-      <section class="view active" id="dashboardView">
+      <section class="view active" id="overviewView">
+        <section class="overview-layout">
+          <header class="page-heading">
+            <div><p class="label">今天从哪里继续</p><h2>工作流总览</h2><p>只显示真实可读取的本地状态，不推测 ChatGPT 页面内部进度。</p></div>
+            <button class="primary-button" id="overviewRefreshBtn">刷新状态</button>
+          </header>
+          <div class="overview-stats" id="overviewStats"></div>
+          <section class="overview-grid">
+            <article class="overview-card" data-jump="dashboard"><span class="overview-index">01</span><h3>素材生产</h3><p>读取本地素材树，选择帖子并进入 GPT 母版会话。</p><button type="button">进入素材生产</button></article>
+            <article class="overview-card" data-jump="products"><span class="overview-index">02</span><h3>作品集</h3><p>按内容类型与平台资格筛选当前可用合集。</p><button type="button">查看作品集</button></article>
+            <article class="overview-card" data-jump="distribution"><span class="overview-index">03</span><h3>分发功能</h3><p>手机补货、公众号领取、使用记录与归档恢复。</p><button type="button">进入分发</button></article>
+            <article class="overview-card" data-jump="review"><span class="overview-index">04</span><h3>发布复盘</h3><p>聚光数据、生产记录和已发布内容的效果复盘。</p><button type="button">查看复盘</button></article>
+          </section>
+        </section>
+      </section>
+
+      <section class="view" id="dashboardView">
         <div class="three-pane" id="threePane">
           <aside class="filter-pane">
             <div class="stats">
@@ -151,46 +187,78 @@
       </section>
 
       <section class="view" id="productsView">
-        <section class="product-layout">
-          <aside class="panel glass product-filter-pane">
-            <p class="label">成品筛选</p>
-            <label>切换模板</label>
-            <select id="productTemplateFilter" class="search-input"></select>
-            <label>搜索成品</label>
-            <input id="productSearch" class="search-input" placeholder="标题 / 模板" />
-            <select id="productWorkFilter" class="search-input hidden-control"></select>
-          </aside>
-          <main class="panel glass product-preview-pane">
-            <div class="canvas-head">
-              <div>
-                <p class="label">成品预览</p>
-                <p id="productPath" class="path-line"></p>
-              </div>
-              <div class="canvas-tools one-tool">
-                <select id="productWorkQuickSelect" class="search-input compact-select" aria-label="本文件夹成品切换"></select>
-              </div>
+        <section class="collection-layout">
+          <header class="page-heading">
+            <div><p class="label">实时库存</p><h2>作品集</h2><p>标签来自 Junction、归档目录和使用日志；不会改作品集名称。</p></div>
+            <button class="primary-button" id="openPublishRootBtn">打开发布空间</button>
+          </header>
+          <div class="collection-stats" id="collectionStats"></div>
+          <div class="filter-toolbar">
+            <div><span>内容类型</span><div class="chip-group" id="collectionTypeFilters"></div></div>
+            <div><span>平台状态</span><div class="chip-group" id="collectionPlatformFilters"></div></div>
+            <label class="collection-search"><span>搜索</span><input id="collectionSearch" class="search-input" placeholder="作品集编号或状态" /></label>
+          </div>
+          <div class="collection-workspace">
+            <section class="collection-list" id="collectionList"></section>
+            <aside class="collection-detail" id="collectionDetail">
+              <div class="empty-state"><strong>选择一个作品集</strong><p>查看三个平台的真实状态、资格判断和使用记录。</p></div>
+            </aside>
+          </div>
+          <div class="legacy-product-controls" hidden>
+            <select id="productTemplateFilter"></select><input id="productSearch" /><select id="productWorkFilter"></select>
+            <select id="productWorkQuickSelect"></select><div id="productImages"></div><span id="productPath"></span>
+            <span id="productDetailTitle"></span><span id="productDetailMeta"></span>
+            <button id="openProductBtn"></button><button id="copyProductPathBtn"></button>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="distributionView">
+        <section class="distribution-layout">
+          <header class="page-heading">
+            <div><p class="label">真实执行入口</p><h2>分发功能</h2><p>手机补货、公众号领取、分发记录与可恢复归档。</p></div>
+            <button class="primary-button" id="distributionRefreshBtn">扫描设备与库存</button>
+          </header>
+          <div class="segment-tabs" id="distributionTabs">
+            <button class="active" data-panel="phones">手机补货</button>
+            <button data-panel="official">公众号领取</button>
+            <button data-panel="history">分发记录</button>
+            <button data-panel="archive">归档记录</button>
+          </div>
+          <section class="distribution-panel active" id="distributionPhones"></section>
+          <section class="distribution-panel" id="distributionOfficial"></section>
+          <section class="distribution-panel" id="distributionHistory"></section>
+          <section class="distribution-panel" id="distributionArchive"></section>
+          <section class="codex-command-bar">
+            <strong>Codex</strong>
+            <input id="distributionCommand" placeholder="例如：给5号补一个泛流量" />
+            <button id="copyDistributionCommand" type="button">复制指令</button>
+          </section>
+        </section>
+      </section>
+
+      <section class="view" id="reviewView">
+        <section class="overview-layout">
+          <header class="page-heading"><div><p class="label">发布后再判断</p><h2>发布复盘</h2><p>生产记录与聚光数据都从这里进入，不与分发状态混在一起。</p></div></header>
+          <section class="overview-grid compact">
+            <article class="overview-card" data-jump="juguang"><span class="overview-index">数据</span><h3>聚光运营</h3><p>查看关键词、选题建议和脱敏线索归因。</p><button type="button">打开聚光运营</button></article>
+            <article class="overview-card" data-jump="workflow"><span class="overview-index">记录</span><h3>生产日志</h3><p>查看素材到成品的流程记录与续接历史。</p><button type="button">打开工作流记录</button></article>
+          </section>
+        </section>
+      </section>
+
+      <section class="view" id="settingsView">
+        <section class="settings-layout">
+          <header class="page-heading"><div><p class="label">外观与本地数据</p><h2>设置</h2><p>主题偏好会保存在本机浏览器，不修改项目素材。</p></div></header>
+          <section class="settings-card">
+            <h3>视觉风格</h3>
+            <div class="theme-options">
+              <button class="theme-option active" data-theme="solid"><b>雾绿实体</b><span>当前风格，稳定耐看</span></button>
+              <button class="theme-option" data-theme="glass"><b>轻透玻璃</b><span>功能层轻透，内容仍清晰</span></button>
+              <button class="theme-option" data-theme="neumorphic"><b>柔和拟态</b><span>更强的悬浮实体感</span></button>
             </div>
-            <div id="productImages" class="material-feed product-feed"></div>
-          </main>
-          <aside class="panel glass product-detail-pane">
-            <h2>大图预览</h2>
-            <figure class="focus-preview">
-              <img id="productPreviewImage" alt="成品预览" />
-              <figcaption>
-                <strong id="productPreviewTitle">请选择成品</strong>
-                <span id="productPreviewMeta">成品图片</span>
-              </figcaption>
-            </figure>
-            <div class="detail-card">
-              <span>当前成品</span>
-              <strong id="productDetailTitle">未选择</strong>
-              <p id="productDetailMeta">未进入成品库浏览。</p>
-            </div>
-            <div class="detail-actions">
-              <button class="action-button full" id="openProductBtn">打开所在文件夹</button>
-              <button class="action-button full" id="copyProductPathBtn">复制当前路径</button>
-            </div>
-          </aside>
+          </section>
+          <section class="settings-card"><h3>高级入口</h3><div class="settings-actions"><button data-jump="prompts">提示词版本</button><button data-jump="juguang">聚光运营</button><button data-jump="workflow">生产日志</button></div></section>
         </section>
       </section>
 
@@ -247,6 +315,7 @@
       <button id="contextRename" type="button">重命名</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
+    <script src="/distribution-ui.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>
