@@ -2,8 +2,10 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  countCollectionFacets,
   filterCollections,
   parseDeviceCheckOutput,
+  phoneDistributionStats,
   platformStateLabel
 } = require("./distribution-ui");
 
@@ -50,6 +52,49 @@ test("filterCollections combines type, platform and text filters", () => {
       query: ""
     }).map((item) => item.name),
     ["作品集_045[转]"]
+  );
+});
+
+test("countCollectionFacets returns live cross-filter counts for filter chips", () => {
+  assert.deepEqual(
+    countCollectionFacets(collections, {
+      type: "traffic",
+      platform: "all",
+      query: ""
+    }),
+    {
+      types: {
+        all: 3,
+        traffic: 2,
+        conversion: 1,
+        unclassified: 0
+      },
+      platforms: {
+        all: 2,
+        dual: 1,
+        xhs: 1,
+        official: 2,
+        official_pending: 0,
+        douyin_archived: 1,
+        all_used: 0
+      }
+    }
+  );
+});
+
+test("phoneDistributionStats uses the agreed user-facing labels and category counts", () => {
+  assert.deepEqual(
+    phoneDistributionStats(
+      { traffic: 10, conversion: 2 },
+      { registered: 8, online: 0 },
+      6
+    ),
+    [
+      ["已登记设备", 8],
+      ["当前在线", 0],
+      ["泛流量合集", 10],
+      ["团建转化（精准流量）", 2]
+    ]
   );
 });
 

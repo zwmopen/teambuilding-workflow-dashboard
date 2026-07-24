@@ -1816,8 +1816,7 @@ label {
   font-size: 13px;
 }
 
-.overview-stats,
-.collection-stats {
+.overview-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
@@ -1950,6 +1949,24 @@ label {
   font-weight: 700;
 }
 
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+}
+
+.filter-chip-count {
+  min-width: 22px;
+  padding: 2px 6px;
+  color: var(--accent);
+  border-radius: 999px;
+  background: rgba(45, 102, 84, 0.1);
+  font-size: 11px;
+  line-height: 1.25;
+  text-align: center;
+}
+
 .filter-chip.active,
 .segment-tabs button.active {
   color: #fff;
@@ -1957,9 +1974,14 @@ label {
   border-color: var(--accent);
 }
 
+.filter-chip.active .filter-chip-count {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.9);
+}
+
 .collection-workspace {
   min-height: 520px;
-  height: calc(100vh - 330px);
+  height: calc(100vh - 235px);
   display: grid;
   grid-template-columns: minmax(520px, 1.55fr) minmax(320px, 0.8fr);
   gap: 14px;
@@ -2380,7 +2402,6 @@ body[data-theme="neumorphic"] {
     display: none;
   }
   .overview-stats,
-  .collection-stats,
   .distribution-stats,
   .overview-grid,
   .theme-options {

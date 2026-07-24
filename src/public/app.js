@@ -1071,6 +1071,10 @@ function collectionStateClass(state) {
 }
 
 function renderCollectionFilters() {
+  const counts = DistributionUI.countCollectionFacets(
+    dashboard?.distribution?.collections || [],
+    collectionFilters
+  );
   const typeOptions = [
     ["all", "全部"],
     ["traffic", "游戏/泛流量"],
@@ -1089,8 +1093,11 @@ function renderCollectionFilters() {
   const render = (selector, options, key) => {
     const container = $(selector);
     if (!container) return;
+    const facetCounts = key === "type" ? counts.types : counts.platforms;
     container.innerHTML = options.map(([value, label]) => `
-      <button type="button" class="filter-chip ${collectionFilters[key] === value ? "active" : ""}" data-filter-key="${key}" data-filter-value="${value}">${label}</button>
+      <button type="button" class="filter-chip ${collectionFilters[key] === value ? "active" : ""}" data-filter-key="${key}" data-filter-value="${value}">
+        <span>${label}</span><strong class="filter-chip-count">${formatNumber(facetCounts[value])}</strong>
+      </button>
     `).join("");
   };
   render("#collectionTypeFilters", typeOptions, "type");
@@ -1107,15 +1114,6 @@ function getFilteredCollections() {
 function renderCollections() {
   const data = dashboard?.distribution;
   if (!data) return;
-  const summary = data.summary || {};
-  $("#collectionStats").innerHTML = [
-    ["双平台可用", summary.dualPlatformAvailable || 0, ""],
-    ["游戏/泛流量", summary.traffic || 0, ""],
-    ["团建转化", summary.conversion || 0, ""],
-    ["归档入口", `${summary.douyinArchived || 0}${summary.douyinArchiveInvalid ? ` · 异常${summary.douyinArchiveInvalid}` : ""}`, summary.douyinArchiveInvalid ? "warn" : ""]
-  ].map(([label, value, className]) => `
-    <article class="summary-card ${className}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>
-  `).join("");
   renderCollectionFilters();
   const collections = getFilteredCollections();
   const list = $("#collectionList");
@@ -1178,10 +1176,9 @@ function renderDistribution() {
   const devices = data.devices || [];
   $("#distributionPhones").innerHTML = `
     <div class="distribution-stats">
-      ${[["登记设备", deviceCheckState.registered ?? devices.length], ["当前在线", deviceCheckState.online ?? "点击扫描"], ["双平台库存", summary.dualPlatformAvailable || 0], ["转化备用", summary.conversion || 0]]
+      ${DistributionUI.phoneDistributionStats(summary, deviceCheckState, devices.length)
         .map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${escapeHtml(value)}</strong></article>`).join("")}
     </div>
-    ${deviceCheckState.output ? `<div class="detail-warning">${escapeHtml(deviceCheckState.output).replace(/\r?\n/g, "<br>")}</div>` : ""}
     <div class="device-list">${devices.map((device) => `
       <article class="device-row">
         <div class="device-number">${device.number}号</div>
