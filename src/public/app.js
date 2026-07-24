@@ -16,7 +16,14 @@ let productRenderLimit = 8;
 let collectionFilters = { type: "all", platform: "all", query: "" };
 let selectedCollectionName = "";
 let activeDistributionPanel = "phones";
-let deviceCheckState = { registered: null, online: null, output: "" };
+let deviceCheckState = {
+  registered: null,
+  online: null,
+  output: "",
+  onlineDevices: []
+};
+let deviceScanStarted = false;
+let deviceScanRunning = false;
 const expandedMaterialPaths = new Set();
 let materialTreeInitialized = false;
 
@@ -315,8 +322,55 @@ async function loadDashboard(force = false, libraryPath = "") {
   renderMaterialQuickSelect();
   renderMaterials();
   renderPrompts();
+  renderWorkspaceSettings();
   if ($("#overviewView")) renderOverview();
   restoreSelection();
+}
+
+function renderWorkspaceSettings() {
+  const settings = dashboard?.workspaceSettings;
+  if (!settings) return;
+  if ($("#materialRootInput")) $("#materialRootInput").value = settings.materialRoot || "";
+  if ($("#settingsMaterialRoot")) $("#settingsMaterialRoot").value = settings.materialRoot || "";
+  if ($("#settingsPortfolioRoot")) $("#settingsPortfolioRoot").value = settings.workPackage?.libraryPath || "";
+  if ($("#settingsBatchSize")) $("#settingsBatchSize").value = settings.workPackage?.batchSize || 14;
+  if ($("#settingsAutoGroup")) $("#settingsAutoGroup").checked = settings.workPackage?.autoGroup !== false;
+  if ($("#settingsAutoZip")) $("#settingsAutoZip").checked = settings.workPackage?.autoZip !== false;
+}
+
+async function chooseFolder(description) {
+  const result = await api("/api/pick-folder", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description })
+  });
+  return result.path || "";
+}
+
+async function saveWorkspacePaths(options = {}) {
+  const materialRoot = String(
+    options.materialRoot || $("#settingsMaterialRoot")?.value || $("#materialRootInput")?.value || ""
+  ).trim();
+  const portfolioRoot = String(
+    $("#settingsPortfolioRoot")?.value || dashboard?.workspaceSettings?.workPackage?.libraryPath || ""
+  ).trim();
+  const payload = { materialRoot };
+  if (options.materialOnly !== true) {
+    payload.workPackage = {
+      libraryPath: portfolioRoot,
+      batchSize: Number($("#settingsBatchSize")?.value || 14),
+      autoGroup: $("#settingsAutoGroup")?.checked !== false,
+      autoZip: $("#settingsAutoZip")?.checked !== false
+    };
+  }
+  await api("/api/settings/paths", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  await loadDashboard(true);
+  activateTab(options.returnTab || "dashboard");
+  toast(options.materialOnly ? "素材目录已递归扫描" : "目录设置已保存");
 }
 
 function renderStats() {
@@ -1227,6 +1281,25 @@ function renderCollectionDetail(name) {
       <div class="platform-state"><span>公众号记录</span><strong>${collection.officialAccountHistoryCount || 0} 次</strong></div>
     </div>
     ${collection.exclusionReasons?.length ? `<div class="detail-warning">${escapeHtml(collection.exclusionReasons.join("；"))}</div>` : ""}
+    <section class="collection-ledger-editor">
+      <div>
+        <label for="collectionLedgerType">人工分类</label>
+        <select id="collectionLedgerType">
+          <option value="traffic" ${collection.type === "traffic" ? "selected" : ""}>游戏/泛流量</option>
+          <option value="conversion" ${collection.type === "conversion" ? "selected" : ""}>团建转化</option>
+          <option value="unclassified" ${collection.type === "unclassified" ? "selected" : ""}>未分类</option>
+        </select>
+      </div>
+      <div>
+        <label for="collectionLedgerTags">标签（用逗号分隔）</label>
+        <input id="collectionLedgerTags" value="${escapeHtml((collection.ledger?.tags || []).join(", "))}" placeholder="小红书, 公众号, 已复核" />
+      </div>
+      <div class="ledger-note">
+        <label for="collectionLedgerNote">备注</label>
+        <textarea id="collectionLedgerNote" placeholder="记录使用限制、缺页情况或人工判断">${escapeHtml(collection.ledger?.note || "")}</textarea>
+      </div>
+      <button type="button" class="primary-button" data-save-collection-ledger="${escapeHtml(collection.name)}">保存台账</button>
+    </section>
     <div class="detail-button-row">
       <button type="button" data-open-collection="${escapeHtml(collection.sourcePath)}">打开源文件夹</button>
       <button type="button" data-distribute-collection="${escapeHtml(collection.name)}">进入分发</button>
@@ -1237,20 +1310,31 @@ function renderCollectionDetail(name) {
 function renderDistribution() {
   const data = dashboard?.distribution || { summary: {}, devices: [] };
   const summary = data.summary || {};
-  const devices = data.devices || [];
+  const devices = DistributionUI.decorateDevices(
+    data.devices || [],
+    deviceCheckState.onlineDevices || []
+  );
   $("#distributionPhones").innerHTML = `
     <div class="distribution-stats">
       ${DistributionUI.phoneDistributionStats(summary, deviceCheckState, devices.length)
-        .map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${escapeHtml(value)}</strong></article>`).join("")}
+        .map(([label, value, unit]) => `<article class="summary-card"><span>${label}</span><strong>${escapeHtml(value)} <small>${unit}</small></strong></article>`).join("")}
     </div>
     <div class="device-list">${devices.map((device) => `
-      <article class="device-row">
-        <div class="device-number">${device.number}号</div>
-        <div><h3>${escapeHtml(device.displayName)}</h3><p>${escapeHtml(device.ownerGroup)} · ${escapeHtml((device.platforms || []).join(" + "))}</p></div>
-        <div class="badge-line"><span class="state-badge">${device.platforms?.length === 1 ? "单平台设备" : "双平台设备"}</span></div>
+      <article class="device-row ${device.online ? "is-online" : "is-offline"}">
+        <div class="device-platform-icon" aria-label="${/iphone|apple|苹果/i.test(`${device.id} ${device.displayName}`) ? "苹果设备" : "安卓设备"}">
+          ${/iphone|apple|苹果/i.test(`${device.id} ${device.displayName}`)
+            ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.8 12.7c0-2.5 2.1-3.7 2.2-3.8-1.2-1.8-3.1-2-3.8-2-1.6-.2-3.1 1-3.9 1s-2-1-3.3-1c-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.3 2.5 1.3-.1 1.8-.8 3.4-.8 1.6 0 2.1.8 3.4.8 1.4 0 2.3-1.2 3.2-2.5 1-1.4 1.4-2.9 1.4-3-.1 0-3-.9-3-3.9Z"/><path d="M14.2 5.2c.7-.9 1.2-2.2 1.1-3.4-1.1 0-2.4.7-3.2 1.6-.7.8-1.3 2.1-1.1 3.3 1.2.1 2.5-.6 3.2-1.5Z"/></svg>`
+            : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.2 7-1.5-2.6M16.8 7l1.5-2.6"/><path d="M6 9h12v8.3a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9Z"/><path d="M4 10v6M20 10v6M9 19.3V22M15 19.3V22"/><circle cx="9" cy="12" r=".7"/><circle cx="15" cy="12" r=".7"/></svg>`}
+          <b>${device.number}号</b>
+        </div>
+        <div><h3>${escapeHtml(device.displayName)}</h3><p>${escapeHtml(device.ownerGroup)} · ${escapeHtml((device.platforms || []).join(" + "))}${device.workCount == null ? "" : ` · 当前 ${device.workCount} 个作品`}</p></div>
+        <div class="badge-line">
+          <span class="state-badge ${device.online ? "good" : "muted"}">${device.online ? "当前在线" : "不在线"}</span>
+          <span class="state-badge">${device.platforms?.length === 1 ? "单平台设备" : "双平台设备"}</span>
+        </div>
         <div class="device-actions">
-          <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}">补泛流量</button>
-          <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}">补团建转化</button>
+          <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补泛流量</button>
+          <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补团建转化</button>
         </div>
       </article>
     `).join("")}</div>
@@ -1294,7 +1378,7 @@ function showDistributionPanel(panel) {
 }
 
 function applyTheme(theme) {
-  const value = ["solid", "glass", "neumorphic"].includes(theme) ? theme : "solid";
+  const value = ["solid", "glass", "neumorphic", "jianghu", "editorial", "midnight"].includes(theme) ? theme : "solid";
   document.body.dataset.theme = value;
   localStorage.setItem("tb-dashboard-theme", value);
   $$(".theme-option").forEach((button) => button.classList.toggle("active", button.dataset.theme === value));
@@ -1335,19 +1419,30 @@ async function confirmOfficialCollection(collection) {
   }
 }
 
-async function checkDistributionDevices() {
-  toast("正在扫描设备与库存");
+async function checkDistributionDevices(options = {}) {
+  if (deviceScanRunning) return;
+  deviceScanRunning = true;
+  if (!options.silent) toast("正在扫描设备与库存");
   try {
     const result = await api("/api/distribution/check", { method: "POST" });
     deviceCheckState = {
       ...DistributionUI.parseDeviceCheckOutput(result.output),
-      output: result.output || ""
+      output: result.output || "",
+      onlineDevices: Array.isArray(result.onlineDevices)
+        ? result.onlineDevices
+        : DistributionUI.parseDeviceStatusOutput(result.statusOutput)
     };
-    await loadDashboard(true);
-    activateTab("distribution");
-    toast(deviceCheckState.online == null ? "扫描完成，请查看结果" : `扫描完成：当前在线 ${deviceCheckState.online} 台`);
+    deviceScanStarted = true;
+    if (options.refreshInventory !== false) await loadDashboard(true);
+    renderDistribution();
+    if (!options.silent) {
+      toast(deviceCheckState.online == null ? "扫描完成，请查看结果" : `扫描完成：当前在线 ${deviceCheckState.online} 台`);
+    }
   } catch (error) {
-    window.alert(`扫描失败：${error.message}`);
+    if (!options.silent) window.alert(`扫描失败：${error.message}`);
+    else console.error("设备自动扫描失败", error);
+  } finally {
+    deviceScanRunning = false;
   }
 }
 
@@ -1414,7 +1509,12 @@ function activateTab(name) {
     renderCollections();
     productsRendered = true;
   }
-  if (name === "distribution") renderDistribution();
+  if (name === "distribution") {
+    renderDistribution();
+    if (!deviceScanStarted) {
+      checkDistributionDevices({ silent: true, refreshInventory: false });
+    }
+  }
   if (name === "workflow" && !logsRendered) {
     renderLogs();
     logsRendered = true;
@@ -1596,6 +1696,29 @@ function bindEvents() {
       activateTab("distribution");
       $("#distributionCommand").value = `分发 ${enterDistribution.dataset.distributeCollection}`;
     }
+    const saveLedger = event.target.closest("[data-save-collection-ledger]");
+    if (saveLedger) {
+      const tags = String($("#collectionLedgerTags")?.value || "")
+        .split(/[,，]/)
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+      api("/api/collections/ledger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: saveLedger.dataset.saveCollectionLedger,
+          type: $("#collectionLedgerType")?.value,
+          tags,
+          note: $("#collectionLedgerNote")?.value || "",
+          enabled: true
+        })
+      }).then(async () => {
+        await loadDashboard(true);
+        activateTab("products");
+        renderCollectionDetail(saveLedger.dataset.saveCollectionLedger);
+        toast("作品集台账已保存");
+      }).catch((error) => window.alert(`保存台账失败：${error.message}`));
+    }
     const distributionTab = event.target.closest("#distributionTabs [data-panel]");
     if (distributionTab) showDistributionPanel(distributionTab.dataset.panel);
     const deviceAction = event.target.closest("[data-device-action]");
@@ -1635,6 +1758,39 @@ function bindEvents() {
   $("#sendSelectedToGptBtn")?.addEventListener("click", () => transmitMaterialToGpt());
   $("#runWorkPackageBtn")?.addEventListener("click", () => openExternal("cgpt-workpkg://run"));
   $("#configureWorkPackageBtn")?.addEventListener("click", () => openExternal("cgpt-workpkg://configure"));
+  $("#runExistingWorkPackageBtn")?.addEventListener("click", () => openExternal("cgpt-workpkg://run"));
+  $("#chooseMaterialRootBtn")?.addEventListener("click", async () => {
+    try {
+      const selectedPath = await chooseFolder("选择需要递归扫描的素材目录");
+      if (selectedPath) $("#materialRootInput").value = selectedPath;
+    } catch (error) {
+      window.alert(`目录选择失败：${error.message}`);
+    }
+  });
+  $("#applyMaterialRootBtn")?.addEventListener("click", () => {
+    saveWorkspacePaths({
+      materialRoot: $("#materialRootInput").value,
+      materialOnly: true,
+      returnTab: "dashboard"
+    }).catch((error) => window.alert(`扫描失败：${error.message}`));
+  });
+  $("#materialRootInput")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    $("#applyMaterialRootBtn")?.click();
+  });
+  $("#choosePortfolioRootBtn")?.addEventListener("click", async () => {
+    try {
+      const selectedPath = await chooseFolder("选择作品集存放目录");
+      if (selectedPath) $("#settingsPortfolioRoot").value = selectedPath;
+    } catch (error) {
+      window.alert(`目录选择失败：${error.message}`);
+    }
+  });
+  $("#savePathSettingsBtn")?.addEventListener("click", () => {
+    saveWorkspacePaths({ returnTab: "settings" })
+      .catch((error) => window.alert(`保存失败：${error.message}`));
+  });
   $("#overviewRefreshBtn")?.addEventListener("click", async () => {
     await loadDashboard(true);
     activateTab("overview");

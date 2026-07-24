@@ -15,6 +15,9 @@ const DATA_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运
 const STATE_FILE = path.join(DATA_ROOT, "state.json");
 const PROMPTS_FILE = path.join(DATA_ROOT, "prompt-versions.json");
 const TASK_INDEX_FILE = path.join(DATA_ROOT, "production-task-index.json");
+const APP_SETTINGS_FILE = path.join(DATA_ROOT, "app-settings.json");
+const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
+const WORKPKG_CONFIG_FILE = "D:\\Download\\workpkg_config.json";
 const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
   || path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）", "发布空间");
 const DEVICE_TRANSFER_ROOT = process.env.DEVICE_TRANSFER_SKILL_ROOT
@@ -38,6 +41,95 @@ function ensureDataFiles() {
   if (!fs.existsSync(PROMPTS_FILE)) {
     writeJson(PROMPTS_FILE, buildDefaultPromptVersions());
   }
+  if (!fs.existsSync(APP_SETTINGS_FILE)) {
+    writeJson(APP_SETTINGS_FILE, {
+      materialRoot: path.join(PROJECT_ROOT, "01-素材库", "团建攻略图文素材")
+    });
+  }
+}
+
+function getWorkspaceSettings() {
+  const local = readJson(APP_SETTINGS_FILE, {});
+  const workPackage = readJson(WORKPKG_CONFIG_FILE, {});
+  const defaultMaterialRoot = path.join(PROJECT_ROOT, "01-素材库", "团建攻略图文素材");
+  return {
+    materialRoot: path.resolve(local.materialRoot || defaultMaterialRoot),
+    workPackage: {
+      configFile: WORKPKG_CONFIG_FILE,
+      scriptDirectory: path.dirname(WORKPKG_CONFIG_FILE),
+      libraryPath: workPackage.library_path || path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）"),
+      batchSize: Number(workPackage.portfolio_batch_size || 14),
+      autoGroup: workPackage.portfolio_auto_group !== false,
+      autoZip: workPackage.portfolio_auto_zip !== false
+    }
+  };
+}
+
+function mergeCollectionLedger(collections) {
+  const saved = readJson(COLLECTION_LEDGER_FILE, { records: [] });
+  const existing = new Map((saved.records || []).map((record) => [record.name, record]));
+  let changed = false;
+  const records = collections.map((collection) => {
+    const previous = existing.get(collection.name);
+    if (previous) return previous;
+    changed = true;
+    return {
+      name: collection.name,
+      type: collection.type,
+      tags: [],
+      note: "",
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  });
+  const activeNames = new Set(collections.map((collection) => collection.name));
+  (saved.records || []).forEach((record) => {
+    if (!activeNames.has(record.name)) records.push({ ...record, missing: true });
+  });
+  if (changed || !exists(COLLECTION_LEDGER_FILE)) {
+    writeJson(COLLECTION_LEDGER_FILE, { version: 1, records });
+  }
+  const recordMap = new Map(records.map((record) => [record.name, record]));
+  return collections.map((collection) => {
+    const record = recordMap.get(collection.name);
+    const type = ["traffic", "conversion", "unclassified"].includes(record?.type)
+      ? record.type
+      : collection.type;
+    return {
+      ...collection,
+      type,
+      typeLabel: type === "traffic"
+        ? "游戏/泛流量"
+        : type === "conversion" ? "团建转化" : "未分类",
+      ledger: record || null
+    };
+  });
+}
+
+function updateCollectionLedger(body) {
+  const name = String(body.name || "").trim();
+  if (!name) throw new Error("作品集名称不能为空");
+  const data = readJson(COLLECTION_LEDGER_FILE, { version: 1, records: [] });
+  const record = (data.records || []).find((item) => item.name === name);
+  if (!record) throw new Error("作品集台账中不存在该记录，请先刷新作品集");
+  const type = String(body.type || record.type);
+  if (!["traffic", "conversion", "unclassified"].includes(type)) {
+    throw new Error("作品集类型无效");
+  }
+  const tags = Array.isArray(body.tags)
+    ? body.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 20)
+    : [];
+  Object.assign(record, {
+    type,
+    tags: Array.from(new Set(tags)),
+    note: String(body.note || "").trim().slice(0, 500),
+    enabled: body.enabled !== false,
+    missing: false,
+    updatedAt: new Date().toISOString()
+  });
+  writeJson(COLLECTION_LEDGER_FILE, data);
+  return record;
 }
 
 function buildDefaultState() {
@@ -183,6 +275,66 @@ function listImageEntries(dir) {
     .filter((entry) => entry.isFile() && imageExts.has(path.extname(entry.name).toLowerCase()));
 }
 
+function scanPostFolders(rootPath, options = {}) {
+  const root = path.resolve(rootPath);
+  const maxDepth = Number.isFinite(options.maxDepth) ? options.maxDepth : 20;
+  const maxDirectories = Number.isFinite(options.maxDirectories)
+    ? options.maxDirectories
+    : 10000;
+  if (!exists(root) || !fs.statSync(root).isDirectory()) return [];
+
+  const posts = [];
+  const queue = [{ directory: root, depth: 0 }];
+  let visited = 0;
+  while (queue.length && visited < maxDirectories) {
+    const current = queue.shift();
+    visited += 1;
+    const entries = safeList(current.directory);
+    const files = entries.filter((entry) => entry.isFile());
+    const imageCount = files.filter((entry) =>
+      imageExts.has(path.extname(entry.name).toLowerCase())
+    ).length;
+    const textCount = files.filter((entry) =>
+      textExts.has(path.extname(entry.name).toLowerCase())
+    ).length;
+    const relativePath = path.relative(root, current.directory);
+    const relativeDepth = relativePath
+      ? relativePath.split(path.sep).filter(Boolean).length
+      : 0;
+
+    if (relativeDepth > 0 && imageCount > 0 && textCount > 0) {
+      let updatedAt = null;
+      try {
+        updatedAt = fs.statSync(current.directory).mtime.toISOString();
+      } catch {
+        updatedAt = null;
+      }
+      posts.push({
+        name: path.basename(current.directory),
+        path: current.directory,
+        relativePath,
+        relativeDepth,
+        imageCount,
+        textCount,
+        updatedAt
+      });
+      continue;
+    }
+
+    if (current.depth >= maxDepth) continue;
+    entries.forEach((entry) => {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) return;
+      queue.push({
+        directory: path.join(current.directory, entry.name),
+        depth: current.depth + 1
+      });
+    });
+  }
+  return posts.sort((left, right) =>
+    left.relativePath.localeCompare(right.relativePath, "zh-Hans-CN")
+  );
+}
+
 function listImages(dir, limit = 18) {
   return listImageEntries(dir)
     .slice(0, limit)
@@ -238,70 +390,60 @@ function parseCsv(text) {
 }
 
 function getMaterialLibrary(force = false, selectedLibraryPath = "") {
-  const root = path.join(PROJECT_ROOT, "01-素材库", "团建攻略图文素材");
-  const rootEntries = safeList(root).filter((entry) => entry.isDirectory() && entry.name !== "0.预览（硬链接）");
+  const root = getWorkspaceSettings().materialRoot;
+  const detectedPosts = scanPostFolders(root);
 
-  function isPostFolder(folderPath) {
-    return listImageEntries(folderPath).length > 0
-      || safeList(folderPath).some((entry) => entry.isFile() && textExts.has(path.extname(entry.name).toLowerCase()));
-  }
-
-  function materialItem(entry, itemPath, categoryName, itemIndex) {
+  function materialItem(post, categoryName, itemIndex) {
+    const itemPath = post.path;
     const images = listImages(itemPath, PREVIEW_LIMITS.materialImagesPerItem);
-    const imageCount = listImageEntries(itemPath).length;
     const preview = readTextPreview(itemPath);
-    const tags = Array.from(new Set([...inferMaterialTags(categoryName, entry.name, preview), ...readHiddenTags(itemPath)]));
+    const tags = Array.from(new Set([...inferMaterialTags(categoryName, post.name, preview), ...readHiddenTags(itemPath)]));
     return {
       id: itemPath,
       order: itemIndex + 1,
-      name: entry.name,
+      name: post.name,
       path: itemPath,
-      imageCount,
+      imageCount: post.imageCount,
+      textCount: post.textCount,
+      relativePath: post.relativePath,
       images,
       preview,
       tags,
-      updatedAt: safeMtime(itemPath)
+      updatedAt: post.updatedAt || safeMtime(itemPath)
     };
   }
 
-  function categoryFromEntries(name, categoryPath, entries, order) {
-    const signature = `${safeMtime(categoryPath)}:${entries.length}:${entries.slice(0, 5).map((entry) => safeMtime(path.join(categoryPath, entry.name))).join("|")}`;
-    const cached = materialCategoryCache.get(categoryPath);
-    if (!force && cached?.signature === signature) return { ...cached.category, order };
-    const items = entries
+  function categoryFromPosts(name, categoryPath, posts, order) {
+    const items = posts
       .slice(0, PREVIEW_LIMITS.materialItemsPerCategory)
-      .map((entry, itemIndex) => materialItem(entry, path.join(categoryPath, entry.name), name, itemIndex));
-    const result = {
+      .map((post, itemIndex) => materialItem(post, name, itemIndex));
+    return {
       id: categoryPath,
       order,
       name,
       path: categoryPath,
-      count: entries.length,
+      count: posts.length,
       visibleCount: items.length,
       items
     };
-    materialCategoryCache.set(categoryPath, { signature, category: result });
-    return result;
   }
 
-  const directPosts = rootEntries.filter((entry) => isPostFolder(path.join(root, entry.name)));
-  const groupedFolders = rootEntries
-    .filter((entry) => !directPosts.includes(entry))
-    .map((entry) => {
-      const categoryPath = path.join(root, entry.name);
-      const items = safeList(categoryPath)
-        .filter((child) => child.isDirectory() && child.name !== "0.预览（硬链接）")
-        .filter((child) => isPostFolder(path.join(categoryPath, child.name)));
-      return { entry, categoryPath, items };
-    })
-    .filter((group) => group.items.length);
-
-  const categories = [];
-  if (directPosts.length) categories.push(categoryFromEntries("当前素材", root, directPosts, 1));
-  groupedFolders.forEach((group, index) => {
-    categories.push(categoryFromEntries(group.entry.name, group.categoryPath, group.items, categories.length + index + 1));
+  const grouped = new Map();
+  detectedPosts.forEach((post) => {
+    const parts = post.relativePath.split(path.sep).filter(Boolean);
+    const groupName = parts.length > 1 ? parts[0] : "当前素材";
+    if (!grouped.has(groupName)) grouped.set(groupName, []);
+    grouped.get(groupName).push(post);
   });
-  return { root, categories };
+  const categories = Array.from(grouped.entries()).map(([name, posts], index) =>
+    categoryFromPosts(
+      name,
+      name === "当前素材" ? root : path.join(root, name),
+      posts,
+      index + 1
+    )
+  );
+  return { root, recursive: true, detectionRule: "图片 + 文案", categories };
 }
 
 function getTemplateLibrary() {
@@ -590,9 +732,11 @@ function getDashboard(force = false, selectedLibraryPath = "") {
   const prompts = readJson(PROMPTS_FILE, { prompts: [] });
   const productionTasks = buildProductionTaskIndex(materials, templates, logs, state);
   const distribution = getDistributionSnapshot({ publishRoot: PUBLISH_ROOT });
+  distribution.collections = mergeCollectionLedger(distribution.collections || []);
   distribution.devices = readJson(DEVICE_REGISTRY_FILE, { devices: [] }).devices || [];
   return {
     projectRoot: PROJECT_ROOT,
+    workspaceSettings: getWorkspaceSettings(),
     generatedAt: new Date().toISOString(),
     state,
     materials,
@@ -627,7 +771,9 @@ function isAllowedFile(filePath) {
     path.resolve(PROJECT_ROOT),
     path.resolve(SKILL_ROOT),
     path.resolve(APP_ROOT),
-    path.resolve("D:\\Download\\素材下载")
+    path.resolve("D:\\Download\\素材下载"),
+    path.resolve(getWorkspaceSettings().materialRoot),
+    path.resolve(getWorkspaceSettings().workPackage.libraryPath)
   ];
   return allowed.some((root) => isPathInside(root, resolved));
 }
@@ -751,6 +897,129 @@ function runDistributionAction(args) {
   });
 }
 
+function runDeviceStatus() {
+  const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "send_to_device.py");
+  return new Promise((resolve, reject) => {
+    const child = childProcess.spawn("py", [script, "--status"], {
+      cwd: DEVICE_TRANSFER_ROOT,
+      env: {
+        ...process.env,
+        PYTHONUTF8: "1",
+        PYTHONIOENCODING: "utf-8"
+      },
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("设备在线状态扫描超时"));
+    }, 30_000);
+    child.stdout.on("data", (chunk) => {
+      if (stdout.length < 64 * 1024) stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length < 64 * 1024) stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve({ ok: true, output: stdout.trim() });
+      else reject(new Error((stderr || stdout || `设备扫描退出码 ${code}`).trim()));
+    });
+  });
+}
+
+function parseOnlineDeviceStatus(output) {
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("\t").map((part) => part.trim());
+      if (parts.length < 3 || parts[parts.length - 1] !== "online") return null;
+      const match = parts[0].match(/作品数\s*(\d+)/);
+      return {
+        name: parts[0],
+        model: parts[1],
+        online: true,
+        workCount: match ? Number(match[1]) : null
+      };
+    })
+    .filter(Boolean);
+}
+
+function pickFolderWithWindowsDialog(description = "选择文件夹") {
+  const safeDescription = String(description).replace(/'/g, "''");
+  const command = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+    `$dialog.Description = '${safeDescription}'`,
+    "$dialog.ShowNewFolderButton = $true",
+    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {",
+    "  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    "  Write-Output $dialog.SelectedPath",
+    "}"
+  ].join("; ");
+  return new Promise((resolve, reject) => {
+    const child = childProcess.spawn("powershell.exe", [
+      "-NoProfile",
+      "-STA",
+      "-Command",
+      command
+    ], {
+      windowsHide: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) return reject(new Error(stderr.trim() || "目录选择器打开失败"));
+      resolve(stdout.trim());
+    });
+  });
+}
+
+function saveWorkspaceSettings(body) {
+  const current = getWorkspaceSettings();
+  const materialRoot = path.resolve(String(body.materialRoot || current.materialRoot).trim());
+  if (!exists(materialRoot) || !fs.statSync(materialRoot).isDirectory()) {
+    throw new Error("素材目录不存在或不是文件夹");
+  }
+  writeJson(APP_SETTINGS_FILE, { materialRoot });
+
+  if (body.workPackage) {
+    const previous = readJson(WORKPKG_CONFIG_FILE, {});
+    const libraryPath = path.resolve(String(
+      body.workPackage.libraryPath || current.workPackage.libraryPath
+    ).trim());
+    if (!exists(libraryPath) || !fs.statSync(libraryPath).isDirectory()) {
+      throw new Error("作品集存放目录不存在或不是文件夹");
+    }
+    const batchSize = Math.max(1, Math.min(100, Number(body.workPackage.batchSize || 14)));
+    const next = {
+      ...previous,
+      library_path: libraryPath,
+      portfolio_batch_size: batchSize,
+      portfolio_auto_group: body.workPackage.autoGroup !== false,
+      portfolio_auto_zip: body.workPackage.autoZip !== false
+    };
+    if (exists(WORKPKG_CONFIG_FILE)) {
+      fs.copyFileSync(WORKPKG_CONFIG_FILE, `${WORKPKG_CONFIG_FILE}.bak`);
+    }
+    writeJson(WORKPKG_CONFIG_FILE, next);
+  }
+  materialCategoryCache.clear();
+  return getWorkspaceSettings();
+}
+
 function getBody(req, maxBytes = 2_000_000) {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -863,6 +1132,22 @@ async function route(req, res) {
     const result = collectMaterialLinks(body.libraryPath, items, body.filterSummary || "");
     return sendJson(res, result);
   }
+
+  if (pathname === "/api/settings/paths" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    return sendJson(res, { ok: true, settings: saveWorkspaceSettings(body) });
+  }
+
+  if (pathname === "/api/collections/ledger" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    return sendJson(res, { ok: true, record: updateCollectionLedger(body) });
+  }
+
+  if (pathname === "/api/pick-folder" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 8_000) || "{}");
+    const selectedPath = await pickFolderWithWindowsDialog(body.description || "选择文件夹");
+    return sendJson(res, { ok: true, path: selectedPath });
+  }
   if (pathname === "/api/distribution/action" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要在界面确认本次真实分发" }));
@@ -870,7 +1155,16 @@ async function route(req, res) {
     return sendJson(res, result);
   }
   if (pathname === "/api/distribution/check" && req.method === "POST") {
-    return sendJson(res, await runDistributionAction(["--check"]));
+    const [inventory, deviceStatus] = await Promise.all([
+      runDistributionAction(["--check"]),
+      runDeviceStatus()
+    ]);
+    return sendJson(res, {
+      ok: true,
+      output: inventory.output,
+      statusOutput: deviceStatus.output,
+      onlineDevices: parseOnlineDeviceStatus(deviceStatus.output)
+    });
   }
   if (pathname === "/api/distribution/confirm-official" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
@@ -931,6 +1225,8 @@ module.exports = {
   isAllowedExternalTarget,
   isPathInside,
   resolvePublicFile,
+  parseOnlineDeviceStatus,
+  scanPostFolders,
   safeName
 };
 

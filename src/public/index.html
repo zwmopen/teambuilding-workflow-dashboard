@@ -255,6 +255,25 @@
               <button class="theme-option active" data-theme="solid"><b>雾绿实体</b><span>当前风格，稳定耐看</span></button>
               <button class="theme-option" data-theme="glass"><b>轻透玻璃</b><span>功能层轻透，内容仍清晰</span></button>
               <button class="theme-option" data-theme="neumorphic"><b>柔和拟态</b><span>更强的悬浮实体感</span></button>
+              <button class="theme-option theme-preview-jianghu" data-theme="jianghu"><b>江湖悬浮</b><span>来自转化助手的冷灰蓝双向柔光</span></button>
+              <button class="theme-option theme-preview-editorial" data-theme="editorial"><b>纸墨编辑部</b><span>暖纸、黑墨与紧凑信息排版</span></button>
+              <button class="theme-option theme-preview-midnight" data-theme="midnight"><b>深海夜航</b><span>深蓝夜色与克制青色信号</span></button>
+            </div>
+          </section>
+          <section class="settings-card">
+            <h3>目录与一键工作包</h3>
+            <p class="path-line">这里直接读写现有 VBS / PowerShell 工作包配置；旧工具继续可用，新界面与它并行。</p>
+            <div class="path-settings-grid">
+              <label><span>素材扫描目录</span><input id="settingsMaterialRoot" class="search-input" type="text" /></label>
+              <label><span>作品集存放目录</span><input id="settingsPortfolioRoot" class="search-input" type="text" /></label>
+              <label><span>每个合集数量</span><input id="settingsBatchSize" class="search-input" type="number" min="1" max="100" value="14" /></label>
+              <label class="check-setting"><input id="settingsAutoGroup" type="checkbox" checked /><span>满额后自动组成合集</span></label>
+              <label class="check-setting"><input id="settingsAutoZip" type="checkbox" checked /><span>自动生成压缩包</span></label>
+            </div>
+            <div class="settings-actions">
+              <button id="choosePortfolioRootBtn" type="button">选择作品集目录</button>
+              <button id="savePathSettingsBtn" class="primary-button" type="button">保存目录设置</button>
+              <button id="runExistingWorkPackageBtn" type="button">运行现有一键工作包</button>
             </div>
           </section>
           <section class="settings-card"><h3>高级入口</h3><div class="settings-actions"><button data-jump="prompts">提示词版本</button><button data-jump="juguang">聚光运营</button><button data-jump="workflow">生产日志</button></div></section>

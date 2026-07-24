@@ -3,7 +3,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.MaterialWorkspace = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function createMaterialWorkspace() {
-  const allowedTabs = new Set(["dashboard", "products", "distribution", "publishing", "review", "settings"]);
+  const allowedTabs = new Set(["dashboard", "products", "distribution", "review", "settings"]);
 
   function resolveInitialTab(savedTab) {
     return allowedTabs.has(savedTab) ? savedTab : "dashboard";
@@ -45,15 +45,8 @@
     const dashboardTab = document.querySelector('[data-tab="dashboard"]');
     dashboardTab?.classList.add("active");
 
-    const distributionTab = document.querySelector('[data-tab="distribution"]');
-    if (distributionTab && !document.querySelector('[data-tab="publishing"]')) {
-      distributionTab.insertAdjacentHTML("afterend", `
-        <button class="tab rail-tab" data-tab="publishing" type="button" title="发布调度">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h11"/><path d="m13 8 4 4-4 4"/><rect x="4" y="4" width="16" height="16" rx="4"/></svg>
-          <span>发布调度</span><small class="rail-plan-badge">待开发</small>
-        </button>
-      `);
-    }
+    document.querySelector('[data-tab="publishing"]')?.remove();
+    document.querySelector("#publishingView")?.remove();
 
     const dashboardView = document.querySelector("#dashboardView");
     if (dashboardView) {
@@ -71,6 +64,15 @@
               <button class="primary-button" id="materialRefreshBtn" type="button">刷新文件树</button>
             </div>
           </header>
+          <section class="material-root-bar" aria-label="项目目录设置">
+            <div>
+              <span class="label">项目目录设置</span>
+              <strong>递归扫描素材帖子</strong>
+            </div>
+            <input id="materialRootInput" class="search-input" type="text" placeholder="选择目录，或粘贴本地目录路径后按回车" />
+            <button id="chooseMaterialRootBtn" class="ghost-button" type="button">选择目录</button>
+            <button id="applyMaterialRootBtn" class="primary-button" type="button">扫描目录</button>
+          </section>
           <div class="material-dual-pane">
             <aside class="material-tree-panel">
               <div class="tree-toolbar">
@@ -138,20 +140,6 @@
       `;
     }
 
-    if (!document.querySelector("#publishingView")) {
-      const reviewView = document.querySelector("#reviewView");
-      reviewView?.insertAdjacentHTML("beforebegin", `
-        <section class="view" id="publishingView">
-          <section class="future-feature">
-            <div class="future-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h11"/><path d="m13 8 4 4-4 4"/><rect x="4" y="4" width="16" height="16" rx="4"/></svg></div>
-            <p class="label">兼容性预留入口</p>
-            <h2>发布调度</h2>
-            <p>这里先保留位置，不模拟自动发布。后续再接入设备、账号、网络状态、错峰队列和人工确认。</p>
-            <span>当前状态：等待后续开发</span>
-          </section>
-        </section>
-      `);
-    }
   }
 
   return {

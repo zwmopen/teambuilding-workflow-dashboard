@@ -5,6 +5,8 @@ const {
   countCollectionFacets,
   filterCollections,
   parseDeviceCheckOutput,
+  parseDeviceStatusOutput,
+  decorateDevices,
   phoneDistributionStats,
   platformStateLabel
 } = require("./distribution-ui");
@@ -90,10 +92,10 @@ test("phoneDistributionStats uses the agreed user-facing labels and category cou
       6
     ),
     [
-      ["已登记设备", 8],
-      ["当前在线", 0],
-      ["泛流量合集", 10],
-      ["团建转化（精准流量）", 2]
+      ["已登记设备", 8, "台"],
+      ["当前在线", 0, "台"],
+      ["泛流量合集包", 10, "个"],
+      ["团建转化（精准流量）", 2, "个"]
     ]
   );
 });
@@ -111,4 +113,34 @@ test("parseDeviceCheckOutput reads registered and online counts from the skill o
     { registered: 8, online: 1 }
   );
   assert.deepEqual(parseDeviceCheckOutput("设备发现失败"), { registered: null, online: null });
+});
+
+test("parseDeviceStatusOutput identifies concrete online devices and work counts", () => {
+  assert.deepEqual(
+    parseDeviceStatusOutput([
+      "Rmi 9A（A10）（作品数 22）\tXiaomi M2006C3LC\tonline",
+      "红米13（微信） 1号（作品数 20）\tXiaomi 23124RN87C\tonline"
+    ].join("\n")),
+    [
+      { name: "Rmi 9A（A10）（作品数 22）", model: "Xiaomi M2006C3LC", online: true, workCount: 22 },
+      { name: "红米13（微信） 1号（作品数 20）", model: "Xiaomi 23124RN87C", online: true, workCount: 20 }
+    ]
+  );
+});
+
+test("decorateDevices puts online devices first and disables offline actions", () => {
+  const devices = [
+    { id: "iphone-12", number: 2, displayName: "2号 苹果12", models: ["iPhone13,2"], aliases: ["苹果12"] },
+    { id: "redmi-13", number: 1, displayName: "1号 红米13", models: ["Xiaomi 23124RN87C"], aliases: ["红米13"] },
+    { id: "redmi-9a-a10", number: 8, displayName: "8号 红米9A", models: ["Xiaomi M2006C3LC"], aliases: ["Rmi 9A"] }
+  ];
+  const online = parseDeviceStatusOutput([
+    "Rmi 9A（A10）（作品数 22）\tXiaomi M2006C3LC\tonline",
+    "红米13（微信） 1号（作品数 20）\tXiaomi 23124RN87C\tonline"
+  ].join("\n"));
+  const result = decorateDevices(devices, online);
+  assert.deepEqual(result.map((item) => item.number), [1, 8, 2]);
+  assert.equal(result[0].online, true);
+  assert.equal(result[0].workCount, 20);
+  assert.equal(result[2].online, false);
 });

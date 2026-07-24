@@ -1845,6 +1845,12 @@ label {
   line-height: 1;
 }
 
+.summary-card strong small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .summary-card.warn strong {
   color: var(--amber);
 }
@@ -2226,6 +2232,96 @@ label {
   font-weight: 800;
 }
 
+.device-platform-icon {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  color: var(--accent-dark);
+  background: linear-gradient(145deg, rgba(221, 239, 231, .95), rgba(250, 252, 251, .78));
+  border: 1px solid rgba(45, 102, 84, .18);
+}
+
+.device-platform-icon svg {
+  width: 27px;
+  height: 27px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.device-platform-icon b {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  min-width: 26px;
+  padding: 3px 5px;
+  border-radius: 999px;
+  color: white;
+  background: var(--accent-dark);
+  font-size: 10px;
+  text-align: center;
+}
+
+.device-row.is-online {
+  border-color: rgba(45, 130, 93, .28);
+  background: linear-gradient(90deg, rgba(238, 249, 243, .92), rgba(249, 251, 249, .74));
+}
+
+.device-row.is-offline {
+  opacity: .72;
+}
+
+.device-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .42;
+  filter: grayscale(.35);
+}
+
+.collection-ledger-editor {
+  display: grid;
+  grid-template-columns: minmax(150px, .7fr) minmax(220px, 1.3fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--panel-light) 82%, transparent);
+}
+
+.collection-ledger-editor label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.collection-ledger-editor input,
+.collection-ledger-editor select,
+.collection-ledger-editor textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: var(--panel-light);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.collection-ledger-editor .ledger-note {
+  grid-column: 1 / -1;
+}
+
+.collection-ledger-editor textarea {
+  min-height: 68px;
+  resize: vertical;
+}
+
 .device-row h3,
 .record-row h3,
 .official-card h3 {
@@ -2405,6 +2501,56 @@ body[data-theme="glass"] .overview-card {
 .workspace-head-actions {
   display: flex;
   gap: 10px;
+}
+
+.material-root-bar {
+  display: grid;
+  grid-template-columns: auto minmax(260px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  border-bottom: 1px solid rgba(103, 126, 119, 0.14);
+  background: rgba(245, 249, 247, .7);
+}
+
+.material-root-bar > div {
+  min-width: 145px;
+}
+
+.material-root-bar strong,
+.material-root-bar span {
+  display: block;
+}
+
+.material-root-bar strong {
+  margin-top: 2px;
+  font-size: 13px;
+}
+
+.path-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.path-settings-grid label span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.path-settings-grid .check-setting {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+}
+
+.path-settings-grid .check-setting span {
+  margin: 0;
+  color: var(--ink);
 }
 
 .material-dual-pane {
@@ -2847,6 +2993,183 @@ body[data-theme="neumorphic"] {
   --panel-light: #eef4f1;
   --shadow: 12px 12px 26px rgba(81, 103, 92, 0.18), -10px -10px 24px rgba(255, 255, 255, 0.82);
   --soft-shadow: 7px 7px 16px rgba(81, 103, 92, 0.16), -7px -7px 16px rgba(255, 255, 255, 0.76);
+}
+
+/* Theme: 江湖悬浮 — sourced from the Jianghu conversion assistant visual spec. */
+body[data-theme="jianghu"] {
+  --window-top: #edf2f7;
+  --window-bottom: #e2e8ef;
+  --panel: #e2eaf2;
+  --panel-light: #edf3f8;
+  --line: #d1dbe4;
+  --ink: #242c38;
+  --muted: #61758a;
+  --accent: #1f2937;
+  --accent-dark: #111827;
+  --selection: #d7e4ef;
+  --shadow: 8px 8px 20px #c8d0d8, -8px -8px 20px #fbfdff;
+  --soft-shadow: 6px 6px 14px #c7cfd7, -6px -6px 14px #fbfdff;
+  background: #e8edf3;
+}
+
+body[data-theme="jianghu"] .workflow-rail,
+body[data-theme="jianghu"] .topbar,
+body[data-theme="jianghu"] .material-workspace,
+body[data-theme="jianghu"] .settings-card,
+body[data-theme="jianghu"] .collection-list,
+body[data-theme="jianghu"] .collection-detail,
+body[data-theme="jianghu"] .summary-card,
+body[data-theme="jianghu"] .device-row {
+  background: #e2eaf2;
+  border-color: transparent;
+  box-shadow: var(--shadow);
+}
+
+body[data-theme="jianghu"] button:not(.primary-button) {
+  background: #dee6ee;
+  border-color: #cfdae3;
+  box-shadow: var(--soft-shadow);
+}
+
+body[data-theme="jianghu"] .rail-tab.active,
+body[data-theme="jianghu"] .theme-option.active {
+  background: #d7e4ef;
+  box-shadow: inset 3px 3px 7px #c8d0d8, inset -3px -3px 7px #f8fbfe;
+}
+
+/* Theme: 纸墨编辑部 — deliberately flat, warm and typographic. */
+body[data-theme="editorial"] {
+  --window-top: #f3eee3;
+  --window-bottom: #e7dece;
+  --panel: #f6f0e5;
+  --panel-light: #fffaf0;
+  --line: #c7bba8;
+  --ink: #201d19;
+  --muted: #746b60;
+  --accent: #a33a2b;
+  --accent-dark: #72251b;
+  --selection: #ead8bc;
+  --shadow: 0 2px 0 rgba(45, 38, 30, .14);
+  --soft-shadow: 0 1px 0 rgba(45, 38, 30, .12);
+  background: #efe7da;
+  font-family: "Microsoft YaHei UI", "Noto Serif SC", serif;
+}
+
+body[data-theme="editorial"] .workflow-rail {
+  background: #231f1a;
+  color: #f6efe3;
+  border-right: 0;
+}
+
+body[data-theme="editorial"] .workflow-rail .rail-tab,
+body[data-theme="editorial"] .workflow-rail .rail-tab span {
+  color: #d8ccbb;
+}
+
+body[data-theme="editorial"] .workflow-rail .rail-tab.active {
+  background: #f2e7d6;
+  color: #211d19;
+  box-shadow: none;
+}
+
+body[data-theme="editorial"] .workflow-rail .rail-tab.active span {
+  color: #211d19;
+}
+
+body[data-theme="editorial"] .panel,
+body[data-theme="editorial"] .summary-card,
+body[data-theme="editorial"] .device-row,
+body[data-theme="editorial"] .collection-row,
+body[data-theme="editorial"] .settings-card {
+  border-radius: 5px;
+  box-shadow: var(--soft-shadow);
+}
+
+body[data-theme="editorial"] button {
+  border-radius: 4px;
+}
+
+body[data-theme="editorial"] h1,
+body[data-theme="editorial"] h2,
+body[data-theme="editorial"] h3 {
+  letter-spacing: -.025em;
+}
+
+/* Theme: 深海夜航 — a true dark operations surface. */
+body[data-theme="midnight"] {
+  color-scheme: dark;
+  --window-top: #09131d;
+  --window-bottom: #0d1d29;
+  --panel: #112431;
+  --panel-light: #17303e;
+  --line: rgba(124, 181, 195, .2);
+  --ink: #e8f1f2;
+  --muted: #91a7ad;
+  --accent: #3ed6c3;
+  --accent-dark: #20a996;
+  --selection: #183f49;
+  --amber: #f2bb5e;
+  --danger: #ee7d8a;
+  --shadow: 0 18px 44px rgba(0, 0, 0, .32);
+  --soft-shadow: 0 9px 24px rgba(0, 0, 0, .24);
+  background:
+    radial-gradient(circle at 84% 10%, rgba(31, 135, 149, .18), transparent 30%),
+    linear-gradient(155deg, #08131c, #0e202c);
+}
+
+body[data-theme="midnight"] .workflow-rail,
+body[data-theme="midnight"] .topbar,
+body[data-theme="midnight"] .material-workspace,
+body[data-theme="midnight"] .settings-card,
+body[data-theme="midnight"] .collection-list,
+body[data-theme="midnight"] .collection-detail,
+body[data-theme="midnight"] .summary-card,
+body[data-theme="midnight"] .device-row,
+body[data-theme="midnight"] .gpt-connection-panel,
+body[data-theme="midnight"] .material-tree-panel {
+  background: rgba(15, 34, 46, .92);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+body[data-theme="midnight"] input,
+body[data-theme="midnight"] textarea,
+body[data-theme="midnight"] select,
+body[data-theme="midnight"] button:not(.primary-button) {
+  color: var(--ink);
+  background: #152c39;
+  border-color: var(--line);
+}
+
+body[data-theme="midnight"] .path-line,
+body[data-theme="midnight"] p,
+body[data-theme="midnight"] span {
+  color: var(--muted);
+}
+
+body[data-theme="midnight"] .primary-button,
+body[data-theme="midnight"] .rail-tab.active {
+  color: #061716;
+  background: var(--accent);
+}
+
+.theme-preview-jianghu {
+  background: linear-gradient(145deg, #e2eaf2, #f3f7fa);
+}
+
+.theme-preview-editorial {
+  color: #221d17;
+  background: linear-gradient(145deg, #f7f0e3, #e6dac8);
+  border-radius: 5px;
+}
+
+.theme-preview-midnight {
+  color: #e8f1f2;
+  background: linear-gradient(145deg, #102634, #08131d);
+}
+
+.theme-preview-midnight span {
+  color: #9cb1b6;
 }
 
 @media (max-width: 1120px) {

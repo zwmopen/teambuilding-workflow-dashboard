@@ -75,11 +75,79 @@
 
   function phoneDistributionStats(summary = {}, deviceCheck = {}, registeredFallback = 0) {
     return [
-      ["已登记设备", deviceCheck.registered ?? registeredFallback],
-      ["当前在线", deviceCheck.online ?? "点击扫描"],
-      ["泛流量合集", summary.traffic || 0],
-      ["团建转化（精准流量）", summary.conversion || 0]
+      ["已登记设备", deviceCheck.registered ?? registeredFallback, "台"],
+      ["当前在线", deviceCheck.online ?? "点击扫描", "台"],
+      ["泛流量合集包", summary.traffic || 0, "个"],
+      ["团建转化（精准流量）", summary.conversion || 0, "个"]
     ];
+  }
+
+  function normalizeDeviceIdentity(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/（[^）]*作品数[^）]*）/g, "")
+      .replace(/\([^)]*作品数[^)]*\)/g, "")
+      .replace(/[\s（）()·_\-/\\]+/g, "");
+  }
+
+  function parseDeviceStatusOutput(output) {
+    return String(output || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split("\t").map((part) => part.trim());
+        if (parts.length < 3 || parts[parts.length - 1] !== "online") return null;
+        const name = parts[0];
+        const workMatch = name.match(/作品数\s*(\d+)/);
+        return {
+          name,
+          model: parts[1],
+          online: true,
+          workCount: workMatch ? Number(workMatch[1]) : null
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function decorateDevices(devices, onlineRecords) {
+    const records = Array.isArray(onlineRecords) ? onlineRecords : [];
+    return (Array.isArray(devices) ? devices : [])
+      .map((device, sourceIndex) => {
+        const models = Array.isArray(device.models)
+          ? device.models
+          : [device.model].filter(Boolean);
+        const aliases = [
+          device.displayName,
+          device.name,
+          device.label,
+          ...(Array.isArray(device.aliases) ? device.aliases : [])
+        ].map(normalizeDeviceIdentity).filter(Boolean);
+        const live = records.find((record) => {
+          const liveModel = normalizeDeviceIdentity(record.model);
+          if (models.some((model) => normalizeDeviceIdentity(model) === liveModel)) return true;
+          const liveName = normalizeDeviceIdentity(record.name);
+          return aliases.some((alias) =>
+            alias.length >= 2 && (liveName.includes(alias) || alias.includes(liveName))
+          );
+        });
+        return {
+          ...device,
+          online: Boolean(live),
+          liveName: live ? live.name : "",
+          workCount: live ? live.workCount : null,
+          _sourceIndex: sourceIndex
+        };
+      })
+      .sort((left, right) => {
+        if (left.online !== right.online) return left.online ? -1 : 1;
+        const leftNumber = Number(left.number);
+        const rightNumber = Number(right.number);
+        if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+          return leftNumber - rightNumber;
+        }
+        return left._sourceIndex - right._sourceIndex;
+      });
   }
 
   return {
@@ -87,6 +155,8 @@
     filterCollections,
     matchesPlatform,
     parseDeviceCheckOutput,
+    parseDeviceStatusOutput,
+    decorateDevices,
     phoneDistributionStats,
     platformStateLabel
   };
