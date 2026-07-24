@@ -9,7 +9,7 @@
 /coverage/
 
 # 依赖和缓存
-/node_modules/
+node_modules/
 /.venv/
 /venv/
 /__pycache__/

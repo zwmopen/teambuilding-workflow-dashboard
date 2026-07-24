@@ -189,8 +189,8 @@
       <section class="view" id="productsView">
         <section class="collection-layout">
           <header class="page-heading">
-            <div><p class="label">实时库存</p><h2>作品集</h2><p>标签来自 Junction、归档目录和使用日志；不会改作品集名称。</p></div>
-            <button class="primary-button" id="openPublishRootBtn">打开发布空间</button>
+            <div><p class="label">实时库存</p><h2>作品集</h2><p>标签来自本地台账和使用记录；可编辑、可筛选，也可导出给 Excel。</p></div>
+            <div class="detail-button-row"><a class="button-link" href="/api/collections/export" download>导出标签表</a><button class="primary-button" id="openPublishRootBtn">打开作品集目录</button></div>
           </header>
           <div class="filter-toolbar">
             <div><span>内容类型</span><div class="chip-group" id="collectionTypeFilters"></div></div>
@@ -215,19 +215,17 @@
       <section class="view" id="distributionView">
         <section class="distribution-layout">
           <header class="page-heading">
-            <div><p class="label">真实执行入口</p><h2>分发功能</h2><p>手机补笔记、公众号领取、分发记录与可恢复归档。</p></div>
-            <button class="primary-button" id="distributionRefreshBtn">扫描设备与库存</button>
+            <div><p class="label">真实执行入口</p><h2>分发功能</h2><p>自动识别在线设备，完成手机补笔记、公众号上传和分发记录。</p></div>
+            <button class="primary-button" id="distributionRefreshBtn">立即刷新</button>
           </header>
           <div class="segment-tabs" id="distributionTabs">
             <button class="active" data-panel="phones">手机补笔记</button>
             <button data-panel="official">公众号领取</button>
             <button data-panel="history">分发记录</button>
-            <button data-panel="archive">归档记录</button>
           </div>
           <section class="distribution-panel active" id="distributionPhones"></section>
           <section class="distribution-panel" id="distributionOfficial"></section>
           <section class="distribution-panel" id="distributionHistory"></section>
-          <section class="distribution-panel" id="distributionArchive"></section>
           <section class="codex-command-bar">
             <strong>Codex</strong>
             <input id="distributionCommand" placeholder="例如：给5号补一个泛流量" />
@@ -253,9 +251,9 @@
             <h3>视觉风格</h3>
             <div class="theme-options">
               <button class="theme-option active" data-theme="solid"><b>雾绿实体</b><span>当前风格，稳定耐看</span></button>
-              <button class="theme-option" data-theme="glass"><b>轻透玻璃</b><span>功能层轻透，内容仍清晰</span></button>
+              <button class="theme-option" data-theme="glass"><b>克制玻璃</b><span>原项目名称：半透明但仍有实体感</span></button>
               <button class="theme-option" data-theme="neumorphic"><b>柔和拟态</b><span>更强的悬浮实体感</span></button>
-              <button class="theme-option theme-preview-jianghu" data-theme="jianghu"><b>江湖悬浮</b><span>来自转化助手的冷灰蓝双向柔光</span></button>
+              <button class="theme-option theme-preview-jianghu" data-theme="jianghu"><b>拟态悬浮</b><span>原项目名称：冷灰蓝底与双向柔光</span></button>
               <button class="theme-option theme-preview-editorial" data-theme="editorial"><b>纸墨编辑部</b><span>暖纸、黑墨与紧凑信息排版</span></button>
               <button class="theme-option theme-preview-midnight" data-theme="midnight"><b>深海夜航</b><span>深蓝夜色与克制青色信号</span></button>
             </div>

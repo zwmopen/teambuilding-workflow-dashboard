@@ -17,6 +17,8 @@
   --radius-card: 12px;
   --radius-control: 10px;
   --radius-media: 8px;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
   --shadow: 9px 12px 24px rgba(112, 130, 150, 0.24), -7px -7px 18px rgba(255, 255, 255, 0.78);
   --soft-shadow: 5px 7px 15px rgba(112, 130, 150, 0.18), -5px -5px 13px rgba(255, 255, 255, 0.72);
 }
@@ -60,7 +62,10 @@ body {
   min-height: 100vh;
   color: var(--ink);
   background: linear-gradient(155deg, var(--window-top), var(--window-bottom));
-  font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-family: var(--font-ui);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
 
@@ -73,6 +78,19 @@ select {
 
 button {
   cursor: pointer;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+  color: var(--ink);
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel-light);
 }
 
 .liquid-bg {
@@ -152,6 +170,8 @@ button {
 h1,
 h2 {
   margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
   letter-spacing: 0;
 }
 
@@ -1721,11 +1741,15 @@ label {
 .rail-tab svg {
   width: 24px;
   height: 24px;
-  fill: none;
+  fill: currentColor;
   stroke: currentColor;
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.device-platform-icon svg.android-icon {
+  fill: none;
 }
 
 .rail-tab span {
@@ -1853,6 +1877,19 @@ label {
 
 .summary-card.warn strong {
   color: var(--amber);
+}
+
+.summary-card.is-actionable {
+  cursor: pointer;
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+
+.summary-card.is-actionable:hover,
+.summary-card.is-actionable:focus-visible {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: var(--shadow);
+  outline: none;
 }
 
 .overview-grid {
@@ -2004,15 +2041,20 @@ label {
 }
 
 .collection-list {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
   padding: 10px;
 }
 
 .collection-row {
+  flex: 0 0 auto;
+}
+
+.collection-row {
   display: grid;
-  grid-template-columns: 58px minmax(180px, 1.2fr) minmax(260px, 1.5fr) auto;
+  grid-template-columns: 38px minmax(180px, 1.2fr) minmax(260px, 1.5fr) 58px;
   gap: 12px;
   align-items: center;
   min-height: 80px;
@@ -2021,6 +2063,135 @@ label {
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.7);
   transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.collection-row.expanded {
+  grid-template-rows: auto auto;
+  align-items: start;
+}
+
+.collection-toggle {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--accent-dark);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-light);
+}
+
+.collection-toggle span {
+  font-size: 20px;
+  line-height: 1;
+  transform: rotate(-90deg);
+  transition: transform 180ms ease;
+}
+
+.collection-row.expanded .collection-toggle span {
+  transform: rotate(0deg);
+}
+
+.collection-children {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  gap: 6px;
+  margin-left: 18px;
+  padding: 6px 0 2px 18px;
+  border-left: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+
+.collection-row:not(.expanded) .collection-children {
+  display: none;
+}
+
+.collection-work {
+  width: 100%;
+  min-height: 56px;
+  display: grid;
+  grid-template-columns: 24px 48px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px 7px 0;
+  text-align: left;
+  color: var(--ink);
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+}
+
+.collection-work:hover {
+  background: color-mix(in srgb, var(--selection) 58%, transparent);
+}
+
+.collection-work img,
+.work-placeholder {
+  width: 48px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  object-fit: cover;
+  color: var(--muted);
+  border-radius: 8px;
+  background: var(--selection);
+  font-size: 11px;
+}
+
+.collection-work strong,
+.collection-work small {
+  display: block;
+}
+
+.collection-work small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.collection-branch {
+  color: var(--muted);
+  font-family: Consolas, monospace;
+}
+
+.work-preview-dialog {
+  width: min(760px, calc(100vw - 48px));
+  padding: 18px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.work-preview-dialog::backdrop {
+  background: rgba(15, 25, 31, .5);
+  backdrop-filter: blur(5px);
+}
+
+.preview-stage {
+  min-height: 360px;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+}
+
+.preview-stage img {
+  max-width: 100%;
+  max-height: 68vh;
+  border-radius: 12px;
+}
+
+.preview-close {
+  float: right;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--ink);
+  background: var(--selection);
+  font-size: 22px;
 }
 
 .collection-row:hover,
@@ -2247,7 +2418,7 @@ label {
 .device-platform-icon svg {
   width: 27px;
   height: 27px;
-  fill: currentColor;
+  fill: none;
   stroke: currentColor;
   stroke-width: 1.7;
   stroke-linecap: round;

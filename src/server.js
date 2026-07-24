@@ -34,6 +34,8 @@ const PREVIEW_LIMITS = {
   productImagesPerWork: 12
 };
 const materialCategoryCache = new Map();
+let deviceStatusCache = { checkedAt: 0, output: "", onlineDevices: [] };
+let deviceStatusPromise = null;
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_ROOT, { recursive: true });
@@ -43,7 +45,7 @@ function ensureDataFiles() {
   }
   if (!fs.existsSync(APP_SETTINGS_FILE)) {
     writeJson(APP_SETTINGS_FILE, {
-      materialRoot: path.join(PROJECT_ROOT, "01-素材库", "团建攻略图文素材")
+      materialRoot: path.join(PROJECT_ROOT, "01-素材库")
     });
   }
 }
@@ -51,7 +53,7 @@ function ensureDataFiles() {
 function getWorkspaceSettings() {
   const local = readJson(APP_SETTINGS_FILE, {});
   const workPackage = readJson(WORKPKG_CONFIG_FILE, {});
-  const defaultMaterialRoot = path.join(PROJECT_ROOT, "01-素材库", "团建攻略图文素材");
+  const defaultMaterialRoot = path.join(PROJECT_ROOT, "01-素材库");
   return {
     materialRoot: path.resolve(local.materialRoot || defaultMaterialRoot),
     workPackage: {
@@ -130,6 +132,31 @@ function updateCollectionLedger(body) {
   });
   writeJson(COLLECTION_LEDGER_FILE, data);
   return record;
+}
+
+function collectionLedgerCsv() {
+  const distribution = getDistributionSnapshot({ publishRoot: PUBLISH_ROOT });
+  const collections = mergeCollectionLedger(distribution.collections || []);
+  const escapeCell = (value) => {
+    const text = String(value ?? "");
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const rows = [
+    ["作品集", "内容类型", "标签", "备注", "小红书", "抖音", "公众号", "作品数", "源文件夹", "更新时间"],
+    ...collections.map((item) => [
+      item.name,
+      item.typeLabel,
+      (item.ledger?.tags || []).join("|"),
+      item.ledger?.note || "",
+      item.xhs,
+      item.douyin === "archived" ? "used" : item.douyin,
+      item.officialAccount,
+      item.itemCount || 0,
+      item.sourcePath || "",
+      item.ledger?.updatedAt || ""
+    ])
+  ];
+  return `\ufeff${rows.map((row) => row.map(escapeCell).join(",")).join("\r\n")}\r\n`;
 }
 
 function buildDefaultState() {
@@ -934,6 +961,25 @@ function runDeviceStatus() {
   });
 }
 
+function getDeviceStatus(force = false) {
+  const fresh = Date.now() - deviceStatusCache.checkedAt < 15_000;
+  if (!force && fresh) return Promise.resolve(deviceStatusCache);
+  if (deviceStatusPromise) return deviceStatusPromise;
+  deviceStatusPromise = runDeviceStatus()
+    .then((result) => {
+      deviceStatusCache = {
+        checkedAt: Date.now(),
+        output: result.output || "",
+        onlineDevices: parseOnlineDeviceStatus(result.output)
+      };
+      return deviceStatusCache;
+    })
+    .finally(() => {
+      deviceStatusPromise = null;
+    });
+  return deviceStatusPromise;
+}
+
 function parseOnlineDeviceStatus(output) {
   return String(output || "")
     .split(/\r?\n/)
@@ -1143,6 +1189,15 @@ async function route(req, res) {
     return sendJson(res, { ok: true, record: updateCollectionLedger(body) });
   }
 
+  if (pathname === "/api/collections/export" && req.method === "GET") {
+    res.writeHead(200, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="collection-ledger.csv"',
+      "Cache-Control": "no-store"
+    });
+    return res.end(collectionLedgerCsv());
+  }
+
   if (pathname === "/api/pick-folder" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 8_000) || "{}");
     const selectedPath = await pickFolderWithWindowsDialog(body.description || "选择文件夹");
@@ -1155,15 +1210,22 @@ async function route(req, res) {
     return sendJson(res, result);
   }
   if (pathname === "/api/distribution/check" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 8_000) || "{}");
+    const includeInventory = body.inventory === true;
     const [inventory, deviceStatus] = await Promise.all([
-      runDistributionAction(["--check"]),
-      runDeviceStatus()
+      includeInventory ? runDistributionAction(["--check"]) : Promise.resolve({ ok: true, output: "" }),
+      getDeviceStatus(body.force === true)
     ]);
+    const onlineDevices = deviceStatus.onlineDevices || parseOnlineDeviceStatus(deviceStatus.output);
+    const registry = readJson(DEVICE_REGISTRY_FILE, { devices: [] });
     return sendJson(res, {
       ok: true,
       output: inventory.output,
       statusOutput: deviceStatus.output,
-      onlineDevices: parseOnlineDeviceStatus(deviceStatus.output)
+      registered: Array.isArray(registry.devices) ? registry.devices.length : 0,
+      online: onlineDevices.length,
+      onlineDevices,
+      inventoryScanned: includeInventory
     });
   }
   if (pathname === "/api/distribution/confirm-official" && req.method === "POST") {

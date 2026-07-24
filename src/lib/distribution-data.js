@@ -81,10 +81,10 @@ function normalizeRealPath(value) {
 }
 
 function inspectSource(sourcePath, cache) {
-  if (!sourcePath) return { valid: false, itemCount: 0, fileCount: 0, bytes: 0 };
+  if (!sourcePath) return { valid: false, itemCount: 0, fileCount: 0, bytes: 0, items: [] };
   const key = normalizeRealPath(sourcePath);
   if (cache.has(key)) return cache.get(key);
-  const result = { valid: false, itemCount: 0, fileCount: 0, bytes: 0 };
+  const result = { valid: false, itemCount: 0, fileCount: 0, bytes: 0, items: [] };
   try {
     const stat = fs.statSync(sourcePath);
     if (!stat.isDirectory()) {
@@ -92,9 +92,24 @@ function inspectSource(sourcePath, cache) {
       return result;
     }
     const children = fs.readdirSync(sourcePath, { withFileTypes: true });
-    result.itemCount = children.filter((entry) => (
+    const itemDirectories = children.filter((entry) => (
       entry.isDirectory() || entry.isSymbolicLink()
-    )).length;
+    ));
+    result.itemCount = itemDirectories.length;
+    result.items = itemDirectories.slice(0, 50).map((entry) => {
+      const itemPath = path.join(sourcePath, entry.name);
+      let previewPath = "";
+      let imageCount = 0;
+      try {
+        const files = fs.readdirSync(itemPath, { withFileTypes: true });
+        const images = files.filter((file) => file.isFile() && /\.(png|jpe?g|webp)$/i.test(file.name));
+        imageCount = images.length;
+        previewPath = images[0] ? path.join(itemPath, images[0].name) : "";
+      } catch {
+        // A work folder can temporarily be unavailable while it is moved.
+      }
+      return { name: entry.name, path: itemPath, previewPath, imageCount };
+    });
     const stack = [sourcePath];
     while (stack.length) {
       const current = stack.pop();
@@ -280,6 +295,7 @@ function getDistributionSnapshot(options = {}) {
       itemCount: source.itemCount || 0,
       fileCount: source.fileCount || 0,
       bytes: source.bytes || 0,
+      items: source.items || [],
       xhs: stateForPlatform(entries.xhs),
       douyin,
       officialAccount,

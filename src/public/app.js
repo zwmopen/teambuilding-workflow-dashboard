@@ -20,11 +20,13 @@ let deviceCheckState = {
   registered: null,
   online: null,
   output: "",
-  onlineDevices: []
+  onlineDevices: [],
+  scanning: true
 };
 let deviceScanStarted = false;
 let deviceScanRunning = false;
 const expandedMaterialPaths = new Set();
+const expandedCollectionNames = new Set();
 let materialTreeInitialized = false;
 
 const LOCATION_KEYWORDS = ["上海", "杭州", "安吉", "苏州", "南京", "湖州", "桐庐", "千岛湖", "莫干山", "宁波"];
@@ -70,7 +72,7 @@ function shortText(text, limit = 20) {
 }
 
 function escapeHtml(value) {
-  return String(value || "").replace(/[&<>'"]/g, (char) => ({
+  return String(value ?? "").replace(/[&<>'"]/g, (char) => ({
     "&": "&amp;",
     "<": "&lt;",
     ">": "&gt;",
@@ -1182,10 +1184,18 @@ function renderOverview() {
 }
 
 function collectionStateClass(state) {
-  if (state === "available" || state === "archived" || state === "confirmed_published") return "good";
+  if (state === "available" || state === "confirmed_published") return "good";
   if (state === "reserved_pending_upload" || state === "unknown") return "warn";
-  if (state === "invalid") return "bad";
+  if (state === "invalid" || state === "archived") return "";
   return "";
+}
+
+function humanizeCollectionReason(reason) {
+  const value = String(reason || "");
+  if (/Junction|源目录|入口/.test(value)) return "作品文件未登记到台账";
+  if (/隐藏作品集/.test(value)) return "隐藏作品集";
+  if (/缺少/.test(value)) return "尚未设置内容分类";
+  return value;
 }
 
 function renderCollectionFilters() {
@@ -1204,8 +1214,7 @@ function renderCollectionFilters() {
     ["dual", "双平台可用"],
     ["xhs", "小红书可用"],
     ["official", "公众号可用"],
-    ["official_pending", "已领取待上传"],
-    ["douyin_archived", "抖音已归档"],
+    ["official_pending", "公众号已打开"],
     ["all_used", "全部已使用"]
   ];
   const render = (selector, options, key) => {
@@ -1236,6 +1245,7 @@ function renderCollections() {
   const collections = getFilteredCollections();
   const list = $("#collectionList");
   list.innerHTML = collections.length ? collections.map((collection) => {
+    const expanded = expandedCollectionNames.has(collection.name);
     const badges = [
       [collection.typeLabel, collection.type === "unclassified" ? "warn" : ""],
       [`小红书 ${DistributionUI.platformStateLabel(collection.xhs)}`, collectionStateClass(collection.xhs)],
@@ -1243,11 +1253,22 @@ function renderCollections() {
       [`公众号 ${DistributionUI.platformStateLabel(collection.officialAccount)}`, collectionStateClass(collection.officialAccount)]
     ];
     return `
-      <article class="collection-row ${selectedCollectionName === collection.name ? "active" : ""}" data-collection="${escapeHtml(collection.name)}">
-        <div class="collection-count">${collection.itemCount || 0}/14</div>
-        <div class="collection-title"><strong>${escapeHtml(collection.name)}</strong><span>${collection.dualPlatformEligible ? "可用于双平台手机" : (collection.exclusionReasons?.[0] || "查看平台使用状态")}</span></div>
+      <article class="collection-row ${expanded ? "expanded" : ""} ${selectedCollectionName === collection.name ? "active" : ""}" data-collection="${escapeHtml(collection.name)}">
+        <button class="collection-toggle" type="button" data-collection-toggle="${escapeHtml(collection.name)}" aria-expanded="${expanded}" aria-label="${expanded ? "收起" : "展开"} ${escapeHtml(collection.name)}">
+          <span aria-hidden="true">⌄</span>
+        </button>
+        <div class="collection-title"><strong>${escapeHtml(collection.name)}</strong><span>${collection.dualPlatformEligible ? "可用于双平台手机" : humanizeCollectionReason(collection.exclusionReasons?.[0] || "查看平台使用标签")}</span></div>
         <div class="badge-line">${badges.map(([label, className]) => `<span class="state-badge ${className}">${escapeHtml(label)}</span>`).join("")}</div>
-        <button class="collection-open" type="button" aria-label="查看 ${escapeHtml(collection.name)}">›</button>
+        <div class="collection-count">${collection.itemCount || 0}/14</div>
+        <div class="collection-children">
+          ${expanded ? (collection.items || []).map((item, index) => `
+            <button class="collection-work" type="button" data-preview-work="${escapeHtml(item.previewPath || "")}" data-work-path="${escapeHtml(item.path || "")}">
+              <span class="collection-branch" aria-hidden="true">${index === (collection.items || []).length - 1 ? "└" : "├"}</span>
+              ${item.previewPath ? `<img src="/file?path=${encodeURIComponent(item.previewPath)}" alt="" />` : `<span class="work-placeholder">${item.imageCount || 0}图</span>`}
+              <span><strong>${escapeHtml(item.name)}</strong><small>${item.imageCount || 0} 张图片 · 点击预览</small></span>
+            </button>
+          `).join("") : `<p class="tree-empty">这个合集暂时没有可预览的作品文件夹</p>`}
+        </div>
       </article>
     `;
   }).join("") : `<div class="empty-state"><strong>没有匹配的作品集</strong><p>换一个类型或平台状态筛选。</p></div>`;
@@ -1255,6 +1276,30 @@ function renderCollections() {
     selectedCollectionName = collections[0]?.name || "";
   }
   renderCollectionDetail(selectedCollectionName);
+}
+
+function showCollectionWorkPreview(previewPath, workPath) {
+  const previous = $("#collectionPreviewDialog");
+  if (previous) previous.remove();
+  const dialog = document.createElement("dialog");
+  dialog.id = "collectionPreviewDialog";
+  dialog.className = "work-preview-dialog";
+  dialog.innerHTML = `
+    <button class="preview-close" type="button" aria-label="关闭">×</button>
+    <div class="preview-stage">
+      ${previewPath ? `<img src="/file?path=${encodeURIComponent(previewPath)}" alt="作品预览" />` : `<div class="empty-state"><strong>没有预览图</strong><p>可直接打开作品文件夹查看。</p></div>`}
+    </div>
+    <div class="detail-button-row">
+      <button type="button" data-open-preview-folder="${escapeHtml(workPath)}">打开作品文件夹</button>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+  dialog.querySelector(".preview-close")?.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.showModal();
 }
 
 function renderCollectionDetail(name) {
@@ -1280,7 +1325,7 @@ function renderCollectionDetail(name) {
       <div class="platform-state"><span>手机分发记录</span><strong>${collection.deviceHistoryCount || 0} 次</strong></div>
       <div class="platform-state"><span>公众号记录</span><strong>${collection.officialAccountHistoryCount || 0} 次</strong></div>
     </div>
-    ${collection.exclusionReasons?.length ? `<div class="detail-warning">${escapeHtml(collection.exclusionReasons.join("；"))}</div>` : ""}
+    ${collection.exclusionReasons?.length ? `<div class="detail-warning">${escapeHtml(collection.exclusionReasons.map(humanizeCollectionReason).join("；"))}</div>` : ""}
     <section class="collection-ledger-editor">
       <div>
         <label for="collectionLedgerType">人工分类</label>
@@ -1317,14 +1362,14 @@ function renderDistribution() {
   $("#distributionPhones").innerHTML = `
     <div class="distribution-stats">
       ${DistributionUI.phoneDistributionStats(summary, deviceCheckState, devices.length)
-        .map(([label, value, unit]) => `<article class="summary-card"><span>${label}</span><strong>${escapeHtml(value)} <small>${unit}</small></strong></article>`).join("")}
+        .map(([label, value, unit]) => `<article class="summary-card ${label === "当前在线" ? "is-actionable" : ""}" ${label === "当前在线" ? 'data-device-scan role="button" tabindex="0" title="点击立即重新扫描在线设备"' : ""}><span>${label}</span><strong>${escapeHtml(value)}${unit ? ` <small>${unit}</small>` : ""}</strong></article>`).join("")}
     </div>
     <div class="device-list">${devices.map((device) => `
       <article class="device-row ${device.online ? "is-online" : "is-offline"}">
         <div class="device-platform-icon" aria-label="${/iphone|apple|苹果/i.test(`${device.id} ${device.displayName}`) ? "苹果设备" : "安卓设备"}">
           ${/iphone|apple|苹果/i.test(`${device.id} ${device.displayName}`)
             ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.8 12.7c0-2.5 2.1-3.7 2.2-3.8-1.2-1.8-3.1-2-3.8-2-1.6-.2-3.1 1-3.9 1s-2-1-3.3-1c-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.3 2.5 1.3-.1 1.8-.8 3.4-.8 1.6 0 2.1.8 3.4.8 1.4 0 2.3-1.2 3.2-2.5 1-1.4 1.4-2.9 1.4-3-.1 0-3-.9-3-3.9Z"/><path d="M14.2 5.2c.7-.9 1.2-2.2 1.1-3.4-1.1 0-2.4.7-3.2 1.6-.7.8-1.3 2.1-1.1 3.3 1.2.1 2.5-.6 3.2-1.5Z"/></svg>`
-            : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.2 7-1.5-2.6M16.8 7l1.5-2.6"/><path d="M6 9h12v8.3a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9Z"/><path d="M4 10v6M20 10v6M9 19.3V22M15 19.3V22"/><circle cx="9" cy="12" r=".7"/><circle cx="15" cy="12" r=".7"/></svg>`}
+            : `<svg class="android-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7.4 5.8-1.3-2.2M16.6 5.8l1.3-2.2"/><path d="M6.2 10a5.8 5.8 0 0 1 11.6 0H6.2Z"/><circle cx="9.1" cy="7.8" r=".65"/><circle cx="14.9" cy="7.8" r=".65"/><path d="M6.2 11h11.6v6.1a2.1 2.1 0 0 1-2.1 2.1H8.3a2.1 2.1 0 0 1-2.1-2.1V11Z"/><path d="M4.3 11.5v5M19.7 11.5v5M9 19.2v2.4M15 19.2v2.4"/></svg>`}
           <b>${device.number}号</b>
         </div>
         <div><h3>${escapeHtml(device.displayName)}</h3><p>${escapeHtml(device.ownerGroup)} · ${escapeHtml((device.platforms || []).join(" + "))}${device.workCount == null ? "" : ` · 当前 ${device.workCount} 个作品`}</p></div>
@@ -1342,20 +1387,16 @@ function renderDistribution() {
   const pending = data.collections?.filter((item) => item.officialAccount === "reserved_pending_upload") || [];
   $("#distributionOfficial").innerHTML = `
     <div class="distribution-stats">
-      ${[["公众号活跃入口", summary.officialAvailable || 0], ["已领取待上传", summary.officialPending || 0], ["已确认上传", summary.officialConfirmed || 0], ["入口异常", data.collections?.filter((item) => item.officialAccount === "invalid").length || 0]]
+      ${[["公众号可用", summary.officialAvailable || 0], ["已打开过", summary.officialPending || 0], ["上传已完成", summary.officialConfirmed || 0]]
         .map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${value}</strong></article>`).join("")}
     </div>
-    <div class="detail-warning">领取不等于发布。只有你确认电脑上传完成后，状态才会变为“已确认上传”。</div>
+    <div class="detail-warning">打开作品文件夹后会自动标记为“已打开过”；完成公众号上传后，点击“是否已上传？”确认即可。</div>
     <div class="record-list">
-      ${pending.map((collection) => `<article class="official-card"><div class="device-number">待</div><div><h3>${escapeHtml(collection.name)}</h3><p>江湖有旅人团建策划师 · 已领取待电脑上传</p></div><span class="state-badge warn">等待人工确认</span><div class="device-actions"><button data-confirm-official="${escapeHtml(collection.name)}">确认上传完成</button></div></article>`).join("")}
-      <article class="official-card"><div class="device-number">${summary.officialAvailable || 0}</div><div><h3>随机领取一个公众号作品集</h3><p>优先选择小红书和抖音入口均已处理的合集</p></div><span class="state-badge good">电脑批量上传</span><div class="device-actions"><button data-official-action="execute">随机领取</button></div></article>
+      ${pending.map((collection) => `<article class="official-card"><div class="device-number">开</div><div><h3>${escapeHtml(collection.name)}</h3><p>作品文件夹已经打开过，等待你完成电脑上传</p></div><span class="state-badge warn">已打开过</span><div class="device-actions"><button data-confirm-official="${escapeHtml(collection.name)}">是否已上传？</button></div></article>`).join("")}
+      <article class="official-card"><div class="device-number">${summary.officialAvailable || 0}</div><div><h3>打开一个公众号可用作品集</h3><p>打开文件夹并登记“已打开过”，上传完成后再确认</p></div><span class="state-badge good">公众号可用</span><div class="device-actions"><button data-official-action="execute">上传公众号</button></div></article>
     </div>
   `;
   $("#distributionHistory").innerHTML = renderDistributionRecords(data.deviceHistory || [], "device");
-  const archiveCollections = data.collections?.filter((item) => item.douyin === "archived" || item.douyin === "invalid") || [];
-  $("#distributionArchive").innerHTML = archiveCollections.length ? `<div class="record-list">${archiveCollections.map((item) => `
-    <article class="record-row"><div class="device-number">抖</div><div><h3>${escapeHtml(item.name)}</h3><p>${item.douyin === "archived" ? "归档入口有效，可按安全规则恢复" : "归档入口存在，但源目录不可用"}</p></div><span class="state-badge ${item.douyin === "archived" ? "good" : "bad"}">${item.douyin === "archived" ? "已归档" : "入口异常"}</span><div></div></article>
-  `).join("")}</div>` : `<div class="empty-state"><strong>暂无抖音归档</strong><p>单平台手机分发成功后的抖音入口会显示在这里。</p></div>`;
   showDistributionPanel(activeDistributionPanel);
 }
 
@@ -1422,15 +1463,31 @@ async function confirmOfficialCollection(collection) {
 async function checkDistributionDevices(options = {}) {
   if (deviceScanRunning) return;
   deviceScanRunning = true;
+  deviceCheckState = { ...deviceCheckState, scanning: true };
+  if (dashboard?.distribution) renderDistribution();
+  const refreshButton = $("#distributionRefreshBtn");
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.textContent = "正在扫描…";
+  }
   if (!options.silent) toast("正在扫描设备与库存");
   try {
-    const result = await api("/api/distribution/check", { method: "POST" });
+    const result = await api("/api/distribution/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        inventory: options.refreshInventory !== false,
+        force: options.silent !== true
+      })
+    });
     deviceCheckState = {
-      ...DistributionUI.parseDeviceCheckOutput(result.output),
+      registered: Number.isFinite(result.registered) ? result.registered : DistributionUI.parseDeviceCheckOutput(result.output).registered,
+      online: Number.isFinite(result.online) ? result.online : DistributionUI.parseDeviceCheckOutput(result.output).online,
       output: result.output || "",
       onlineDevices: Array.isArray(result.onlineDevices)
         ? result.onlineDevices
-        : DistributionUI.parseDeviceStatusOutput(result.statusOutput)
+        : DistributionUI.parseDeviceStatusOutput(result.statusOutput),
+      scanning: false
     };
     deviceScanStarted = true;
     if (options.refreshInventory !== false) await loadDashboard(true);
@@ -1439,10 +1496,16 @@ async function checkDistributionDevices(options = {}) {
       toast(deviceCheckState.online == null ? "扫描完成，请查看结果" : `扫描完成：当前在线 ${deviceCheckState.online} 台`);
     }
   } catch (error) {
+    deviceCheckState = { ...deviceCheckState, scanning: false };
+    if (dashboard?.distribution) renderDistribution();
     if (!options.silent) window.alert(`扫描失败：${error.message}`);
     else console.error("设备自动扫描失败", error);
   } finally {
     deviceScanRunning = false;
+    if (refreshButton) {
+      refreshButton.disabled = false;
+      refreshButton.textContent = "立即刷新";
+    }
   }
 }
 
@@ -1688,7 +1751,18 @@ function bindEvents() {
       renderCollections();
     }
     const collectionRow = event.target.closest("[data-collection]");
-    if (collectionRow) renderCollectionDetail(collectionRow.dataset.collection);
+    if (collectionRow && !event.target.closest("[data-collection-toggle], [data-preview-work]")) renderCollectionDetail(collectionRow.dataset.collection);
+    const collectionToggle = event.target.closest("[data-collection-toggle]");
+    if (collectionToggle) {
+      const name = collectionToggle.dataset.collectionToggle;
+      if (expandedCollectionNames.has(name)) expandedCollectionNames.delete(name);
+      else expandedCollectionNames.add(name);
+      renderCollections();
+    }
+    const workPreview = event.target.closest("[data-preview-work]");
+    if (workPreview) showCollectionWorkPreview(workPreview.dataset.previewWork, workPreview.dataset.workPath);
+    const openPreviewFolder = event.target.closest("[data-open-preview-folder]");
+    if (openPreviewFolder?.dataset.openPreviewFolder) openPath(openPreviewFolder.dataset.openPreviewFolder);
     const openCollection = event.target.closest("[data-open-collection]");
     if (openCollection?.dataset.openCollection) openPath(openCollection.dataset.openCollection);
     const enterDistribution = event.target.closest("[data-distribute-collection]");
@@ -1721,6 +1795,8 @@ function bindEvents() {
     }
     const distributionTab = event.target.closest("#distributionTabs [data-panel]");
     if (distributionTab) showDistributionPanel(distributionTab.dataset.panel);
+    const deviceScanCard = event.target.closest("[data-device-scan]");
+    if (deviceScanCard) checkDistributionDevices();
     const deviceAction = event.target.closest("[data-device-action]");
     if (deviceAction) {
       const type = deviceAction.dataset.deviceAction;
@@ -1734,7 +1810,7 @@ function bindEvents() {
     if (officialAction) {
       executeDistributionAction(
         { action: "official-reserve", type: "traffic" },
-        "将为“江湖有旅人团建策划师”随机领取一个公众号作品集，并记录为已领取待电脑上传。"
+        "将打开一个公众号可用作品集，并记录为“已打开过”。"
       );
     }
     const confirmOfficial = event.target.closest("[data-confirm-official]");
@@ -1744,6 +1820,10 @@ function bindEvents() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeCustomSelects();
+    if ((event.key === "Enter" || event.key === " ") && event.target.closest?.("[data-device-scan]")) {
+      event.preventDefault();
+      checkDistributionDevices();
+    }
   });
 
   $("#refreshBtn").addEventListener("click", async () => {
@@ -1922,7 +2002,14 @@ function bindEvents() {
 bindEvents();
 bindPaneResizers();
 applyTheme(localStorage.getItem("tb-dashboard-theme") || "solid");
-loadDashboard().catch((error) => {
-  console.error(error);
-  toast("读取本地库失败");
-});
+loadDashboard()
+  .then(() => {
+    if (!deviceScanStarted) checkDistributionDevices({ silent: true, refreshInventory: false });
+    window.setInterval(() => {
+      if (!deviceScanRunning) checkDistributionDevices({ silent: true, refreshInventory: false });
+    }, 60_000);
+  })
+  .catch((error) => {
+    console.error(error);
+    toast("读取本地库失败");
+  });

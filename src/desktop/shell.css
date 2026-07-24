@@ -1,0 +1,79 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  background: #e5ede8;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+
+.desktop-shell {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1fr 0;
+  background: #e5ede8;
+}
+
+.desktop-shell.is-gpt-visible {
+  grid-template-columns: minmax(520px, 46%) minmax(620px, 54%);
+}
+
+.workspace-pane,
+.gpt-pane,
+webview {
+  min-width: 0;
+  min-height: 0;
+}
+
+.workspace-pane {
+  position: relative;
+  overflow: hidden;
+}
+
+#workspaceView {
+  width: 100%;
+  height: 100%;
+}
+
+.gpt-pane {
+  display: none;
+  grid-template-rows: 58px 1fr;
+  overflow: hidden;
+  border-left: 1px solid rgba(80, 104, 92, .18);
+  background: #fff;
+}
+
+.is-gpt-visible .gpt-pane {
+  display: grid;
+}
+
+.gpt-pane header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px 8px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8faf9;
+}
+
+.gpt-pane header div { min-width: 0; flex: 1; }
+.gpt-pane header strong,
+.gpt-pane header span { display: block; }
+.gpt-pane header strong { font-size: 15px; }
+.gpt-pane header span { margin-top: 2px; color: #68736e; font-size: 11px; }
+.gpt-pane label { color: #68736e; font-size: 11px; }
+
+.gpt-pane select,
+.gpt-pane button {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d8dfdb;
+  border-radius: 9px;
+  background: #fff;
+  font: inherit;
+}
+
+.gpt-webviews { position: relative; min-height: 0; }
+.gpt-view { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
+.gpt-view.active { display: flex; }

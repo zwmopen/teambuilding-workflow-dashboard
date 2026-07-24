@@ -7,11 +7,11 @@
     return ({
       available: "可用",
       used: "已使用",
-      archived: "已归档",
-      reserved_pending_upload: "已领取待上传",
-      confirmed_published: "已确认上传",
+      archived: "已使用",
+      reserved_pending_upload: "已打开，待确认上传",
+      confirmed_published: "上传已完成",
       unknown: "状态待确认",
-      invalid: "入口异常"
+      invalid: "未登记"
     })[state] || "未知";
   }
 
@@ -21,9 +21,6 @@
     if (platform === "xhs") return collection.xhs === "available";
     if (platform === "official") return collection.officialAccount === "available";
     if (platform === "official_pending") return collection.officialAccount === "reserved_pending_upload";
-    if (platform === "douyin_archived") return collection.douyin === "archived" || (
-      collection.douyin === "invalid" && collection.exclusionReasons?.some((reason) => /Junction|源目录/.test(reason))
-    );
     if (platform === "all_used") {
       return collection.xhs !== "available"
         && collection.douyin !== "available"
@@ -51,7 +48,7 @@
 
   function countCollectionFacets(collections, filters = {}) {
     const typeValues = ["all", "traffic", "conversion", "unclassified"];
-    const platformValues = ["all", "dual", "xhs", "official", "official_pending", "douyin_archived", "all_used"];
+    const platformValues = ["all", "dual", "xhs", "official", "official_pending", "all_used"];
     const count = (nextFilters) => filterCollections(collections, nextFilters).length;
 
     return {
@@ -76,7 +73,7 @@
   function phoneDistributionStats(summary = {}, deviceCheck = {}, registeredFallback = 0) {
     return [
       ["已登记设备", deviceCheck.registered ?? registeredFallback, "台"],
-      ["当前在线", deviceCheck.online ?? "点击扫描", "台"],
+      ["当前在线", deviceCheck.scanning ? "正在扫描…" : (deviceCheck.online ?? 0), deviceCheck.scanning ? "" : "台"],
       ["泛流量合集包", summary.traffic || 0, "个"],
       ["团建转化（精准流量）", summary.conversion || 0, "个"]
     ];

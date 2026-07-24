@@ -77,7 +77,6 @@ test("countCollectionFacets returns live cross-filter counts for filter chips", 
         xhs: 1,
         official: 2,
         official_pending: 0,
-        douyin_archived: 1,
         all_used: 0
       }
     }
@@ -102,9 +101,9 @@ test("phoneDistributionStats uses the agreed user-facing labels and category cou
 
 test("platformStateLabel uses user-facing labels without overstating publication", () => {
   assert.equal(platformStateLabel("available"), "可用");
-  assert.equal(platformStateLabel("reserved_pending_upload"), "已领取待上传");
-  assert.equal(platformStateLabel("confirmed_published"), "已确认上传");
-  assert.equal(platformStateLabel("invalid"), "入口异常");
+  assert.equal(platformStateLabel("reserved_pending_upload"), "已打开，待确认上传");
+  assert.equal(platformStateLabel("confirmed_published"), "上传已完成");
+  assert.equal(platformStateLabel("invalid"), "未登记");
 });
 
 test("parseDeviceCheckOutput reads registered and online counts from the skill output", () => {
