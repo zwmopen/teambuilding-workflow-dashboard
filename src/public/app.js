@@ -17,6 +17,8 @@ let collectionFilters = { type: "all", platform: "all", query: "" };
 let selectedCollectionName = "";
 let activeDistributionPanel = "phones";
 let deviceCheckState = { registered: null, online: null, output: "" };
+const expandedMaterialPaths = new Set();
+let materialTreeInitialized = false;
 
 const LOCATION_KEYWORDS = ["上海", "杭州", "安吉", "苏州", "南京", "湖州", "桐庐", "千岛湖", "莫干山", "宁波"];
 const ACTIVITY_KEYWORDS = ["露营", "溯溪", "漂流", "烧烤", "农庄", "采摘", "徒步", "越野", "轰趴", "玩水"];
@@ -39,6 +41,7 @@ const FILTER_MATCH_OPTIONS = [
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+window.MaterialWorkspace?.installShell();
 
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -312,7 +315,7 @@ async function loadDashboard(force = false, libraryPath = "") {
   renderMaterialQuickSelect();
   renderMaterials();
   renderPrompts();
-  renderOverview();
+  if ($("#overviewView")) renderOverview();
   restoreSelection();
 }
 
@@ -434,6 +437,7 @@ function getCurrentFilterSummary() {
   return pairs.length ? `${mode}：${pairs.map(([key, value]) => `${key}=${value}`).join("，")}` : "未启用关键词筛选";
 }
 function getVisibleMaterialCategories() {
+  if ($("#materialFeed")?.classList.contains("material-folder-tree")) return dashboard.materials.categories;
   const selectedPath = $("#materialLibraryFilter")?.value || "";
   if (selectedPath.startsWith("template:")) return [];
   return dashboard.materials.categories.filter((category) => !selectedPath || category.path === selectedPath);
@@ -455,6 +459,15 @@ function templateForMaterialItem(item) {
 
 function getVisibleMaterialEntries() {
   const query = ($("#materialSearch").value || "").trim().toLowerCase();
+  if ($("#materialFeed")?.classList.contains("material-folder-tree")) {
+    return getVisibleMaterialCategories()
+      .flatMap((category) => category.items.map((item) => ({ item, category })))
+      .filter(({ item, category }) => {
+        const haystack = `${category.name} ${item.name} ${item.preview} ${(item.tags || []).join(" ")}`.toLowerCase();
+        return !query || haystack.includes(query);
+      })
+      .sort(compareMaterialEntries);
+  }
   const state = getSavedState();
   const visibleCategories = getVisibleMaterialCategories();
   const isTemplateLibrary = visibleCategories.length === 1 && visibleCategories[0].name === "模板素材";
@@ -567,6 +580,10 @@ function renderMaterialQuickSelect() {
 function renderMaterials() {
   const container = $("#materialFeed");
   if (!container) return;
+  if (container.classList.contains("material-folder-tree")) {
+    renderMaterialTree(container);
+    return;
+  }
   container.innerHTML = "";
   const allEntries = getVisibleMaterialEntries();
   const signature = allEntries.map(({ item }) => item.id).join("\u001f");
@@ -662,6 +679,7 @@ function renderTemplateLibraryFeed(container, template) {
 function selectMaterial(item, category, options = {}) {
   selectedMaterial = item;
   selectedMaterialCategory = category;
+  expandedMaterialPaths.add(category.path);
   const templateMaterial = category.name === "模板素材" ? templateForMaterialItem(item) : null;
   if (templateMaterial) selectedTemplate = templateMaterial;
   const libraryFilter = $("#materialLibraryFilter");
@@ -711,7 +729,9 @@ function updateMission() {
     : history
     ? `已命中历史记录「${history["状态"] || "未知状态"}」，先核对成品是否可复用；`
     : "未命中可验证历史记录；";
-  $("#commandBox").value = `继续模板迁移正式生产：锁定 A 类永久母版「${templateLabel}」，素材从当前素材库「${libraryLabel}」的未完成/未制作处续接；当前 B 类素材为「${materialLabel}」。${stateNote}先写或补齐《出图计划.md》，按 3:4 竖图输出 ${pages} 页独立图片；封面与内页严格复用母版结构、字体、配色和拼图节奏，人物/静物/分区必须去重。完成后生成独立小红书文案，落盘到成品库并写入制作日志。`;
+  $("#commandBox").value = $("#materialFeed")?.classList.contains("material-folder-tree")
+    ? window.MaterialWorkspace.buildChatGptInstruction(selectedMaterial, selectedMaterialCategory, selectedTemplate?.id || "T04")
+    : `继续模板迁移正式生产：锁定 A 类永久母版「${templateLabel}」，素材从当前素材库「${libraryLabel}」的未完成/未制作处续接；当前 B 类素材为「${materialLabel}」。${stateNote}先写或补齐《出图计划.md》，按 3:4 竖图输出 ${pages} 页独立图片；封面与内页严格复用母版结构、字体、配色和拼图节奏，人物/静物/分区必须去重。完成后生成独立小红书文案，落盘到成品库并写入制作日志。`;
   renderProductionStatus();
   saveLocalState({
     currentProductionPair: {
@@ -1038,6 +1058,50 @@ function formatNumber(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
 }
 
+function renderMaterialTree(container) {
+  const entries = getVisibleMaterialEntries();
+  const entryIds = new Set(entries.map(({ item }) => item.id));
+  const categories = dashboard.materials.categories.map((category) => ({
+    ...category,
+    items: category.items.filter((item) => entryIds.has(item.id))
+  })).filter((category) => category.items.length || !($("#materialSearch")?.value || "").trim());
+
+  if (!materialTreeInitialized && categories[0]) {
+    const savedCategoryPath = getSavedState().selectedMaterialCategoryPath;
+    expandedMaterialPaths.add(categories.some((category) => category.path === savedCategoryPath)
+      ? savedCategoryPath
+      : categories[0].path);
+    materialTreeInitialized = true;
+  }
+  const tree = window.MaterialWorkspace.buildMaterialTree(
+    categories,
+    selectedMaterial?.id || "",
+    Array.from(expandedMaterialPaths)
+  );
+  $("#treeSummary").textContent = `${categories.length} 个素材库 · ${entries.length} 个帖子`;
+  container.innerHTML = tree.length ? tree.map((category) => `
+    <section class="tree-category${category.expanded ? " expanded" : ""}" data-category-path="${escapeHtml(category.path)}">
+      <button class="tree-category-row" type="button" data-tree-toggle="${escapeHtml(category.path)}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h6l2 2H20.5v10h-17z"/><path d="M3.5 9h17"/></svg>
+        <span>${escapeHtml(category.name)}</span>
+        <small>${category.count || category.items.length}</small>
+        <b aria-hidden="true">⌄</b>
+      </button>
+      <div class="tree-children">
+        ${category.expanded ? category.items.map((item) => `
+          <article class="tree-item material-item${item.selected ? " active" : ""}" data-id="${escapeHtml(item.id)}">
+            <button class="tree-item-main" type="button" data-tree-select="${escapeHtml(item.id)}">
+              <span class="tree-file-icon">${item.imageCount || 0}<small>图</small></span>
+              <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(shortText(item.preview || "本地帖子文件夹", 34))}</small></span>
+            </button>
+            <button class="tree-send-button" type="button" data-tree-send="${escapeHtml(item.id)}">传 GPT <span>→</span></button>
+          </article>
+        `).join("") || `<p class="tree-empty">当前分类没有匹配帖子</p>` : ""}
+      </div>
+    </section>
+  `).join("") : `<div class="summary-text">没有匹配的本地帖子文件夹。</div>`;
+}
+
 function formatBytes(value) {
   const bytes = Number(value) || 0;
   if (!bytes) return "0 B";
@@ -1338,14 +1402,14 @@ function restoreSelection() {
   if (template) selectTemplate(template);
   else if (dashboard.templates.templates[0]) selectTemplate(dashboard.templates.templates[0]);
 
-  if (state.activeTab) activateTab(state.activeTab);
+  activateTab(window.MaterialWorkspace.resolveInitialTab(state.activeTab));
 }
 
 function activateTab(name) {
+  name = window.MaterialWorkspace.resolveInitialTab(name);
   $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
   $$(".view").forEach((view) => view.classList.remove("active"));
   $(`#${name}View`)?.classList.add("active");
-  if (name === "overview") renderOverview();
   if (name === "products") {
     renderCollections();
     productsRendered = true;
@@ -1435,6 +1499,46 @@ async function openPath(targetPath) {
   });
 }
 
+async function openExternal(target) {
+  await api("/api/open-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target })
+  });
+}
+
+function findMaterialEntry(itemId) {
+  return dashboard.materials.categories
+    .flatMap((category) => category.items.map((item) => ({ item, category })))
+    .find(({ item }) => item.id === itemId);
+}
+
+async function transmitMaterialToGpt(itemId = selectedMaterial?.id) {
+  const entry = findMaterialEntry(itemId);
+  if (!entry) {
+    toast("请先选择一个帖子文件夹");
+    return;
+  }
+  selectMaterial(entry.item, entry.category, { keepFeed: true });
+  const instruction = window.MaterialWorkspace.buildChatGptInstruction(
+    entry.item,
+    entry.category,
+    selectedTemplate?.id || "T04"
+  );
+  $("#commandBox").value = instruction;
+  await navigator.clipboard.writeText(instruction);
+  saveLocalState({
+    gptTaskBinding: {
+      materialId: entry.item.id,
+      materialPath: entry.item.path,
+      templateId: selectedTemplate?.id || "T04",
+      preparedAt: new Date().toISOString()
+    }
+  });
+  await openExternal("https://chatgpt.com/");
+  toast("帖子与指令已准备，正在打开真实 ChatGPT");
+}
+
 async function renamePath(targetPath, currentLabel) {
   if (!targetPath) return;
   const oldName = (currentLabel || targetPath).replace(/（\\d+条）$/, "").trim();
@@ -1461,6 +1565,23 @@ function bindEvents() {
     if (!event.target.closest(".context-menu")) hideContextMenu();
     const jump = event.target.closest("[data-jump]");
     if (jump) activateTab(jump.dataset.jump);
+    const treeToggle = event.target.closest("[data-tree-toggle]");
+    if (treeToggle) {
+      const categoryPath = treeToggle.dataset.treeToggle;
+      if (expandedMaterialPaths.has(categoryPath)) expandedMaterialPaths.delete(categoryPath);
+      else expandedMaterialPaths.add(categoryPath);
+      renderMaterials();
+    }
+    const treeSelect = event.target.closest("[data-tree-select]");
+    if (treeSelect) {
+      const entry = findMaterialEntry(treeSelect.dataset.treeSelect);
+      if (entry) selectMaterial(entry.item, entry.category, { keepFeed: true });
+    }
+    const treeSend = event.target.closest("[data-tree-send]");
+    if (treeSend) transmitMaterialToGpt(treeSend.dataset.treeSend).catch((error) => {
+      console.error(error);
+      toast("打开 ChatGPT 失败，请检查默认浏览器");
+    });
     const filter = event.target.closest("[data-filter-key]");
     if (filter) {
       collectionFilters[filter.dataset.filterKey] = filter.dataset.filterValue;
@@ -1506,6 +1627,14 @@ function bindEvents() {
     await loadDashboard(true, $("#materialLibraryFilter")?.value || "");
     toast("已刷新本地库");
   });
+  $("#materialRefreshBtn")?.addEventListener("click", async () => {
+    await loadDashboard(true);
+    toast("本地文件树已刷新");
+  });
+  $("#openChatGptBtn")?.addEventListener("click", () => openExternal("https://chatgpt.com/"));
+  $("#sendSelectedToGptBtn")?.addEventListener("click", () => transmitMaterialToGpt());
+  $("#runWorkPackageBtn")?.addEventListener("click", () => openExternal("cgpt-workpkg://run"));
+  $("#configureWorkPackageBtn")?.addEventListener("click", () => openExternal("cgpt-workpkg://configure"));
   $("#overviewRefreshBtn")?.addEventListener("click", async () => {
     await loadDashboard(true);
     activateTab("overview");

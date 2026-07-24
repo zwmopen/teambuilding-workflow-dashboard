@@ -1,12 +1,12 @@
 {
   "name": "teambuilding-workflow-dashboard",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "江湖有旅人团建图文生产工作流可视化控制台",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test path-security.test.js lib/distribution-data.test.js public/distribution-ui.test.js",
+    "test": "node --test path-security.test.js lib/distribution-data.test.js public/distribution-ui.test.js public/material-workspace.test.js",
     "mcp:juguang": "node mcp/juguang-mcp.js",
     "check:juguang": "node -e \"const d=require('./lib/juguang-data').getJuguangSnapshot(); console.log(JSON.stringify({mode:d.mode,counts:d.counts,recommendations:d.recommendations.length},null,2))\""
   }

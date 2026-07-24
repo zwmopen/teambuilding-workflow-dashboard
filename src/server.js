@@ -24,7 +24,7 @@ const DEVICE_REGISTRY_FILE = path.join(DEVICE_TRANSFER_ROOT, "references", "devi
 const imageExts = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const textExts = new Set([".txt", ".md"]);
 const PREVIEW_LIMITS = {
-  materialItemsPerCategory: 240,
+  materialItemsPerCategory: 1000,
   materialImagesPerItem: 12,
   templateImages: 5,
   productWorksPerGroup: 36,
@@ -52,7 +52,7 @@ function buildDefaultState() {
       right: 390
     },
     selectedProduct: "",
-    activeTab: "overview",
+    activeTab: "dashboard",
     updatedAt: new Date().toISOString()
   };
 }
@@ -239,61 +239,68 @@ function parseCsv(text) {
 
 function getMaterialLibrary(force = false, selectedLibraryPath = "") {
   const root = path.join(PROJECT_ROOT, "01-素材库", "团建攻略图文素材");
-  const categoryEntries = safeList(root).filter((entry) => entry.isDirectory());
-  const activeLibraryPath = selectedLibraryPath || (categoryEntries[0] ? path.join(root, categoryEntries[0].name) : "");
-  const categories = categoryEntries
-    .map((category, index) => {
-      const categoryPath = path.join(root, category.name);
-      const allItems = safeList(categoryPath)
-        .filter((entry) => entry.isDirectory() && entry.name !== "0.预览（硬链接）");
-      if (categoryPath !== activeLibraryPath) {
-        return {
-          id: categoryPath,
-          order: index + 1,
-          name: category.name,
-          path: categoryPath,
-          count: allItems.length,
-          visibleCount: 0,
-          items: []
-        };
-      }
-      const signature = `${safeMtime(categoryPath)}:${allItems.length}`;
-      const cached = materialCategoryCache.get(categoryPath);
-      if (!force && cached?.signature === signature) {
-        return { ...cached.category, order: index + 1 };
-      }
-      const items = allItems
-        .slice(0, PREVIEW_LIMITS.materialItemsPerCategory)
-        .map((entry, itemIndex) => {
-          const itemPath = path.join(categoryPath, entry.name);
-          const images = listImages(itemPath, PREVIEW_LIMITS.materialImagesPerItem);
-          const imageCount = listImageEntries(itemPath).length;
-          const preview = readTextPreview(itemPath);
-          const tags = Array.from(new Set([...inferMaterialTags(category.name, entry.name, preview), ...readHiddenTags(itemPath)]));
-          return {
-            id: itemPath,
-            order: itemIndex + 1,
-            name: entry.name,
-            path: itemPath,
-            imageCount,
-            images,
-            preview,
-            tags,
-            updatedAt: safeMtime(itemPath)
-          };
-        });
-      const result = {
-        id: categoryPath,
-        order: index + 1,
-        name: category.name,
-        path: categoryPath,
-        count: allItems.length,
-        visibleCount: items.length,
-        items
-      };
-      materialCategoryCache.set(categoryPath, { signature, category: result });
-      return result;
-    });
+  const rootEntries = safeList(root).filter((entry) => entry.isDirectory() && entry.name !== "0.预览（硬链接）");
+
+  function isPostFolder(folderPath) {
+    return listImageEntries(folderPath).length > 0
+      || safeList(folderPath).some((entry) => entry.isFile() && textExts.has(path.extname(entry.name).toLowerCase()));
+  }
+
+  function materialItem(entry, itemPath, categoryName, itemIndex) {
+    const images = listImages(itemPath, PREVIEW_LIMITS.materialImagesPerItem);
+    const imageCount = listImageEntries(itemPath).length;
+    const preview = readTextPreview(itemPath);
+    const tags = Array.from(new Set([...inferMaterialTags(categoryName, entry.name, preview), ...readHiddenTags(itemPath)]));
+    return {
+      id: itemPath,
+      order: itemIndex + 1,
+      name: entry.name,
+      path: itemPath,
+      imageCount,
+      images,
+      preview,
+      tags,
+      updatedAt: safeMtime(itemPath)
+    };
+  }
+
+  function categoryFromEntries(name, categoryPath, entries, order) {
+    const signature = `${safeMtime(categoryPath)}:${entries.length}:${entries.slice(0, 5).map((entry) => safeMtime(path.join(categoryPath, entry.name))).join("|")}`;
+    const cached = materialCategoryCache.get(categoryPath);
+    if (!force && cached?.signature === signature) return { ...cached.category, order };
+    const items = entries
+      .slice(0, PREVIEW_LIMITS.materialItemsPerCategory)
+      .map((entry, itemIndex) => materialItem(entry, path.join(categoryPath, entry.name), name, itemIndex));
+    const result = {
+      id: categoryPath,
+      order,
+      name,
+      path: categoryPath,
+      count: entries.length,
+      visibleCount: items.length,
+      items
+    };
+    materialCategoryCache.set(categoryPath, { signature, category: result });
+    return result;
+  }
+
+  const directPosts = rootEntries.filter((entry) => isPostFolder(path.join(root, entry.name)));
+  const groupedFolders = rootEntries
+    .filter((entry) => !directPosts.includes(entry))
+    .map((entry) => {
+      const categoryPath = path.join(root, entry.name);
+      const items = safeList(categoryPath)
+        .filter((child) => child.isDirectory() && child.name !== "0.预览（硬链接）")
+        .filter((child) => isPostFolder(path.join(categoryPath, child.name)));
+      return { entry, categoryPath, items };
+    })
+    .filter((group) => group.items.length);
+
+  const categories = [];
+  if (directPosts.length) categories.push(categoryFromEntries("当前素材", root, directPosts, 1));
+  groupedFolders.forEach((group, index) => {
+    categories.push(categoryFromEntries(group.entry.name, group.categoryPath, group.items, categories.length + index + 1));
+  });
   return { root, categories };
 }
 
@@ -683,6 +690,16 @@ function sendJson(res, body) {
   send(res, 200, JSON.stringify(body), "application/json; charset=utf-8");
 }
 
+function isAllowedExternalTarget(target) {
+  if (target === "cgpt-workpkg://run" || target === "cgpt-workpkg://configure") return true;
+  try {
+    const parsed = new URL(target);
+    return parsed.protocol === "https:" && parsed.hostname === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
+
 function buildDistributionArgs(body = {}) {
   const type = body.type === "conversion" ? "团建转化" : "泛流量";
   if (body.action === "official-reserve") {
@@ -870,6 +887,13 @@ async function route(req, res) {
     childProcess.spawn("explorer.exe", [target], { detached: true, stdio: "ignore" }).unref();
     return sendJson(res, { ok: true });
   }
+  if (pathname === "/api/open-url" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req) || "{}");
+    const target = body.target;
+    if (!isAllowedExternalTarget(target)) return send(res, 403, JSON.stringify({ error: "external target not allowed" }));
+    childProcess.spawn("explorer.exe", [target], { detached: true, stdio: "ignore" }).unref();
+    return sendJson(res, { ok: true });
+  }
 
   if (pathname === "/file") {
     const target = parsed.query.path ? decodeURIComponent(parsed.query.path) : "";
@@ -904,6 +928,7 @@ module.exports = {
   getBody,
   httpServer,
   isAllowedFile,
+  isAllowedExternalTarget,
   isPathInside,
   resolvePublicFile,
   safeName

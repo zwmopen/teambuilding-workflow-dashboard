@@ -111,6 +111,15 @@ test('public file resolver prevents traversal outside the public directory', () 
   assert.equal(path.basename(index), 'index.html');
 });
 
+test('external launcher only allows ChatGPT and the existing work-package protocol', () => {
+  assert.equal(server.isAllowedExternalTarget('https://chatgpt.com/'), true);
+  assert.equal(server.isAllowedExternalTarget('https://chatgpt.com/c/abc'), true);
+  assert.equal(server.isAllowedExternalTarget('cgpt-workpkg://run'), true);
+  assert.equal(server.isAllowedExternalTarget('cgpt-workpkg://configure'), true);
+  assert.equal(server.isAllowedExternalTarget('https://example.com/'), false);
+  assert.equal(server.isAllowedExternalTarget('file:///C:/Windows/System32'), false);
+});
+
 test('buildDistributionArgs only creates allowlisted transfer commands', () => {
   assert.deepEqual(
     server.buildDistributionArgs({ action: 'device-restock', device: '5号', type: 'traffic' }),
