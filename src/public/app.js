@@ -22,6 +22,7 @@ let selectedDistributionDeviceId = "";
 let packageDevicePickerCollectionName = "";
 let uploadChoiceDeviceId = "";
 const genericTransferUiTasks = new Map();
+const distributionTransferUiTasks = new Map();
 let transferPollTimer = null;
 let deviceCheckState = {
   registered: null,
@@ -62,7 +63,16 @@ window.MaterialWorkspace?.installShell();
 
 async function api(path, options) {
   const response = await fetch(path, options);
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    const text = await response.text();
+    try {
+      const payload = JSON.parse(text);
+      throw new Error(payload.error || payload.message || text);
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error(text || `请求失败（${response.status}）`);
+      throw error;
+    }
+  }
   return response.json();
 }
 
@@ -335,6 +345,84 @@ async function loadDashboard(force = false, libraryPath = "") {
   renderWorkspaceSettings();
   if ($("#overviewView")) renderOverview();
   restoreSelection();
+}
+
+function openSystemDialog(options = {}) {
+  return new Promise((resolve) => {
+    document.querySelector(".system-dialog-backdrop")?.remove();
+    const backdrop = document.createElement("div");
+    backdrop.className = "system-dialog-backdrop";
+    const details = Array.isArray(options.details) ? options.details : [];
+    backdrop.innerHTML = `
+      <section class="system-dialog ${options.tone === "danger" ? "is-danger" : ""}" role="dialog" aria-modal="true" aria-labelledby="systemDialogTitle">
+        <header>
+          <div>
+            ${options.eyebrow ? `<span class="system-dialog-eyebrow">${escapeHtml(options.eyebrow)}</span>` : ""}
+            <h2 id="systemDialogTitle">${escapeHtml(options.title || "请确认")}</h2>
+          </div>
+          <button type="button" data-dialog-result="cancel" aria-label="关闭">×</button>
+        </header>
+        ${options.description ? `<p class="system-dialog-description">${escapeHtml(options.description)}</p>` : ""}
+        ${details.length ? `<dl class="system-dialog-details">${details.map((item) => `
+          <div><dt>${escapeHtml(item.label)}</dt><dd>${escapeHtml(item.value)}</dd></div>
+        `).join("")}</dl>` : ""}
+        ${options.input ? `<label class="system-dialog-input">
+          <span>${escapeHtml(options.input.label || "名称")}</span>
+          <input type="text" value="${escapeHtml(options.input.value || "")}" maxlength="${Number(options.input.maxLength) || 160}">
+        </label>` : ""}
+        ${options.warning ? `<div class="system-dialog-warning">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.7 20h18.6L12 3Z"/><path d="M12 9v5M12 17.3v.2"/></svg>
+          <span>${escapeHtml(options.warning)}</span>
+        </div>` : ""}
+        <footer>
+          ${options.cancelLabel === null ? "" : `<button type="button" class="dialog-secondary" data-dialog-result="cancel">${escapeHtml(options.cancelLabel || "返回")}</button>`}
+          <button type="button" class="dialog-primary primary-button" data-dialog-result="confirm">${escapeHtml(options.confirmLabel || "确认")}</button>
+        </footer>
+      </section>`;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKeydown);
+      backdrop.remove();
+      resolve(result);
+    };
+    const onKeydown = (event) => {
+      if (event.key === "Escape") finish(false);
+    };
+    backdrop.addEventListener("click", (event) => {
+      const result = event.target.closest("[data-dialog-result]")?.dataset.dialogResult;
+      if (result === "confirm") {
+        finish(options.input ? backdrop.querySelector(".system-dialog-input input")?.value.trim() : true);
+      } else if (result) finish(false);
+      else if (event.target === backdrop) finish(false);
+    });
+    backdrop.querySelector(".system-dialog-input input")?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(event.currentTarget.value.trim());
+      }
+    });
+    document.addEventListener("keydown", onKeydown);
+    document.body.appendChild(backdrop);
+    const initialFocus = backdrop.querySelector(".system-dialog-input input")
+      || backdrop.querySelector(".dialog-primary");
+    initialFocus?.focus();
+    initialFocus?.select?.();
+  });
+}
+
+function showSystemNotice(title, description, options = {}) {
+  return openSystemDialog({
+    eyebrow: options.eyebrow || "系统提示",
+    title,
+    description,
+    details: options.details,
+    warning: options.warning,
+    tone: options.tone,
+    cancelLabel: null,
+    confirmLabel: options.confirmLabel || "知道了"
+  });
 }
 
 function renderWorkspaceSettings() {
@@ -1461,7 +1549,8 @@ function renderDistribution() {
     <div class="distribution-stats">
       ${stats.map((stat) => `<button type="button" class="summary-card is-actionable ${distributionSummaryFilter === stat.id ? "active" : ""}" data-distribution-filter="${stat.id}"><span>${escapeHtml(stat.label)}</span><strong>${escapeHtml(stat.value)} <small>${escapeHtml(stat.unit)}</small>${stat.id === "devices" ? renderRefreshIcon() : ""}</strong></button>`).join("")}
     </div>
-    ${distributionSummaryFilter === "devices" ? `${renderGenericTransferTasks()}<div class="device-list">${renderDeviceRows()}</div>` : renderPackageRows()}
+    ${renderTransferTasks()}
+    ${distributionSummaryFilter === "devices" ? `<div class="device-list">${renderDeviceRows()}</div>` : renderPackageRows()}
   `;
   const pending = data.collections?.filter((item) => item.officialAccount === "reserved_pending_upload") || [];
   $("#distributionOfficial").innerHTML = `
@@ -1480,15 +1569,27 @@ function renderDistribution() {
   showDistributionPanel(activeDistributionPanel);
 }
 
-function renderGenericTransferTasks() {
-  const tasks = Array.from(genericTransferUiTasks.values());
+function renderTransferTasks() {
+  const tasks = [
+    ...Array.from(distributionTransferUiTasks.values()).map((task) => ({ ...task, taskKind: "distribution" })),
+    ...Array.from(genericTransferUiTasks.values()).map((task) => ({ ...task, taskKind: "generic" }))
+  ].sort((left, right) => String(right.startedAt || "").localeCompare(String(left.startedAt || "")));
   if (!tasks.length) return "";
   return `<section class="transfer-task-list">${tasks.map((task) => `
-    <article class="transfer-task ${escapeHtml(task.state)}">
-      <div><strong>${escapeHtml(task.source?.split(/[\\/]/).at(-1) || "普通文件传送")}</strong><span>${escapeHtml(task.message || "")}</span></div>
-      <div class="transfer-progress"><i style="width:${Math.max(0, Math.min(100, Number(task.progress) || 0))}%"></i></div>
+    <article class="transfer-task ${escapeHtml(task.state)}" aria-live="polite">
+      <div class="transfer-task-copy">
+        <span class="transfer-kind">${task.taskKind === "distribution" ? "作品包分发" : "文件传送"}</span>
+        <strong>${escapeHtml(task.collection || task.source?.split(/[\\/]/).at(-1) || "传送任务")}</strong>
+        <small>${escapeHtml(task.stageLabel || task.message || "")}${task.device ? ` · ${escapeHtml(task.device)}` : ""}</small>
+      </div>
+      <div class="transfer-meter">
+        <div class="transfer-progress"><i style="width:${Math.max(0, Math.min(100, Number(task.progress) || 0))}%"></i></div>
+        <span>${escapeHtml(task.message || "")}</span>
+      </div>
       <b>${Number(task.progress) || 0}%</b>
-      ${["running", "cancelling"].includes(task.state) ? `<button type="button" data-cancel-transfer="${escapeHtml(task.id)}" ${task.state === "cancelling" ? "disabled" : ""}>取消</button>` : `<span class="state-badge ${task.state === "completed" ? "good" : task.state === "failed" ? "warn" : ""}">${task.state === "completed" ? "已完成" : task.state === "cancelled" ? "已取消" : "失败"}</span>`}
+      ${["running", "cancelling"].includes(task.state)
+        ? `<button type="button" data-cancel-transfer="${escapeHtml(task.id)}" data-transfer-kind="${task.taskKind}" ${task.state === "cancelling" ? "disabled" : ""}>${task.state === "cancelling" ? "停止中" : "停止"}</button>`
+        : `<span class="state-badge ${task.state === "completed" ? "good" : task.state === "failed" ? "bad" : "warn"}">${task.state === "completed" ? "已完成并记录" : task.state === "cancelled" ? "已停止待核对" : "未完成"}</span>`}
     </article>
   `).join("")}</section>`;
 }
@@ -1499,9 +1600,20 @@ async function startGenericTransfer(deviceId, sourcePath) {
     deviceCheckState.onlineDevices || []
   );
   const device = devices.find((item) => item.id === deviceId && item.online);
-  if (!device) return window.alert("目标设备当前不在线，不能发送");
+  if (!device) return showSystemNotice("目标设备当前不在线", "设备恢复在线后，发送按钮会自动可用。");
   if (!sourcePath) return;
-  if (!window.confirm(`把“${sourcePath.split(/[\\/]/).at(-1)}”发送到 ${device.note || device.displayName}？`)) return;
+  const confirmed = await openSystemDialog({
+    eyebrow: "文件传送",
+    title: "确认发送到这台设备？",
+    description: "确认后会立即建立传送任务，并在分发页面显示实时进度。",
+    details: [
+      { label: "文件", value: sourcePath.split(/[\\/]/).at(-1) },
+      { label: "目标设备", value: device.note || device.displayName }
+    ],
+    cancelLabel: "返回",
+    confirmLabel: "开始发送"
+  });
+  if (!confirmed) return;
   try {
     const task = await api("/api/transfers", {
       method: "POST",
@@ -1517,30 +1629,69 @@ async function startGenericTransfer(deviceId, sourcePath) {
     renderDistribution();
     ensureTransferPolling();
   } catch (error) {
-    window.alert(`无法开始传送：${error.message}`);
+    showSystemNotice("无法开始传送", error.message, { tone: "danger" });
   }
 }
 
 function ensureTransferPolling() {
   if (transferPollTimer) return;
   transferPollTimer = window.setInterval(async () => {
-    const running = Array.from(genericTransferUiTasks.values()).filter((task) =>
+    const genericRunning = Array.from(genericTransferUiTasks.values()).filter((task) =>
       ["running", "cancelling"].includes(task.state)
     );
-    if (!running.length) {
+    const distributionRunning = Array.from(distributionTransferUiTasks.values()).filter((task) =>
+      ["running", "cancelling"].includes(task.state)
+    );
+    if (!genericRunning.length && !distributionRunning.length) {
       window.clearInterval(transferPollTimer);
       transferPollTimer = null;
       return;
     }
-    await Promise.all(running.map(async (task) => {
+    let distributionFinished = false;
+    await Promise.all(genericRunning.map(async (task) => {
       try {
         genericTransferUiTasks.set(task.id, await api(`/api/transfers/${encodeURIComponent(task.id)}`));
       } catch (error) {
         genericTransferUiTasks.set(task.id, { ...task, state: "failed", message: error.message });
       }
     }));
+    await Promise.all(distributionRunning.map(async (task) => {
+      try {
+        const next = await api(`/api/distribution/tasks/${encodeURIComponent(task.id)}`);
+        distributionTransferUiTasks.set(task.id, next);
+        if (!["running", "cancelling"].includes(next.state)) distributionFinished = true;
+      } catch (error) {
+        distributionTransferUiTasks.set(task.id, {
+          ...task,
+          state: "failed",
+          stageLabel: "无法读取任务状态",
+          message: error.message
+        });
+      }
+    }));
+    if (distributionFinished) await loadDashboard(true);
     renderDistribution();
   }, 800);
+}
+
+async function restoreTransferTasks() {
+  try {
+    const [distributionTasks, genericTasks] = await Promise.all([
+      api("/api/distribution/tasks"),
+      api("/api/transfers")
+    ]);
+    distributionTransferUiTasks.clear();
+    genericTransferUiTasks.clear();
+    (distributionTasks || []).forEach((task) => distributionTransferUiTasks.set(task.id, task));
+    (genericTasks || []).forEach((task) => genericTransferUiTasks.set(task.id, task));
+    const allTasks = [...(distributionTasks || []), ...(genericTasks || [])];
+    if (allTasks.some((task) =>
+      ["running", "cancelling"].includes(task.state)
+    )) ensureTransferPolling();
+    if (dashboard?.distribution) renderDistribution();
+  } catch (error) {
+    console.warn("无法恢复传送任务", error);
+  }
 }
 
 async function chooseGenericTransferSource(deviceId, kind) {
@@ -1555,7 +1706,7 @@ async function chooseGenericTransferSource(deviceId, kind) {
     });
     if (result.path) await startGenericTransfer(deviceId, result.path);
   } catch (error) {
-    window.alert(`选择失败：${error.message}`);
+    showSystemNotice("没有选到可发送内容", error.message, { tone: "danger" });
   }
 }
 
@@ -1584,26 +1735,71 @@ function applyTheme(theme) {
   $$(".theme-option").forEach((button) => button.classList.toggle("active", button.dataset.theme === value));
 }
 
-async function executeDistributionAction(payload, description) {
-  const confirmed = window.confirm(`${description}\n\n接收确认后，现有分发技能会按平台规则处理 Junction；源作品集不会删除。是否继续？`);
-  if (!confirmed) return;
-  toast("正在执行真实分发，请保持设备接收页面开启");
+async function startDistributionTransfer(payload) {
   try {
-    const result = await api("/api/distribution/action", {
+    const task = await api("/api/distribution/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...payload, confirmed: true })
     });
-    window.alert(result.output || "操作已完成");
+    distributionTransferUiTasks.set(task.id, task);
+    packageDevicePickerCollectionName = "";
+    renderDistribution();
+    ensureTransferPolling();
+    toast("发送任务已经建立，可在页面查看进度");
+  } catch (error) {
+    showSystemNotice("无法开始分发", error.message, { tone: "danger" });
+  }
+}
+
+async function executeDistributionAction(payload, description) {
+  const isOfficial = payload.action === "official-reserve";
+  const confirmed = await openSystemDialog({
+    eyebrow: isOfficial ? "公众号补笔记" : "手机补笔记",
+    title: isOfficial ? "打开一个公众号可用作品包？" : "确认随机补充作品包？",
+    description,
+    details: isOfficial ? [] : [
+      { label: "目标设备", value: payload.device },
+      { label: "内容类型", value: payload.type === "conversion" ? "团建转化" : "泛流量" }
+    ],
+    warning: isOfficial
+      ? "打开文件夹只会登记为“已打开过”，上传完成后还需要回到这里确认。"
+      : "发送完成后，该作品包会标记为已使用，不会再次进入手机可用列表；源作品不会删除。",
+    cancelLabel: "返回",
+    confirmLabel: isOfficial ? "打开作品包" : "确认发送"
+  });
+  if (!confirmed) return;
+  if (!isOfficial) {
+    await startDistributionTransfer(payload);
+    return;
+  }
+  toast("正在准备公众号作品包");
+  try {
+    await api("/api/distribution/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, confirmed: true })
+    });
     await loadDashboard(true);
     activateTab("distribution");
+    showDistributionPanel("official");
+    toast("作品包已打开，并登记为已打开过");
   } catch (error) {
-    window.alert(`分发未完成：${error.message}`);
+    showSystemNotice("公众号作品包没有打开", error.message, { tone: "danger" });
   }
 }
 
 async function confirmOfficialCollection(collection) {
-  if (!window.confirm(`确认“${collection}”已经在电脑端上传完成？\n\n这会追加一条确认记录，不会删除源作品集。`)) return;
+  const confirmed = await openSystemDialog({
+    eyebrow: "公众号上传确认",
+    title: "这份作品已经上传完成？",
+    description: "确认后会写入完成记录，作品源文件仍然保留。",
+    details: [{ label: "作品包", value: collection }],
+    warning: "只有确实在公众号后台完成上传后再确认，避免下次误判可用库存。",
+    cancelLabel: "还没有",
+    confirmLabel: "确认已上传"
+  });
+  if (!confirmed) return;
   try {
     await api("/api/distribution/confirm-official", {
       method: "POST",
@@ -1615,7 +1811,7 @@ async function confirmOfficialCollection(collection) {
     showDistributionPanel("official");
     toast("已记录为公众号上传完成");
   } catch (error) {
-    window.alert(`确认失败：${error.message}`);
+    showSystemNotice("确认记录没有保存", error.message, { tone: "danger" });
   }
 }
 
@@ -1645,7 +1841,7 @@ function beginDeviceNoteEdit(button) {
         device.note = input.value.trim();
         toast("设备备注已保存");
       } catch (error) {
-        window.alert(`备注保存失败：${error.message}`);
+        showSystemNotice("设备备注没有保存", error.message, { tone: "danger" });
       }
     }
     renderDistribution();
@@ -1657,25 +1853,40 @@ function beginDeviceNoteEdit(button) {
   input.addEventListener("blur", () => finish());
 }
 
-function sendSelectedDistributionPackage() {
+async function sendSelectedDistributionPackage() {
   const data = dashboard?.distribution || {};
   const collection = (data.collections || []).find((item) =>
     item.name === selectedDistributionCollectionName
   );
   const devices = DistributionUI.decorateDevices(data.devices || [], deviceCheckState.onlineDevices || []);
   const device = devices.find((item) => item.id === selectedDistributionDeviceId && item.online);
-  if (!collection) return window.alert("请先选择一个作品包");
-  if (!device) return window.alert("请选择一台当前在线设备");
+  if (!collection) return showSystemNotice("还没有选择作品包", "请先在列表里选择要发送的作品包。");
+  if (!device) return showSystemNotice("目标设备已经离线", "返回设备选择列表，选择一台当前在线设备。");
   const typeLabel = collection.type === "conversion" ? "团建转化" : "泛流量";
-  executeDistributionAction(
-    {
-      action: "device-restock",
-      device: device.aliases?.[0] || device.displayName,
-      type: collection.type,
-      collection: collection.name
-    },
-    `把“${collection.name}”作为${typeLabel}作品包发送到 ${device.note || device.displayName}。发送成功后将沿用现有分发记录标记为已使用。`
-  );
+  const confirmed = await openSystemDialog({
+    eyebrow: "发送作品包",
+    title: "确认发送到这台设备？",
+    description: "确认后会立即开始发送，页面会持续显示百分比、当前阶段和最终结果。",
+    details: [
+      { label: "作品包", value: collection.name },
+      { label: "目标设备", value: device.note || device.displayName },
+      { label: "内容类型", value: typeLabel }
+    ],
+    warning: "发送完成后，小红书 + 抖音手机组会整组标记为已使用，不会再次出现在手机可用列表；公众号资格不受影响。",
+    cancelLabel: "返回重选",
+    confirmLabel: "确认发送"
+  });
+  if (!confirmed) {
+    packageDevicePickerCollectionName = collection.name;
+    renderDistribution();
+    return;
+  }
+  await startDistributionTransfer({
+    action: "device-restock",
+    device: device.aliases?.[0] || device.displayName,
+    type: collection.type,
+    collection: collection.name
+  });
 }
 
 async function checkDistributionDevices(options = {}) {
@@ -1717,7 +1928,7 @@ async function checkDistributionDevices(options = {}) {
   } catch (error) {
     deviceCheckState = { ...deviceCheckState, scanning: false };
     if (dashboard?.distribution) renderDistribution();
-    if (!options.silent) window.alert(`扫描失败：${error.message}`);
+    if (!options.silent) showSystemNotice("设备状态刷新失败", error.message, { tone: "danger" });
     else console.error("设备自动扫描失败", error);
   } finally {
     deviceScanRunning = false;
@@ -1925,15 +2136,26 @@ async function transmitMaterialToGpt(itemId = selectedMaterial?.id) {
 async function renamePath(targetPath, currentLabel) {
   if (!targetPath) return;
   const oldName = (currentLabel || targetPath).replace(/（\\d+条）$/, "").trim();
-  const nextName = window.prompt("输入新的文件夹名称", oldName);
-  if (!nextName || nextName === oldName) return;
-  await api("/api/rename", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: targetPath, newName: nextName })
+  const nextName = await openSystemDialog({
+    eyebrow: "文件夹管理",
+    title: "修改文件夹名称",
+    description: "只修改当前文件夹名称，不改变里面的图片和文案。",
+    input: { label: "新名称", value: oldName, maxLength: 160 },
+    cancelLabel: "取消",
+    confirmLabel: "保存名称"
   });
-  await loadDashboard(true, $("#materialLibraryFilter")?.value || "");
-  toast("已重命名并刷新");
+  if (!nextName || nextName === oldName) return;
+  try {
+    await api("/api/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: targetPath, newName: nextName })
+    });
+    await loadDashboard(true, $("#materialLibraryFilter")?.value || "");
+    toast("已重命名并刷新");
+  } catch (error) {
+    showSystemNotice("文件夹没有重命名", error.message, { tone: "danger" });
+  }
 }
 
 function buildTemplateCommand(target) {
@@ -2017,7 +2239,7 @@ function bindEvents() {
         activateTab("products");
         renderCollectionDetail(saveLedger.dataset.saveCollectionLedger);
         toast("作品集台账已保存");
-      }).catch((error) => window.alert(`保存台账失败：${error.message}`));
+      }).catch((error) => showSystemNotice("作品集台账没有保存", error.message, { tone: "danger" }));
     }
     const distributionTab = event.target.closest("#distributionTabs [data-panel]");
     if (distributionTab) showDistributionPanel(distributionTab.dataset.panel);
@@ -2048,12 +2270,16 @@ function bindEvents() {
     }
     const cancelTransfer = event.target.closest("[data-cancel-transfer]");
     if (cancelTransfer) {
-      api(`/api/transfers/${encodeURIComponent(cancelTransfer.dataset.cancelTransfer)}/cancel`, {
+      const isDistributionTask = cancelTransfer.dataset.transferKind === "distribution";
+      const endpoint = isDistributionTask
+        ? `/api/distribution/tasks/${encodeURIComponent(cancelTransfer.dataset.cancelTransfer)}/cancel`
+        : `/api/transfers/${encodeURIComponent(cancelTransfer.dataset.cancelTransfer)}/cancel`;
+      api(endpoint, {
         method: "POST"
       }).then((task) => {
-        genericTransferUiTasks.set(task.id, task);
+        (isDistributionTask ? distributionTransferUiTasks : genericTransferUiTasks).set(task.id, task);
         renderDistribution();
-      }).catch((error) => window.alert(`取消失败：${error.message}`));
+      }).catch((error) => showSystemNotice("无法停止任务", error.message, { tone: "danger" }));
     }
     const selectPackage = event.target.closest("[data-select-package]");
     if (selectPackage) {
@@ -2070,6 +2296,7 @@ function bindEvents() {
     if (confirmPackageDevice) {
       selectedDistributionDeviceId = confirmPackageDevice.dataset.confirmPackageDevice;
       packageDevicePickerCollectionName = "";
+      renderDistribution();
       sendSelectedDistributionPackage();
     }
     const closeDevicePicker = event.target.closest("[data-close-device-picker]");
@@ -2121,7 +2348,7 @@ function bindEvents() {
       ? (window.desktopFiles?.getPath?.(file) || file.path || "")
       : "";
     if (!sourcePath) {
-      window.alert("拖拽传送需要在桌面应用中使用；浏览器调试版请点“上传其他”。");
+      showSystemNotice("浏览器调试版不能读取拖入路径", "请使用桌面应用拖放，或点击设备右侧的“上传其他”。");
       return;
     }
     await startGenericTransfer(row.dataset.deviceId, sourcePath);
@@ -2145,7 +2372,7 @@ function bindEvents() {
       const selectedPath = await chooseFolder("选择需要递归扫描的素材目录");
       if (selectedPath) $("#materialRootInput").value = selectedPath;
     } catch (error) {
-      window.alert(`目录选择失败：${error.message}`);
+      showSystemNotice("目录选择失败", error.message, { tone: "danger" });
     }
   });
   $("#applyMaterialRootBtn")?.addEventListener("click", () => {
@@ -2153,7 +2380,7 @@ function bindEvents() {
       materialRoot: $("#materialRootInput").value,
       materialOnly: true,
       returnTab: "dashboard"
-    }).catch((error) => window.alert(`扫描失败：${error.message}`));
+    }).catch((error) => showSystemNotice("目录扫描失败", error.message, { tone: "danger" }));
   });
   $("#materialRootInput")?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
@@ -2165,12 +2392,12 @@ function bindEvents() {
       const selectedPath = await chooseFolder("选择作品集存放目录");
       if (selectedPath) $("#settingsPortfolioRoot").value = selectedPath;
     } catch (error) {
-      window.alert(`目录选择失败：${error.message}`);
+      showSystemNotice("目录选择失败", error.message, { tone: "danger" });
     }
   });
   $("#savePathSettingsBtn")?.addEventListener("click", () => {
     saveWorkspacePaths({ returnTab: "settings" })
-      .catch((error) => window.alert(`保存失败：${error.message}`));
+      .catch((error) => showSystemNotice("设置没有保存", error.message, { tone: "danger" }));
   });
   $("#overviewRefreshBtn")?.addEventListener("click", async () => {
     await loadDashboard(true);
@@ -2305,6 +2532,7 @@ bindPaneResizers();
 applyTheme(localStorage.getItem("tb-dashboard-theme") || "solid");
 loadDashboard()
   .then(() => {
+    restoreTransferTasks();
     if (!deviceScanStarted) checkDistributionDevices({ silent: true, refreshInventory: false });
     window.setInterval(() => {
       if (!deviceScanRunning) checkDistributionDevices({ silent: true, refreshInventory: false });

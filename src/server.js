@@ -5,6 +5,10 @@ const url = require("url");
 const childProcess = require("child_process");
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
 const { confirmOfficialUpload, getDistributionSnapshot } = require("./lib/distribution-data");
+const {
+  publicTransferTask,
+  updateTransferProgress
+} = require("./lib/transfer-progress");
 
 const PORT = Number(process.env.PORT || 4327);
 const PROJECT_ROOT = process.env.TEAMBUILDING_ROOT || "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目";
@@ -38,6 +42,7 @@ const materialCategoryCache = new Map();
 let deviceStatusCache = { checkedAt: 0, output: "", onlineDevices: [] };
 let deviceStatusPromise = null;
 const genericTransferTasks = new Map();
+const distributionTasks = new Map();
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_ROOT, { recursive: true });
@@ -960,6 +965,120 @@ function runDistributionAction(args) {
   });
 }
 
+function trimCompletedTasks(tasks) {
+  if (tasks.size < 50) return;
+  const removable = Array.from(tasks.entries())
+    .filter(([, task]) => !["running", "cancelling"].includes(task.state))
+    .sort((left, right) => String(left[1].startedAt).localeCompare(String(right[1].startedAt)));
+  removable.slice(0, Math.max(1, tasks.size - 49))
+    .forEach(([id]) => tasks.delete(id));
+}
+
+function recentPublicTasks(tasks, limit = 12) {
+  return Array.from(tasks.values())
+    .sort((left, right) => String(right.startedAt || "").localeCompare(String(left.startedAt || "")))
+    .slice(0, limit)
+    .map(publicTransferTask);
+}
+
+function startDistributionTask(body = {}) {
+  if (body.action !== "device-restock") {
+    throw new Error("这个任务入口只用于手机作品包分发");
+  }
+  const args = buildDistributionArgs(body);
+  const taskId = `distribution-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  trimCompletedTasks(distributionTasks);
+  const record = {
+    id: taskId,
+    kind: "distribution",
+    action: body.action,
+    device: String(body.device || "").trim(),
+    collection: String(body.collection || "").trim(),
+    contentType: body.type === "conversion" ? "团建转化" : "泛流量",
+    state: "running",
+    stage: "queued",
+    stageLabel: "准备开始发送",
+    progress: 0,
+    message: "任务已经建立",
+    output: "",
+    remoteTaskId: "",
+    startedAt: new Date().toISOString(),
+    child: null
+  };
+  const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "restock_device.py");
+  const child = childProcess.spawn("py", [script, ...args], {
+    cwd: DEVICE_TRANSFER_ROOT,
+    env: {
+      ...process.env,
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8"
+    },
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  record.child = child;
+  distributionTasks.set(taskId, record);
+  child.stdout.on("data", (chunk) => updateTransferProgress(record, chunk));
+  child.stderr.on("data", (chunk) => updateTransferProgress(record, chunk, true));
+  child.on("error", (error) => {
+    record.state = "failed";
+    record.stage = "failed";
+    record.stageLabel = "发送未完成";
+    record.message = error.message;
+    record.finishedAt = new Date().toISOString();
+  });
+  child.on("close", (code) => {
+    if (record.state === "cancelling") {
+      record.state = "cancelled";
+      record.stage = "cancelled";
+      record.stageLabel = "已停止发送";
+      record.message = "已停止；为防止重复发送，请先核对手机接收情况";
+    } else if (code === 0) {
+      record.state = "completed";
+      record.stage = "completed";
+      record.stageLabel = "发送完成并已记录";
+      record.progress = 100;
+      record.message = "作品包已发送，手机分发组已标记为使用";
+    } else {
+      record.state = "failed";
+      record.stage = "failed";
+      record.stageLabel = "发送未完成";
+      record.message = record.error || record.message || `分发进程退出码 ${code}`;
+    }
+    record.finishedAt = new Date().toISOString();
+    record.child = null;
+  });
+  return publicTransferTask(record);
+}
+
+function cancelDistributionTask(taskId) {
+  const record = distributionTasks.get(String(taskId || ""));
+  if (!record) throw new Error("分发任务不存在");
+  if (record.state !== "running") return publicTransferTask(record);
+  record.state = "cancelling";
+  record.stage = "cancelling";
+  record.stageLabel = "正在安全停止";
+  record.message = "正在停止发送";
+  if (record.child && !record.child.killed) record.child.kill();
+  if (record.remoteTaskId) {
+    const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "send_to_device.py");
+    childProcess.spawn("py", [
+      script,
+      "--cancel-task",
+      record.remoteTaskId,
+      "--device",
+      record.device
+    ], {
+      cwd: DEVICE_TRANSFER_ROOT,
+      env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+      windowsHide: true,
+      detached: true,
+      stdio: "ignore"
+    }).unref();
+  }
+  return publicTransferTask(record);
+}
+
 function startGenericTransfer(source, device) {
   const rawSource = String(source || "").trim();
   if (!rawSource) throw new Error("请选择要传送的文件或文件夹");
@@ -973,13 +1092,7 @@ function startGenericTransfer(source, device) {
     throw new Error("设备名称无效");
   }
   const taskId = `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  if (genericTransferTasks.size >= 50) {
-    const removable = Array.from(genericTransferTasks.entries())
-      .filter(([, task]) => !["running", "cancelling"].includes(task.state))
-      .sort((left, right) => String(left[1].startedAt).localeCompare(String(right[1].startedAt)));
-    removable.slice(0, Math.max(1, genericTransferTasks.size - 49))
-      .forEach(([id]) => genericTransferTasks.delete(id));
-  }
+  trimCompletedTasks(genericTransferTasks);
   const record = {
     id: taskId,
     device: deviceName,
@@ -1001,19 +1114,8 @@ function startGenericTransfer(source, device) {
   });
   record.child = child;
   genericTransferTasks.set(taskId, record);
-  const consume = (chunk, isError = false) => {
-    const text = chunk.toString("utf8");
-    record.output = `${record.output}${text}`.slice(-64 * 1024);
-    const progressMatches = [...text.matchAll(/传送\s+(\d+)%/g)];
-    if (progressMatches.length) record.progress = Number(progressMatches.at(-1)[1]);
-    const remoteMatch = text.match(/接收任务\s+(task-skill-\d{14})/);
-    if (remoteMatch) record.remoteTaskId = remoteMatch[1];
-    const lines = text.trim().split(/\r?\n/).filter(Boolean);
-    if (lines.length) record.message = lines.at(-1);
-    if (isError && lines.length) record.error = lines.at(-1);
-  };
-  child.stdout.on("data", (chunk) => consume(chunk));
-  child.stderr.on("data", (chunk) => consume(chunk, true));
+  child.stdout.on("data", (chunk) => updateTransferProgress(record, chunk));
+  child.stderr.on("data", (chunk) => updateTransferProgress(record, chunk, true));
   child.on("error", (error) => {
     record.state = "failed";
     record.message = error.message;
@@ -1035,12 +1137,6 @@ function startGenericTransfer(source, device) {
     record.child = null;
   });
   return publicTransferTask(record);
-}
-
-function publicTransferTask(record) {
-  if (!record) return null;
-  const { child, ...safe } = record;
-  return safe;
 }
 
 function cancelGenericTransfer(taskId) {
@@ -1382,6 +1478,9 @@ async function route(req, res) {
     const selectedPath = await pickFileWithWindowsDialog(body.title || "选择要传送的文件");
     return sendJson(res, { ok: true, path: selectedPath });
   }
+  if (pathname === "/api/transfers" && req.method === "GET") {
+    return sendJson(res, recentPublicTasks(genericTransferTasks));
+  }
   if (pathname === "/api/transfers" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 16_000) || "{}");
     if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认本次文件传送" }));
@@ -1398,6 +1497,28 @@ async function route(req, res) {
       pathname.slice("/api/transfers/".length, -"/cancel".length)
     );
     return sendJson(res, cancelGenericTransfer(taskId));
+  }
+  if (pathname === "/api/distribution/tasks" && req.method === "GET") {
+    return sendJson(res, recentPublicTasks(distributionTasks));
+  }
+  if (pathname === "/api/distribution/tasks" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    if (body.confirmed !== true) {
+      return send(res, 409, JSON.stringify({ error: "需要在界面确认本次真实分发" }));
+    }
+    return sendJson(res, startDistributionTask(body));
+  }
+  if (pathname.startsWith("/api/distribution/tasks/") && pathname.endsWith("/cancel") && req.method === "POST") {
+    const taskId = decodeURIComponent(
+      pathname.slice("/api/distribution/tasks/".length, -"/cancel".length)
+    );
+    return sendJson(res, cancelDistributionTask(taskId));
+  }
+  if (pathname.startsWith("/api/distribution/tasks/") && req.method === "GET") {
+    const taskId = decodeURIComponent(pathname.slice("/api/distribution/tasks/".length));
+    const record = distributionTasks.get(taskId);
+    if (!record) return send(res, 404, JSON.stringify({ error: "分发任务不存在" }));
+    return sendJson(res, publicTransferTask(record));
   }
   if (pathname === "/api/distribution/action" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");

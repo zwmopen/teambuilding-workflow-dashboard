@@ -2713,6 +2713,197 @@ label {
   backdrop-filter: blur(8px);
 }
 
+.system-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(18, 34, 29, .42);
+  backdrop-filter: blur(11px) saturate(.88);
+  animation: dialog-backdrop-in .18s ease-out;
+}
+
+.system-dialog {
+  width: min(560px, 100%);
+  overflow: hidden;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, .88);
+  border-radius: 26px;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 92% 0, color-mix(in srgb, var(--selection) 72%, transparent), transparent 42%),
+    color-mix(in srgb, var(--panel-light) 96%, transparent);
+  box-shadow:
+    0 30px 90px rgba(17, 39, 31, .3),
+    inset 0 1px 0 rgba(255, 255, 255, .72);
+  animation: dialog-card-in .22s cubic-bezier(.2, .8, .2, 1);
+}
+
+.system-dialog header {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.system-dialog h2 {
+  margin: 4px 0 0;
+  font-size: 23px;
+  letter-spacing: -.03em;
+}
+
+.system-dialog-eyebrow {
+  color: var(--accent-dark);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+
+.system-dialog header > button {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--selection) 78%, var(--panel-light));
+  font-size: 23px;
+}
+
+.system-dialog-description {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.system-dialog-details {
+  display: grid;
+  gap: 1px;
+  margin: 18px 0 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--line);
+}
+
+.system-dialog-details > div {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 14px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--panel-light) 96%, transparent);
+}
+
+.system-dialog-details dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.system-dialog-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.system-dialog-input {
+  display: grid;
+  gap: 7px;
+  margin-top: 17px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.system-dialog-input input {
+  width: 100%;
+  height: 46px;
+  padding: 0 14px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  outline: none;
+  background: color-mix(in srgb, var(--panel-light) 88%, var(--selection));
+  font: inherit;
+}
+
+.system-dialog-input input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.system-dialog-warning {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  margin-top: 14px;
+  padding: 12px 14px;
+  color: color-mix(in srgb, var(--warn) 82%, var(--ink));
+  border: 1px solid color-mix(in srgb, var(--warn) 24%, transparent);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--warn) 9%, var(--panel-light));
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.system-dialog-warning svg {
+  width: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.system-dialog footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.system-dialog footer button {
+  min-width: 112px;
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 14px;
+  font-weight: 800;
+}
+
+.dialog-secondary {
+  color: var(--accent-dark);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-light) 92%, var(--selection));
+}
+
+.dialog-primary {
+  color: #fff;
+  border: 1px solid transparent;
+  background: var(--accent);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.dialog-primary:hover,
+.dialog-primary:focus-visible {
+  background: var(--accent-dark);
+  outline: 3px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  outline-offset: 2px;
+}
+
+@keyframes dialog-backdrop-in {
+  from { opacity: 0; }
+}
+
+@keyframes dialog-card-in {
+  from { opacity: 0; transform: translateY(10px) scale(.98); }
+}
+
 .device-picker-dialog {
   width: min(540px, 100%);
   max-height: min(680px, calc(100vh - 48px));
@@ -2883,23 +3074,56 @@ label {
 
 .transfer-task {
   display: grid;
-  grid-template-columns: minmax(210px, .8fr) minmax(180px, 1fr) 48px auto;
+  grid-template-columns: minmax(230px, .9fr) minmax(220px, 1.1fr) 48px auto;
   gap: 12px;
   align-items: center;
-  padding: 10px 13px;
+  padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 13px;
+  border-radius: 17px;
   background: color-mix(in srgb, var(--panel-light) 88%, transparent);
 }
 
-.transfer-task > div:first-child {
+.transfer-task-copy {
   display: grid;
-  gap: 3px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 8px;
+  align-items: center;
 }
 
-.transfer-task > div:first-child span {
+.transfer-task-copy .transfer-kind {
+  width: max-content;
+  padding: 3px 7px;
+  color: var(--accent-dark);
+  border-radius: 999px;
+  background: var(--selection);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.transfer-task-copy strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-task-copy small {
+  grid-column: 1 / -1;
   color: var(--muted);
   font-size: 11px;
+}
+
+.transfer-meter {
+  display: grid;
+  gap: 5px;
+}
+
+.transfer-meter > span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .transfer-progress {
@@ -2924,6 +3148,55 @@ label {
   border-radius: 8px;
   color: var(--accent-dark);
   background: var(--panel-light);
+}
+
+.transfer-task.completed .transfer-progress i {
+  background: var(--accent);
+}
+
+.transfer-task.failed .transfer-progress i,
+.transfer-task.cancelled .transfer-progress i {
+  background: var(--warn);
+}
+
+@media (max-width: 980px) {
+  .transfer-task {
+    grid-template-columns: minmax(0, 1fr) 48px auto;
+  }
+
+  .transfer-meter {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+@media (max-width: 560px) {
+  .system-dialog-backdrop {
+    align-items: end;
+    padding: 10px;
+  }
+
+  .system-dialog {
+    padding: 18px;
+    border-radius: 24px;
+  }
+
+  .system-dialog footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .system-dialog footer button {
+    min-width: 0;
+  }
+
+  .transfer-task {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .transfer-task > b {
+    display: none;
+  }
 }
 
 .codex-command-bar {
