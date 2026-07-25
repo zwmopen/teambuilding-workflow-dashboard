@@ -1359,9 +1359,15 @@ function renderCollections() {
   const collections = getFilteredCollections();
   const list = $("#collectionList");
   list.classList.toggle("grid-view", collectionViewMode === "grid");
-  document.querySelectorAll("[data-collection-view]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.collectionView === collectionViewMode);
-  });
+  const viewToggle = $("[data-collection-view-toggle]");
+  if (viewToggle) {
+    const nextIsGrid = collectionViewMode !== "grid";
+    viewToggle.innerHTML = nextIsGrid
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg>'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>';
+    viewToggle.title = nextIsGrid ? "切换为网格视图" : "切换为列表视图";
+    viewToggle.setAttribute("aria-label", viewToggle.title);
+  }
   list.innerHTML = collections.length ? collections.map((collection) => {
     const expanded = expandedCollectionNames.has(collection.name);
     const badges = [
@@ -2180,9 +2186,9 @@ function bindEvents() {
       else expandedCollectionNames.add(name);
       renderCollections();
     }
-    const collectionView = event.target.closest("[data-collection-view]");
+    const collectionView = event.target.closest("[data-collection-view-toggle]");
     if (collectionView) {
-      collectionViewMode = collectionView.dataset.collectionView === "grid" ? "grid" : "list";
+      collectionViewMode = collectionViewMode === "grid" ? "list" : "grid";
       window.localStorage.setItem("collectionViewMode", collectionViewMode);
       renderCollections();
     }

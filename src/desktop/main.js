@@ -109,6 +109,7 @@ async function ensureServer() {
 
 function secureGuest(contents) {
   if (contents.getType() === "webview") {
+    contents.setUserAgent(`Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`);
     contents.session.setDownloadPath(DOWNLOAD_ROOT);
     contents.on("dom-ready", () => injectChatGptUserscript(contents));
   }
@@ -141,6 +142,7 @@ async function createWindow() {
     minWidth: 1120,
     minHeight: 700,
     title: "团建内容工作台",
+    show: false,
     backgroundColor: "#e7eee9",
     autoHideMenuBar: true,
     webPreferences: {
@@ -151,6 +153,8 @@ async function createWindow() {
       preload: path.join(__dirname, "shell-preload.js")
     }
   });
+
+  window.once("ready-to-show", () => window.show());
 
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     delete webPreferences.preload;

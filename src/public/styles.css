@@ -4305,3 +4305,108 @@ body[data-theme="midnight"] .rail-tab.active {
     grid-column: 2 / -1;
   }
 }
+
+/* Compact daily controls: keep labels intact and merge tree toggles into their rows. */
+.device-row {
+  grid-template-columns: 56px minmax(190px, 1fr) minmax(132px, auto) minmax(276px, auto);
+  gap: 10px;
+}
+
+.device-actions {
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.device-actions button {
+  flex: 0 0 auto;
+  min-width: 84px;
+  height: 36px;
+  padding-inline: 9px;
+  white-space: nowrap;
+  word-break: keep-all;
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+body .collection-toggle,
+body[data-theme] .collection-toggle {
+  width: 20px;
+  min-width: 20px;
+  height: 38px;
+  min-height: 38px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--muted);
+  background: transparent;
+  box-shadow: none;
+}
+
+body .collection-toggle:hover,
+body[data-theme] .collection-toggle:hover {
+  color: var(--accent-dark);
+  background: transparent;
+  box-shadow: none;
+}
+
+.collection-toggle span {
+  font-size: 16px;
+}
+
+.filter-toolbar {
+  position: relative;
+  padding-right: 52px;
+}
+
+.collection-view-toggle,
+body[data-theme] .collection-view-toggle {
+  position: absolute;
+  right: 14px;
+  bottom: 13px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 6px;
+  color: var(--muted);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  opacity: .72;
+}
+
+.collection-view-toggle:hover,
+body[data-theme] .collection-view-toggle:hover {
+  color: var(--accent-dark);
+  background: var(--selection);
+  box-shadow: none;
+  opacity: 1;
+}
+
+.collection-view-toggle svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+}
+
+.collection-view-toggle svg rect {
+  fill: currentColor;
+  stroke: none;
+}
+
+@media (max-width: 980px) {
+  .device-row {
+    grid-template-columns: 52px minmax(170px, 1fr) minmax(112px, auto) minmax(252px, auto);
+    gap: 8px;
+    padding-inline: 10px;
+  }
+
+  .device-actions button {
+    min-width: 76px;
+    padding-inline: 7px;
+    font-size: 12px;
+  }
+}
