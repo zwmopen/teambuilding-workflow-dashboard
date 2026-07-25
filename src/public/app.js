@@ -1381,7 +1381,7 @@ function renderDistribution() {
     deviceCheckState.onlineDevices || []
   );
   const distributableCollections = (data.collections || []).filter((collection) =>
-    collection.xhs === "available" || collection.dualPlatformEligible
+    collection.dualPlatformEligible
   );
   const livePackageCounts = DistributionUI.countDistributablePackages(data.collections || []);
   const stats = DistributionUI.phoneDistributionStats(summary, deviceCheckState, devices.length)
@@ -1430,8 +1430,8 @@ function renderDistribution() {
           <span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span>
         </button>
         <div class="badge-line">
-          <span class="state-badge good">小红书可用</span>
-          ${collection.dualPlatformEligible ? `<span class="state-badge good">双平台可用</span>` : `<span class="state-badge">单平台可用</span>`}
+          <span class="state-badge good">小红书 + 抖音可用</span>
+          <span class="state-badge good">双平台可用</span>
         </div>
         <div class="device-actions">
           <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品包</button>

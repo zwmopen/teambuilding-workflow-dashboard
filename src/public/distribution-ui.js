@@ -85,7 +85,7 @@
 
   function countDistributablePackages(collections = []) {
     return (Array.isArray(collections) ? collections : [])
-      .filter((collection) => collection.xhs === "available" || collection.dualPlatformEligible)
+      .filter((collection) => collection.dualPlatformEligible)
       .reduce((counts, collection) => {
         if (collection.type === "traffic" || collection.type === "conversion") {
           counts[collection.type] += 1;

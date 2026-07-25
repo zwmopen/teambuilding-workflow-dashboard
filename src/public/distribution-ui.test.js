@@ -107,7 +107,7 @@ test("countDistributablePackages uses the same eligibility as the visible packag
       { name: "作品集_010[转]", type: "conversion", xhs: "used", dualPlatformEligible: false },
       { name: "作品集_015[泛]", type: "traffic", xhs: "used", dualPlatformEligible: true }
     ]),
-    { traffic: 1, conversion: 2 }
+    { traffic: 1, conversion: 1 }
   );
 });
 
