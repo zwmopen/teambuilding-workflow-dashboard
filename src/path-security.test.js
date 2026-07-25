@@ -111,9 +111,10 @@ test('public file resolver prevents traversal outside the public directory', () 
   assert.equal(path.basename(index), 'index.html');
 });
 
-test('external launcher only allows ChatGPT and the existing work-package protocol', () => {
+test('external launcher only allows approved workflow sites and the existing work-package protocol', () => {
   assert.equal(server.isAllowedExternalTarget('https://chatgpt.com/'), true);
   assert.equal(server.isAllowedExternalTarget('https://chatgpt.com/c/abc'), true);
+  assert.equal(server.isAllowedExternalTarget('https://mp.weixin.qq.com/'), true);
   assert.equal(server.isAllowedExternalTarget('cgpt-workpkg://run'), true);
   assert.equal(server.isAllowedExternalTarget('cgpt-workpkg://configure'), true);
   assert.equal(server.isAllowedExternalTarget('https://example.com/'), false);
@@ -128,6 +129,15 @@ test('buildDistributionArgs only creates allowlisted transfer commands', () => {
   assert.deepEqual(
     server.buildDistributionArgs({ action: 'official-reserve', type: 'conversion' }),
     ['--official-account', '--type', '团建转化']
+  );
+  assert.deepEqual(
+    server.buildDistributionArgs({
+      action: 'device-restock',
+      device: '5号',
+      type: 'traffic',
+      collection: '作品集_015[泛]'
+    }),
+    ['--device', '5号', '--type', '泛流量', '--collection', '作品集_015[泛]']
   );
   assert.throws(
     () => server.buildDistributionArgs({ action: 'run-anything', device: '5号' }),

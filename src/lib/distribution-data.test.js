@@ -80,6 +80,33 @@ test("snapshot only marks same-source valid junctions as dual-platform eligible"
   }
 });
 
+test("device usage log overrides accidentally recreated platform links", () => {
+  const fixture = makeFixture();
+  try {
+    const source = createCollection(fixture.collectionsRoot, "作品集_015[泛]");
+    linkCollection(fixture.publishRoot, "小红书", "作品集_015[泛]", source);
+    linkCollection(fixture.publishRoot, "抖音", "作品集_015[泛]", source);
+    fs.writeFileSync(
+      path.join(fixture.publishRoot, "device-usage-log.csv"),
+      [
+        "时间,设备名,设备型号,源作品集,源路径,文件数,字节数,传输协议,接收确认,操作",
+        `2026-07-25T10:00:00,1号,Android,作品集_015[泛],${source},14,100,LAN,作品数 0→14,删除小红书+抖音 Junction`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const snapshot = getDistributionSnapshot({ publishRoot: fixture.publishRoot });
+    const collection = snapshot.collections.find((item) => item.name === "作品集_015[泛]");
+
+    assert.equal(collection.xhs, "used");
+    assert.equal(collection.douyin, "used");
+    assert.equal(collection.automaticEligible, false);
+    assert.match(collection.exclusionReasons.join("；"), /已有手机分发记录/);
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
 test("snapshot combines archive and latest official-account log state", () => {
   const fixture = makeFixture();
   try {

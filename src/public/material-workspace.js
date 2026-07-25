@@ -88,43 +88,26 @@
                   <strong>ChatGPT · 真实网页工作区</strong>
                   <span>使用你已经登录的浏览器账号和现有网页脚本</span>
                 </div>
-                <button id="openChatGptBtn" class="primary-button" type="button">打开 / 激活 ChatGPT</button>
               </header>
               <div class="gpt-address">
                 <span class="status-dot"></span>
                 <code>chatgpt.com</code>
                 <span>会话、母版和脚本继续使用原件，不复制源码</span>
               </div>
-              <section class="gpt-task-card">
-                <div class="task-card-head">
-                  <div><p class="label">当前传输任务</p><h3 id="focusPreviewTitle">请选择左侧帖子</h3></div>
-                  <span id="focusPreviewMeta">尚未绑定素材</span>
-                </div>
-                <div class="task-preview-row">
-                  <figure class="focus-preview compact" id="focusPreview">
-                    <img id="focusPreviewImage" alt="当前素材封面" />
-                    <textarea id="focusPreviewText" class="focus-preview-text" spellcheck="false"></textarea>
-                    <figcaption hidden></figcaption>
-                  </figure>
-                  <div class="task-copy">
-                    <label for="commandBox">发送给 GPT 的内容</label>
-                    <textarea id="commandBox" class="command-box" spellcheck="false"></textarea>
-                  </div>
-                </div>
-                <p id="materialPath" class="path-line">选择帖子后显示本地路径</p>
-                <section class="production-status" id="productionStatus" aria-live="polite"></section>
-                <div class="gpt-action-grid">
-                  <button class="primary-button" id="sendSelectedToGptBtn" type="button">传 GPT</button>
-                  <button class="ghost-button" id="copyCommandBtn" type="button">复制生产指令</button>
-                  <button class="ghost-button" id="copyMaterialBtn" type="button">打开帖子文件夹</button>
-                  <button class="ghost-button" id="runWorkPackageBtn" type="button">运行本地工作包</button>
-                  <button class="ghost-button" id="configureWorkPackageBtn" type="button">配置工作包</button>
-                </div>
-                <div class="integration-note">
-                  <strong>联动方式</strong>
-                  <span>“传 GPT”会准备当前帖子路径与生产指令，并打开真实 ChatGPT。浏览器中的对话树、图片下载和一键工作包脚本照常工作。</span>
+              <section class="gpt-browser-placeholder">
+                <div>
+                  <strong>ChatGPT 真实网页</strong>
+                  <p>桌面应用会在这里直接显示可登录的 ChatGPT 网页，并保留原有脚本和账号会话。</p>
+                  <button id="openChatGptBtn" class="primary-button" type="button">在当前浏览器打开 ChatGPT</button>
                 </div>
               </section>
+              <div hidden>
+                <h3 id="focusPreviewTitle"></h3><span id="focusPreviewMeta"></span>
+                <figure id="focusPreview"><img id="focusPreviewImage" alt="" /><textarea id="focusPreviewText"></textarea></figure>
+                <textarea id="commandBox"></textarea><p id="materialPath"></p><section id="productionStatus"></section>
+                <button id="sendSelectedToGptBtn"></button><button id="copyCommandBtn"></button><button id="copyMaterialBtn"></button>
+                <button id="runWorkPackageBtn"></button><button id="configureWorkPackageBtn"></button>
+              </div>
             </section>
           </div>
           <div class="legacy-material-controls" hidden>

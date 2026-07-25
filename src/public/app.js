@@ -16,6 +16,13 @@ let productRenderLimit = 8;
 let collectionFilters = { type: "all", platform: "all", query: "" };
 let selectedCollectionName = "";
 let activeDistributionPanel = "phones";
+let distributionSummaryFilter = "devices";
+let selectedDistributionCollectionName = "";
+let selectedDistributionDeviceId = "";
+let packageDevicePickerCollectionName = "";
+let uploadChoiceDeviceId = "";
+const genericTransferUiTasks = new Map();
+let transferPollTimer = null;
 let deviceCheckState = {
   registered: null,
   online: null,
@@ -28,6 +35,7 @@ let deviceScanRunning = false;
 const expandedMaterialPaths = new Set();
 const expandedCollectionNames = new Set();
 let materialTreeInitialized = false;
+let materialTreeView = window.localStorage.getItem("materialTreeView") === "icons" ? "icons" : "list";
 
 const LOCATION_KEYWORDS = ["上海", "杭州", "安吉", "苏州", "南京", "湖州", "桐庐", "千岛湖", "莫干山", "宁波"];
 const ACTIVITY_KEYWORDS = ["露营", "溯溪", "漂流", "烧烤", "农庄", "采摘", "徒步", "越野", "轰趴", "玩水"];
@@ -1134,7 +1142,20 @@ function renderMaterialTree(container) {
     selectedMaterial?.id || "",
     Array.from(expandedMaterialPaths)
   );
+  container.dataset.view = materialTreeView;
   $("#treeSummary").textContent = `${categories.length} 个素材库 · ${entries.length} 个帖子`;
+  const treeToolbar = $(".tree-toolbar > div");
+  if (treeToolbar && !treeToolbar.querySelector(".tree-view-switch")) {
+    treeToolbar.insertAdjacentHTML("beforeend", `
+      <div class="tree-view-switch" role="group" aria-label="素材视图">
+        <button type="button" data-material-tree-view="list" title="列表视图" aria-label="列表视图">☷</button>
+        <button type="button" data-material-tree-view="icons" title="小图标视图" aria-label="小图标视图">▦</button>
+      </div>
+    `);
+  }
+  $$(".tree-view-switch button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.materialTreeView === materialTreeView);
+  });
   container.innerHTML = tree.length ? tree.map((category) => `
     <section class="tree-category${category.expanded ? " expanded" : ""}" data-category-path="${escapeHtml(category.path)}">
       <button class="tree-category-row" type="button" data-tree-toggle="${escapeHtml(category.path)}">
@@ -1148,9 +1169,9 @@ function renderMaterialTree(container) {
           <article class="tree-item material-item${item.selected ? " active" : ""}" data-id="${escapeHtml(item.id)}">
             <button class="tree-item-main" type="button" data-tree-select="${escapeHtml(item.id)}">
               <span class="tree-file-icon">${item.imageCount || 0}<small>图</small></span>
-              <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(shortText(item.preview || "本地帖子文件夹", 34))}</small></span>
+              <span><strong>${escapeHtml(item.name)}</strong></span>
             </button>
-            <button class="tree-send-button" type="button" data-tree-send="${escapeHtml(item.id)}">传 GPT <span>→</span></button>
+            <button class="tree-send-button" type="button" data-tree-send="${escapeHtml(item.id)}"><span>传 GPT</span><b aria-hidden="true">→</b></button>
           </article>
         `).join("") || `<p class="tree-empty">当前分类没有匹配帖子</p>` : ""}
       </div>
@@ -1359,30 +1380,88 @@ function renderDistribution() {
     data.devices || [],
     deviceCheckState.onlineDevices || []
   );
-  $("#distributionPhones").innerHTML = `
-    <div class="distribution-stats">
-      ${DistributionUI.phoneDistributionStats(summary, deviceCheckState, devices.length)
-        .map(([label, value, unit]) => `<article class="summary-card ${label === "当前在线" ? "is-actionable" : ""}" ${label === "当前在线" ? 'data-device-scan role="button" tabindex="0" title="点击立即重新扫描在线设备"' : ""}><span>${label}</span><strong>${escapeHtml(value)}${unit ? ` <small>${unit}</small>` : ""}</strong></article>`).join("")}
-    </div>
-    <div class="device-list">${devices.map((device) => `
-      <article class="device-row ${device.online ? "is-online" : "is-offline"}">
-        <div class="device-platform-icon" aria-label="${/iphone|apple|苹果/i.test(`${device.id} ${device.displayName}`) ? "苹果设备" : "安卓设备"}">
-          ${/iphone|apple|苹果/i.test(`${device.id} ${device.displayName}`)
-            ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.8 12.7c0-2.5 2.1-3.7 2.2-3.8-1.2-1.8-3.1-2-3.8-2-1.6-.2-3.1 1-3.9 1s-2-1-3.3-1c-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.3 2.5 1.3-.1 1.8-.8 3.4-.8 1.6 0 2.1.8 3.4.8 1.4 0 2.3-1.2 3.2-2.5 1-1.4 1.4-2.9 1.4-3-.1 0-3-.9-3-3.9Z"/><path d="M14.2 5.2c.7-.9 1.2-2.2 1.1-3.4-1.1 0-2.4.7-3.2 1.6-.7.8-1.3 2.1-1.1 3.3 1.2.1 2.5-.6 3.2-1.5Z"/></svg>`
-            : `<svg class="android-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7.4 5.8-1.3-2.2M16.6 5.8l1.3-2.2"/><path d="M6.2 10a5.8 5.8 0 0 1 11.6 0H6.2Z"/><circle cx="9.1" cy="7.8" r=".65"/><circle cx="14.9" cy="7.8" r=".65"/><path d="M6.2 11h11.6v6.1a2.1 2.1 0 0 1-2.1 2.1H8.3a2.1 2.1 0 0 1-2.1-2.1V11Z"/><path d="M4.3 11.5v5M19.7 11.5v5M9 19.2v2.4M15 19.2v2.4"/></svg>`}
-          <b>${device.number}号</b>
-        </div>
-        <div><h3>${escapeHtml(device.displayName)}</h3><p>${escapeHtml(device.ownerGroup)} · ${escapeHtml((device.platforms || []).join(" + "))}${device.workCount == null ? "" : ` · 当前 ${device.workCount} 个作品`}</p></div>
+  const distributableCollections = (data.collections || []).filter((collection) =>
+    collection.xhs === "available" || collection.dualPlatformEligible
+  );
+  const livePackageCounts = DistributionUI.countDistributablePackages(data.collections || []);
+  const stats = DistributionUI.phoneDistributionStats(summary, deviceCheckState, devices.length)
+    .map((stat) => livePackageCounts[stat.id] == null ? stat : { ...stat, value: livePackageCounts[stat.id] });
+  const packageCollections = distributableCollections.filter((collection) =>
+    collection.type === distributionSummaryFilter
+  );
+  const onlineDevices = devices.filter((device) => device.online);
+  const renderRefreshIcon = () => deviceCheckState.scanning
+    ? `<svg class="live-refresh-icon" viewBox="0 0 24 24" aria-label="正在刷新" role="img"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg>`
+    : "";
+  const renderDeviceRows = () => devices.map((device) => `
+    <article class="device-row ${device.online ? "is-online" : "is-offline"}" data-device-id="${escapeHtml(device.id)}">
+      <div class="device-platform-icon" aria-label="${/iphone|apple|苹果/i.test(`${device.id} ${device.displayName}`) ? "苹果设备" : "安卓设备"}">
+        ${/iphone|apple|苹果/i.test(`${device.id} ${device.displayName}`)
+          ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.8 12.7c0-2.5 2.1-3.7 2.2-3.8-1.2-1.8-3.1-2-3.8-2-1.6-.2-3.1 1-3.9 1s-2-1-3.3-1c-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.3 2.5 1.3-.1 1.8-.8 3.4-.8 1.6 0 2.1.8 3.4.8 1.4 0 2.3-1.2 3.2-2.5 1-1.4 1.4-2.9 1.4-3-.1 0-3-.9-3-3.9Z"/><path d="M14.2 5.2c.7-.9 1.2-2.2 1.1-3.4-1.1 0-2.4.7-3.2 1.6-.7.8-1.3 2.1-1.1 3.3 1.2.1 2.5-.6 3.2-1.5Z"/></svg>`
+          : `<svg class="android-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7.4 5.8-1.3-2.2M16.6 5.8l1.3-2.2"/><path d="M6.2 10a5.8 5.8 0 0 1 11.6 0H6.2Z"/><circle cx="9.1" cy="7.8" r=".65"/><circle cx="14.9" cy="7.8" r=".65"/><path d="M6.2 11h11.6v6.1a2.1 2.1 0 0 1-2.1 2.1H8.3a2.1 2.1 0 0 1-2.1-2.1V11Z"/><path d="M4.3 11.5v5M19.7 11.5v5M9 19.2v2.4M15 19.2v2.4"/></svg>`}
+        <b>${device.number}号</b>
+      </div>
+      <div class="device-copy">
+        <button class="editable-device-name" type="button" data-edit-device-note="${escapeHtml(device.id)}" title="点击编辑设备备注">${escapeHtml(device.note || device.displayName)}</button>
+        <p>${escapeHtml(device.displayName)} · ${escapeHtml(device.ownerGroup)} · ${escapeHtml((device.platforms || []).join(" + "))}${device.workCount == null ? "" : ` · 当前 ${device.workCount} 个作品`}</p>
+      </div>
+      <div class="badge-line">
+        <span class="state-badge ${device.online ? "good" : "muted"}">${device.online ? "当前在线" : "不在线"}</span>
+        <span class="state-badge">${device.platforms?.length === 1 ? "单平台设备" : "双平台设备"}</span>
+      </div>
+      <div class="device-actions">
+        <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补泛流量</button>
+        <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补团建转化</button>
+        <button type="button" data-upload-other="${escapeHtml(device.id)}" ${device.online ? "" : "disabled"}>上传其他</button>
+      </div>
+      ${uploadChoiceDeviceId === device.id ? `<div class="upload-choice-panel">
+        <span>选择要发送给 ${escapeHtml(device.note || device.displayName)} 的内容</span>
+        <button type="button" data-generic-source="file" data-generic-device="${escapeHtml(device.id)}">选择文件</button>
+        <button type="button" data-generic-source="folder" data-generic-device="${escapeHtml(device.id)}">选择文件夹</button>
+        <button type="button" data-close-upload-choice>取消</button>
+      </div>` : ""}
+    </article>
+  `).join("");
+  const renderPackageRows = () => `
+    <div class="package-list">${packageCollections.length ? packageCollections.map((collection) => `
+      <article class="distribution-package-row ${selectedDistributionCollectionName === collection.name ? "active" : ""}" data-package-name="${escapeHtml(collection.name)}">
+        <button class="package-select" type="button" data-select-package="${escapeHtml(collection.name)}" aria-pressed="${selectedDistributionCollectionName === collection.name}">
+          <span class="package-radio" aria-hidden="true"></span>
+          <span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span>
+        </button>
         <div class="badge-line">
-          <span class="state-badge ${device.online ? "good" : "muted"}">${device.online ? "当前在线" : "不在线"}</span>
-          <span class="state-badge">${device.platforms?.length === 1 ? "单平台设备" : "双平台设备"}</span>
+          <span class="state-badge good">小红书可用</span>
+          ${collection.dualPlatformEligible ? `<span class="state-badge good">双平台可用</span>` : `<span class="state-badge">单平台可用</span>`}
         </div>
         <div class="device-actions">
-          <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补泛流量</button>
-          <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补团建转化</button>
+          <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品包</button>
+          <button type="button" data-send-package="${escapeHtml(collection.name)}">选择设备</button>
         </div>
       </article>
-    `).join("")}</div>
+    `).join("") : `<div class="empty-state"><strong>当前没有可用作品包</strong><p>已使用或入口失效的作品包不会列在这里。</p></div>`}</div>
+    ${packageDevicePickerCollectionName ? `<div class="device-picker-backdrop" data-close-device-picker>
+      <section class="device-picker-dialog" role="dialog" aria-modal="true" aria-label="选择当前在线设备">
+        <header><div><strong>发送作品包</strong><span>${escapeHtml(packageDevicePickerCollectionName)}</span></div><button type="button" data-close-device-picker aria-label="关闭">×</button></header>
+        <p>当前在线设备可选择</p>
+        <div class="device-picker-list">
+          ${onlineDevices.length ? onlineDevices.map((device) => `<button type="button" data-confirm-package-device="${escapeHtml(device.id)}">
+            <span class="picker-platform-icon" aria-hidden="true">
+              ${/iphone|apple|苹果/i.test(`${device.id} ${device.displayName}`)
+                ? `<svg viewBox="0 0 24 24"><path d="M16.8 12.7c0-2.5 2.1-3.7 2.2-3.8-1.2-1.8-3.1-2-3.8-2-1.6-.2-3.1 1-3.9 1s-2-1-3.3-1c-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.3 2.5 1.3-.1 1.8-.8 3.4-.8 1.6 0 2.1.8 3.4.8 1.4 0 2.3-1.2 3.2-2.5 1-1.4 1.4-2.9 1.4-3-.1 0-3-.9-3-3.9Z"/><path d="M14.2 5.2c.7-.9 1.2-2.2 1.1-3.4-1.1 0-2.4.7-3.2 1.6-.7.8-1.3 2.1-1.1 3.3 1.2.1 2.5-.6 3.2-1.5Z"/></svg>`
+                : `<svg class="android-icon" viewBox="0 0 24 24"><path d="m7.4 5.8-1.3-2.2M16.6 5.8l1.3-2.2"/><path d="M6.2 10a5.8 5.8 0 0 1 11.6 0H6.2Z"/><circle cx="9.1" cy="7.8" r=".65"/><circle cx="14.9" cy="7.8" r=".65"/><path d="M6.2 11h11.6v6.1a2.1 2.1 0 0 1-2.1 2.1H8.3a2.1 2.1 0 0 1-2.1-2.1V11Z"/><path d="M4.3 11.5v5M19.7 11.5v5M9 19.2v2.4M15 19.2v2.4"/></svg>`}
+            </span>
+            <strong>${escapeHtml(device.note || device.displayName)}</strong>
+            <small>当前在线</small>
+          </button>`).join("") : `<div class="empty-state"><strong>当前没有在线设备</strong><p>后台会继续自动刷新设备状态。</p></div>`}
+        </div>
+      </section>
+    </div>` : ""}
+  `;
+  $("#distributionPhones").innerHTML = `
+    <div class="distribution-stats">
+      ${stats.map((stat) => `<button type="button" class="summary-card is-actionable ${distributionSummaryFilter === stat.id ? "active" : ""}" data-distribution-filter="${stat.id}"><span>${escapeHtml(stat.label)}</span><strong>${escapeHtml(stat.value)} <small>${escapeHtml(stat.unit)}</small>${stat.id === "devices" ? renderRefreshIcon() : ""}</strong></button>`).join("")}
+    </div>
+    ${distributionSummaryFilter === "devices" ? `${renderGenericTransferTasks()}<div class="device-list">${renderDeviceRows()}</div>` : renderPackageRows()}
   `;
   const pending = data.collections?.filter((item) => item.officialAccount === "reserved_pending_upload") || [];
   $("#distributionOfficial").innerHTML = `
@@ -1390,7 +1469,8 @@ function renderDistribution() {
       ${[["公众号可用", summary.officialAvailable || 0], ["已打开过", summary.officialPending || 0], ["上传已完成", summary.officialConfirmed || 0]]
         .map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${value}</strong></article>`).join("")}
     </div>
-    <div class="detail-warning">打开作品文件夹后会自动标记为“已打开过”；完成公众号上传后，点击“是否已上传？”确认即可。</div>
+    <div class="official-launcher"><div><strong>公众号发布后台</strong><p>先打开官网上传作品，再回到这里确认结果。</p></div><button type="button" class="primary-button" data-open-official-site>打开公众号官网</button></div>
+    <div class="detail-warning">打开作品文件夹后会标记为“已打开过”；完成公众号上传后，点击“是否已上传？”确认即可。</div>
     <div class="record-list">
       ${pending.map((collection) => `<article class="official-card"><div class="device-number">开</div><div><h3>${escapeHtml(collection.name)}</h3><p>作品文件夹已经打开过，等待你完成电脑上传</p></div><span class="state-badge warn">已打开过</span><div class="device-actions"><button data-confirm-official="${escapeHtml(collection.name)}">是否已上传？</button></div></article>`).join("")}
       <article class="official-card"><div class="device-number">${summary.officialAvailable || 0}</div><div><h3>打开一个公众号可用作品集</h3><p>打开文件夹并登记“已打开过”，上传完成后再确认</p></div><span class="state-badge good">公众号可用</span><div class="device-actions"><button data-official-action="execute">上传公众号</button></div></article>
@@ -1398,6 +1478,85 @@ function renderDistribution() {
   `;
   $("#distributionHistory").innerHTML = renderDistributionRecords(data.deviceHistory || [], "device");
   showDistributionPanel(activeDistributionPanel);
+}
+
+function renderGenericTransferTasks() {
+  const tasks = Array.from(genericTransferUiTasks.values());
+  if (!tasks.length) return "";
+  return `<section class="transfer-task-list">${tasks.map((task) => `
+    <article class="transfer-task ${escapeHtml(task.state)}">
+      <div><strong>${escapeHtml(task.source?.split(/[\\/]/).at(-1) || "普通文件传送")}</strong><span>${escapeHtml(task.message || "")}</span></div>
+      <div class="transfer-progress"><i style="width:${Math.max(0, Math.min(100, Number(task.progress) || 0))}%"></i></div>
+      <b>${Number(task.progress) || 0}%</b>
+      ${["running", "cancelling"].includes(task.state) ? `<button type="button" data-cancel-transfer="${escapeHtml(task.id)}" ${task.state === "cancelling" ? "disabled" : ""}>取消</button>` : `<span class="state-badge ${task.state === "completed" ? "good" : task.state === "failed" ? "warn" : ""}">${task.state === "completed" ? "已完成" : task.state === "cancelled" ? "已取消" : "失败"}</span>`}
+    </article>
+  `).join("")}</section>`;
+}
+
+async function startGenericTransfer(deviceId, sourcePath) {
+  const devices = DistributionUI.decorateDevices(
+    dashboard?.distribution?.devices || [],
+    deviceCheckState.onlineDevices || []
+  );
+  const device = devices.find((item) => item.id === deviceId && item.online);
+  if (!device) return window.alert("目标设备当前不在线，不能发送");
+  if (!sourcePath) return;
+  if (!window.confirm(`把“${sourcePath.split(/[\\/]/).at(-1)}”发送到 ${device.note || device.displayName}？`)) return;
+  try {
+    const task = await api("/api/transfers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source: sourcePath,
+        device: device.aliases?.[0] || device.displayName,
+        confirmed: true
+      })
+    });
+    genericTransferUiTasks.set(task.id, task);
+    uploadChoiceDeviceId = "";
+    renderDistribution();
+    ensureTransferPolling();
+  } catch (error) {
+    window.alert(`无法开始传送：${error.message}`);
+  }
+}
+
+function ensureTransferPolling() {
+  if (transferPollTimer) return;
+  transferPollTimer = window.setInterval(async () => {
+    const running = Array.from(genericTransferUiTasks.values()).filter((task) =>
+      ["running", "cancelling"].includes(task.state)
+    );
+    if (!running.length) {
+      window.clearInterval(transferPollTimer);
+      transferPollTimer = null;
+      return;
+    }
+    await Promise.all(running.map(async (task) => {
+      try {
+        genericTransferUiTasks.set(task.id, await api(`/api/transfers/${encodeURIComponent(task.id)}`));
+      } catch (error) {
+        genericTransferUiTasks.set(task.id, { ...task, state: "failed", message: error.message });
+      }
+    }));
+    renderDistribution();
+  }, 800);
+}
+
+async function chooseGenericTransferSource(deviceId, kind) {
+  try {
+    const endpoint = kind === "folder" ? "/api/pick-folder" : "/api/pick-file";
+    const result = await api(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(kind === "folder"
+        ? { description: "选择要传送的整个文件夹" }
+        : { title: "选择要传送的文件" })
+    });
+    if (result.path) await startGenericTransfer(deviceId, result.path);
+  } catch (error) {
+    window.alert(`选择失败：${error.message}`);
+  }
 }
 
 function renderDistributionRecords(rows, kind) {
@@ -1460,6 +1619,65 @@ async function confirmOfficialCollection(collection) {
   }
 }
 
+function beginDeviceNoteEdit(button) {
+  const row = button.closest("[data-device-id]");
+  const device = dashboard?.distribution?.devices?.find((item) => item.id === row?.dataset.deviceId);
+  if (!device || row.querySelector(".device-note-input")) return;
+  const input = document.createElement("input");
+  input.className = "device-note-input";
+  input.value = device.note || device.localRemark || device.displayName;
+  input.maxLength = 100;
+  input.setAttribute("aria-label", "设备备注");
+  button.replaceWith(input);
+  input.focus();
+  input.select();
+  let saved = false;
+  const finish = async (cancel = false) => {
+    if (saved) return;
+    saved = true;
+    if (!cancel) {
+      try {
+        await api("/api/devices/note", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: device.id, note: input.value })
+        });
+        device.note = input.value.trim();
+        toast("设备备注已保存");
+      } catch (error) {
+        window.alert(`备注保存失败：${error.message}`);
+      }
+    }
+    renderDistribution();
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") finish();
+    if (event.key === "Escape") finish(true);
+  });
+  input.addEventListener("blur", () => finish());
+}
+
+function sendSelectedDistributionPackage() {
+  const data = dashboard?.distribution || {};
+  const collection = (data.collections || []).find((item) =>
+    item.name === selectedDistributionCollectionName
+  );
+  const devices = DistributionUI.decorateDevices(data.devices || [], deviceCheckState.onlineDevices || []);
+  const device = devices.find((item) => item.id === selectedDistributionDeviceId && item.online);
+  if (!collection) return window.alert("请先选择一个作品包");
+  if (!device) return window.alert("请选择一台当前在线设备");
+  const typeLabel = collection.type === "conversion" ? "团建转化" : "泛流量";
+  executeDistributionAction(
+    {
+      action: "device-restock",
+      device: device.aliases?.[0] || device.displayName,
+      type: collection.type,
+      collection: collection.name
+    },
+    `把“${collection.name}”作为${typeLabel}作品包发送到 ${device.note || device.displayName}。发送成功后将沿用现有分发记录标记为已使用。`
+  );
+}
+
 async function checkDistributionDevices(options = {}) {
   if (deviceScanRunning) return;
   deviceScanRunning = true;
@@ -1468,9 +1686,10 @@ async function checkDistributionDevices(options = {}) {
   const refreshButton = $("#distributionRefreshBtn");
   if (refreshButton) {
     refreshButton.disabled = true;
-    refreshButton.textContent = "正在扫描…";
+    refreshButton.classList.add("is-refreshing");
+    refreshButton.setAttribute("aria-label", "正在刷新设备状态");
   }
-  if (!options.silent) toast("正在扫描设备与库存");
+  if (!options.silent) toast("正在刷新设备与库存");
   try {
     const result = await api("/api/distribution/check", {
       method: "POST",
@@ -1493,7 +1712,7 @@ async function checkDistributionDevices(options = {}) {
     if (options.refreshInventory !== false) await loadDashboard(true);
     renderDistribution();
     if (!options.silent) {
-      toast(deviceCheckState.online == null ? "扫描完成，请查看结果" : `扫描完成：当前在线 ${deviceCheckState.online} 台`);
+      toast(deviceCheckState.online == null ? "刷新完成，请查看结果" : `已刷新：当前在线 ${deviceCheckState.online} 台`);
     }
   } catch (error) {
     deviceCheckState = { ...deviceCheckState, scanning: false };
@@ -1504,7 +1723,8 @@ async function checkDistributionDevices(options = {}) {
     deviceScanRunning = false;
     if (refreshButton) {
       refreshButton.disabled = false;
-      refreshButton.textContent = "立即刷新";
+      refreshButton.classList.remove("is-refreshing");
+      refreshButton.setAttribute("aria-label", "立即刷新设备与库存");
     }
   }
 }
@@ -1735,6 +1955,12 @@ function bindEvents() {
       else expandedMaterialPaths.add(categoryPath);
       renderMaterials();
     }
+    const treeView = event.target.closest("[data-material-tree-view]");
+    if (treeView) {
+      materialTreeView = treeView.dataset.materialTreeView === "icons" ? "icons" : "list";
+      window.localStorage.setItem("materialTreeView", materialTreeView);
+      renderMaterials();
+    }
     const treeSelect = event.target.closest("[data-tree-select]");
     if (treeSelect) {
       const entry = findMaterialEntry(treeSelect.dataset.treeSelect);
@@ -1795,8 +2021,63 @@ function bindEvents() {
     }
     const distributionTab = event.target.closest("#distributionTabs [data-panel]");
     if (distributionTab) showDistributionPanel(distributionTab.dataset.panel);
-    const deviceScanCard = event.target.closest("[data-device-scan]");
-    if (deviceScanCard) checkDistributionDevices();
+    const distributionFilter = event.target.closest("[data-distribution-filter]");
+    if (distributionFilter) {
+      distributionSummaryFilter = distributionFilter.dataset.distributionFilter;
+      packageDevicePickerCollectionName = "";
+      selectedDistributionDeviceId = "";
+      renderDistribution();
+    }
+    const editDeviceNote = event.target.closest("[data-edit-device-note]");
+    if (editDeviceNote) beginDeviceNoteEdit(editDeviceNote);
+    const uploadOther = event.target.closest("[data-upload-other]");
+    if (uploadOther) {
+      uploadChoiceDeviceId = uploadChoiceDeviceId === uploadOther.dataset.uploadOther
+        ? ""
+        : uploadOther.dataset.uploadOther;
+      renderDistribution();
+    }
+    const genericSource = event.target.closest("[data-generic-source]");
+    if (genericSource) chooseGenericTransferSource(
+      genericSource.dataset.genericDevice,
+      genericSource.dataset.genericSource
+    );
+    if (event.target.closest("[data-close-upload-choice]")) {
+      uploadChoiceDeviceId = "";
+      renderDistribution();
+    }
+    const cancelTransfer = event.target.closest("[data-cancel-transfer]");
+    if (cancelTransfer) {
+      api(`/api/transfers/${encodeURIComponent(cancelTransfer.dataset.cancelTransfer)}/cancel`, {
+        method: "POST"
+      }).then((task) => {
+        genericTransferUiTasks.set(task.id, task);
+        renderDistribution();
+      }).catch((error) => window.alert(`取消失败：${error.message}`));
+    }
+    const selectPackage = event.target.closest("[data-select-package]");
+    if (selectPackage) {
+      selectedDistributionCollectionName = selectPackage.dataset.selectPackage;
+      renderDistribution();
+    }
+    const sendPackage = event.target.closest("[data-send-package]");
+    if (sendPackage) {
+      selectedDistributionCollectionName = sendPackage.dataset.sendPackage;
+      packageDevicePickerCollectionName = sendPackage.dataset.sendPackage;
+      renderDistribution();
+    }
+    const confirmPackageDevice = event.target.closest("[data-confirm-package-device]");
+    if (confirmPackageDevice) {
+      selectedDistributionDeviceId = confirmPackageDevice.dataset.confirmPackageDevice;
+      packageDevicePickerCollectionName = "";
+      sendSelectedDistributionPackage();
+    }
+    const closeDevicePicker = event.target.closest("[data-close-device-picker]");
+    if (closeDevicePicker && event.target === closeDevicePicker) {
+      packageDevicePickerCollectionName = "";
+      renderDistribution();
+    }
+    if (event.target.closest("[data-open-official-site]")) openExternal("https://mp.weixin.qq.com/");
     const deviceAction = event.target.closest("[data-device-action]");
     if (deviceAction) {
       const type = deviceAction.dataset.deviceAction;
@@ -1820,10 +2101,30 @@ function bindEvents() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeCustomSelects();
-    if ((event.key === "Enter" || event.key === " ") && event.target.closest?.("[data-device-scan]")) {
-      event.preventDefault();
-      checkDistributionDevices();
+  });
+  document.addEventListener("dragover", (event) => {
+    const row = event.target.closest?.(".device-row.is-online");
+    if (!row || !event.dataTransfer?.types?.includes("Files")) return;
+    event.preventDefault();
+    row.classList.add("is-drag-target");
+  });
+  document.addEventListener("dragleave", (event) => {
+    event.target.closest?.(".device-row")?.classList.remove("is-drag-target");
+  });
+  document.addEventListener("drop", async (event) => {
+    const row = event.target.closest?.(".device-row.is-online");
+    if (!row) return;
+    event.preventDefault();
+    row.classList.remove("is-drag-target");
+    const file = event.dataTransfer?.files?.[0];
+    const sourcePath = file
+      ? (window.desktopFiles?.getPath?.(file) || file.path || "")
+      : "";
+    if (!sourcePath) {
+      window.alert("拖拽传送需要在桌面应用中使用；浏览器调试版请点“上传其他”。");
+      return;
     }
+    await startGenericTransfer(row.dataset.deviceId, sourcePath);
   });
 
   $("#refreshBtn").addEventListener("click", async () => {
@@ -2007,7 +2308,7 @@ loadDashboard()
     if (!deviceScanStarted) checkDistributionDevices({ silent: true, refreshInventory: false });
     window.setInterval(() => {
       if (!deviceScanRunning) checkDistributionDevices({ silent: true, refreshInventory: false });
-    }, 60_000);
+    }, 20_000);
   })
   .catch((error) => {
     console.error(error);

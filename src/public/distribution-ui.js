@@ -72,11 +72,26 @@
 
   function phoneDistributionStats(summary = {}, deviceCheck = {}, registeredFallback = 0) {
     return [
-      ["已登记设备", deviceCheck.registered ?? registeredFallback, "台"],
-      ["当前在线", deviceCheck.scanning ? "正在扫描…" : (deviceCheck.online ?? 0), deviceCheck.scanning ? "" : "台"],
-      ["泛流量合集包", summary.traffic || 0, "个"],
-      ["团建转化（精准流量）", summary.conversion || 0, "个"]
+      {
+        id: "devices",
+        label: "当前设备在线",
+        value: `${deviceCheck.online ?? 0}/${deviceCheck.registered ?? registeredFallback}`,
+        unit: "台"
+      },
+      { id: "traffic", label: "泛流量合集包", value: summary.traffic || 0, unit: "个" },
+      { id: "conversion", label: "团建转化（精准流量）", value: summary.conversion || 0, unit: "个" }
     ];
+  }
+
+  function countDistributablePackages(collections = []) {
+    return (Array.isArray(collections) ? collections : [])
+      .filter((collection) => collection.xhs === "available" || collection.dualPlatformEligible)
+      .reduce((counts, collection) => {
+        if (collection.type === "traffic" || collection.type === "conversion") {
+          counts[collection.type] += 1;
+        }
+        return counts;
+      }, { traffic: 0, conversion: 0 });
   }
 
   function normalizeDeviceIdentity(value) {
@@ -149,6 +164,7 @@
 
   return {
     countCollectionFacets,
+    countDistributablePackages,
     filterCollections,
     matchesPlatform,
     parseDeviceCheckOutput,

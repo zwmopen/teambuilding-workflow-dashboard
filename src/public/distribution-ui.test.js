@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   countCollectionFacets,
+  countDistributablePackages,
   filterCollections,
   parseDeviceCheckOutput,
   parseDeviceStatusOutput,
@@ -91,11 +92,22 @@ test("phoneDistributionStats uses the agreed user-facing labels and category cou
       6
     ),
     [
-      ["已登记设备", 8, "台"],
-      ["当前在线", 0, "台"],
-      ["泛流量合集包", 10, "个"],
-      ["团建转化（精准流量）", 2, "个"]
+      { id: "devices", label: "当前设备在线", value: "0/8", unit: "台" },
+      { id: "traffic", label: "泛流量合集包", value: 10, unit: "个" },
+      { id: "conversion", label: "团建转化（精准流量）", value: 2, unit: "个" }
     ]
+  );
+});
+
+test("countDistributablePackages uses the same eligibility as the visible package list", () => {
+  assert.deepEqual(
+    countDistributablePackages([
+      { name: ".作品集_041[转]", type: "conversion", xhs: "available", dualPlatformEligible: false },
+      { name: "作品集_008[转]", type: "conversion", xhs: "available", dualPlatformEligible: true },
+      { name: "作品集_010[转]", type: "conversion", xhs: "used", dualPlatformEligible: false },
+      { name: "作品集_015[泛]", type: "traffic", xhs: "used", dualPlatformEligible: true }
+    ]),
+    { traffic: 1, conversion: 2 }
   );
 });
 

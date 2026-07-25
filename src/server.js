@@ -17,6 +17,7 @@ const PROMPTS_FILE = path.join(DATA_ROOT, "prompt-versions.json");
 const TASK_INDEX_FILE = path.join(DATA_ROOT, "production-task-index.json");
 const APP_SETTINGS_FILE = path.join(DATA_ROOT, "app-settings.json");
 const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
+const DEVICE_NOTES_FILE = path.join(DATA_ROOT, "device-notes.json");
 const WORKPKG_CONFIG_FILE = "D:\\Download\\workpkg_config.json";
 const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
   || path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）", "发布空间");
@@ -36,6 +37,7 @@ const PREVIEW_LIMITS = {
 const materialCategoryCache = new Map();
 let deviceStatusCache = { checkedAt: 0, output: "", onlineDevices: [] };
 let deviceStatusPromise = null;
+const genericTransferTasks = new Map();
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_ROOT, { recursive: true });
@@ -132,6 +134,29 @@ function updateCollectionLedger(body) {
   });
   writeJson(COLLECTION_LEDGER_FILE, data);
   return record;
+}
+
+function mergeDeviceNotes(devices) {
+  const saved = readJson(DEVICE_NOTES_FILE, { version: 1, notes: {} });
+  const notes = saved && typeof saved.notes === "object" ? saved.notes : {};
+  return (devices || []).map((device) => ({
+    ...device,
+    note: String(notes[device.id] ?? device.localRemark ?? "").trim()
+  }));
+}
+
+function updateDeviceNote(body) {
+  const id = String(body.id || "").trim();
+  const registry = readJson(DEVICE_REGISTRY_FILE, { devices: [] });
+  if (!registry.devices?.some((device) => device.id === id)) throw new Error("设备不存在");
+  const note = String(body.note || "").trim().slice(0, 100);
+  const saved = readJson(DEVICE_NOTES_FILE, { version: 1, notes: {} });
+  saved.version = 1;
+  saved.notes = saved.notes && typeof saved.notes === "object" ? saved.notes : {};
+  saved.notes[id] = note;
+  saved.updatedAt = new Date().toISOString();
+  writeJson(DEVICE_NOTES_FILE, saved);
+  return { ok: true, id, note };
 }
 
 function collectionLedgerCsv() {
@@ -760,7 +785,9 @@ function getDashboard(force = false, selectedLibraryPath = "") {
   const productionTasks = buildProductionTaskIndex(materials, templates, logs, state);
   const distribution = getDistributionSnapshot({ publishRoot: PUBLISH_ROOT });
   distribution.collections = mergeCollectionLedger(distribution.collections || []);
-  distribution.devices = readJson(DEVICE_REGISTRY_FILE, { devices: [] }).devices || [];
+  distribution.devices = mergeDeviceNotes(
+    readJson(DEVICE_REGISTRY_FILE, { devices: [] }).devices || []
+  );
   return {
     projectRoot: PROJECT_ROOT,
     workspaceSettings: getWorkspaceSettings(),
@@ -867,7 +894,8 @@ function isAllowedExternalTarget(target) {
   if (target === "cgpt-workpkg://run" || target === "cgpt-workpkg://configure") return true;
   try {
     const parsed = new URL(target);
-    return parsed.protocol === "https:" && parsed.hostname === "chatgpt.com";
+    return parsed.protocol === "https:"
+      && ["chatgpt.com", "mp.weixin.qq.com"].includes(parsed.hostname);
   } catch {
     return false;
   }
@@ -883,7 +911,15 @@ function buildDistributionArgs(body = {}) {
   if (!device || device.length > 80 || device.startsWith("-") || /[\r\n\0]/.test(device)) {
     throw new Error("设备名称无效");
   }
-  return ["--device", device, "--type", type];
+  const args = ["--device", device, "--type", type];
+  const collection = String(body.collection || "").trim();
+  if (collection) {
+    if (collection.length > 160 || collection.startsWith("-") || /[\r\n\0]/.test(collection)) {
+      throw new Error("作品集名称无效");
+    }
+    args.push("--collection", collection);
+  }
+  return args;
 }
 
 function runDistributionAction(args) {
@@ -922,6 +958,115 @@ function runDistributionAction(args) {
       else reject(new Error((stderr || stdout || `分发脚本退出码 ${code}`).trim()));
     });
   });
+}
+
+function startGenericTransfer(source, device) {
+  const rawSource = String(source || "").trim();
+  if (!rawSource) throw new Error("请选择要传送的文件或文件夹");
+  const resolvedSource = path.resolve(rawSource);
+  const deviceName = String(device || "").trim();
+  if (!resolvedSource || !exists(resolvedSource)) throw new Error("选择的文件或文件夹不存在");
+  if (path.parse(resolvedSource).root === resolvedSource) {
+    throw new Error("不能直接传送整个磁盘，请选择具体文件或文件夹");
+  }
+  if (!deviceName || deviceName.length > 80 || deviceName.startsWith("-") || /[\r\n\0]/.test(deviceName)) {
+    throw new Error("设备名称无效");
+  }
+  const taskId = `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  if (genericTransferTasks.size >= 50) {
+    const removable = Array.from(genericTransferTasks.entries())
+      .filter(([, task]) => !["running", "cancelling"].includes(task.state))
+      .sort((left, right) => String(left[1].startedAt).localeCompare(String(right[1].startedAt)));
+    removable.slice(0, Math.max(1, genericTransferTasks.size - 49))
+      .forEach(([id]) => genericTransferTasks.delete(id));
+  }
+  const record = {
+    id: taskId,
+    device: deviceName,
+    source: resolvedSource,
+    state: "running",
+    progress: 0,
+    message: "准备传送",
+    output: "",
+    remoteTaskId: "",
+    startedAt: new Date().toISOString(),
+    child: null
+  };
+  const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "send_to_device.py");
+  const child = childProcess.spawn("py", [script, "--source", resolvedSource, "--device", deviceName], {
+    cwd: DEVICE_TRANSFER_ROOT,
+    env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  record.child = child;
+  genericTransferTasks.set(taskId, record);
+  const consume = (chunk, isError = false) => {
+    const text = chunk.toString("utf8");
+    record.output = `${record.output}${text}`.slice(-64 * 1024);
+    const progressMatches = [...text.matchAll(/传送\s+(\d+)%/g)];
+    if (progressMatches.length) record.progress = Number(progressMatches.at(-1)[1]);
+    const remoteMatch = text.match(/接收任务\s+(task-skill-\d{14})/);
+    if (remoteMatch) record.remoteTaskId = remoteMatch[1];
+    const lines = text.trim().split(/\r?\n/).filter(Boolean);
+    if (lines.length) record.message = lines.at(-1);
+    if (isError && lines.length) record.error = lines.at(-1);
+  };
+  child.stdout.on("data", (chunk) => consume(chunk));
+  child.stderr.on("data", (chunk) => consume(chunk, true));
+  child.on("error", (error) => {
+    record.state = "failed";
+    record.message = error.message;
+    record.finishedAt = new Date().toISOString();
+  });
+  child.on("close", (code) => {
+    if (record.state === "cancelling") {
+      record.state = "cancelled";
+      record.message = "已取消传送";
+    } else if (code === 0) {
+      record.state = "completed";
+      record.progress = 100;
+      record.message = "发送完成";
+    } else {
+      record.state = "failed";
+      record.message = record.error || record.message || `传送进程退出码 ${code}`;
+    }
+    record.finishedAt = new Date().toISOString();
+    record.child = null;
+  });
+  return publicTransferTask(record);
+}
+
+function publicTransferTask(record) {
+  if (!record) return null;
+  const { child, ...safe } = record;
+  return safe;
+}
+
+function cancelGenericTransfer(taskId) {
+  const record = genericTransferTasks.get(String(taskId || ""));
+  if (!record) throw new Error("传送任务不存在");
+  if (record.state !== "running") return publicTransferTask(record);
+  record.state = "cancelling";
+  record.message = "正在取消";
+  if (record.child && !record.child.killed) record.child.kill();
+  if (record.remoteTaskId) {
+    const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "send_to_device.py");
+    childProcess.spawn("py", [
+      script,
+      "--cancel-task",
+      record.remoteTaskId,
+      "--device",
+      record.device
+    ], {
+      cwd: DEVICE_TRANSFER_ROOT,
+      env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+      windowsHide: true,
+      detached: true,
+      stdio: "ignore"
+    }).unref();
+  }
+  return publicTransferTask(record);
 }
 
 function runDeviceStatus() {
@@ -1028,6 +1173,35 @@ function pickFolderWithWindowsDialog(description = "选择文件夹") {
     child.on("error", reject);
     child.on("close", (code) => {
       if (code !== 0) return reject(new Error(stderr.trim() || "目录选择器打开失败"));
+      resolve(stdout.trim());
+    });
+  });
+}
+
+function pickFileWithWindowsDialog(title = "选择要传送的文件") {
+  const safeTitle = String(title).replace(/'/g, "''");
+  const command = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$dialog = New-Object System.Windows.Forms.OpenFileDialog",
+    `$dialog.Title = '${safeTitle}'`,
+    "$dialog.Multiselect = $false",
+    "$dialog.CheckFileExists = $true",
+    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {",
+    "  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    "  Write-Output $dialog.FileName",
+    "}"
+  ].join("; ");
+  return new Promise((resolve, reject) => {
+    const child = childProcess.spawn("powershell.exe", [
+      "-NoProfile", "-STA", "-Command", command
+    ], { windowsHide: false, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) return reject(new Error(stderr.trim() || "文件选择器打开失败"));
       resolve(stdout.trim());
     });
   });
@@ -1203,11 +1377,48 @@ async function route(req, res) {
     const selectedPath = await pickFolderWithWindowsDialog(body.description || "选择文件夹");
     return sendJson(res, { ok: true, path: selectedPath });
   }
+  if (pathname === "/api/pick-file" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 8_000) || "{}");
+    const selectedPath = await pickFileWithWindowsDialog(body.title || "选择要传送的文件");
+    return sendJson(res, { ok: true, path: selectedPath });
+  }
+  if (pathname === "/api/transfers" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 16_000) || "{}");
+    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认本次文件传送" }));
+    return sendJson(res, startGenericTransfer(body.source, body.device));
+  }
+  if (pathname.startsWith("/api/transfers/") && req.method === "GET") {
+    const taskId = decodeURIComponent(pathname.slice("/api/transfers/".length));
+    const record = genericTransferTasks.get(taskId);
+    if (!record) return send(res, 404, JSON.stringify({ error: "传送任务不存在" }));
+    return sendJson(res, publicTransferTask(record));
+  }
+  if (pathname.startsWith("/api/transfers/") && pathname.endsWith("/cancel") && req.method === "POST") {
+    const taskId = decodeURIComponent(
+      pathname.slice("/api/transfers/".length, -"/cancel".length)
+    );
+    return sendJson(res, cancelGenericTransfer(taskId));
+  }
   if (pathname === "/api/distribution/action" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要在界面确认本次真实分发" }));
     const result = await runDistributionAction(buildDistributionArgs(body));
+    if (body.action === "official-reserve") {
+      const sourceMatch = String(result.output || "").match(/^原合集地址：(.+)$/m);
+      const sourcePath = sourceMatch?.[1]?.trim();
+      if (sourcePath && isAllowedFile(sourcePath) && exists(sourcePath)) {
+        childProcess.spawn("explorer.exe", [sourcePath], {
+          detached: true,
+          windowsHide: true,
+          stdio: "ignore"
+        }).unref();
+      }
+    }
     return sendJson(res, result);
+  }
+  if (pathname === "/api/devices/note" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 8_000) || "{}");
+    return sendJson(res, updateDeviceNote(body));
   }
   if (pathname === "/api/distribution/check" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 8_000) || "{}");
@@ -1272,7 +1483,7 @@ const httpServer = http.createServer((req, res) => {
 
 if (require.main === module) {
   ensureDataFiles();
-  httpServer.listen(PORT, () => {
+  httpServer.listen(PORT, "127.0.0.1", () => {
     console.log(`团建图文生产控制台: http://localhost:${PORT}`);
     console.log(`项目根目录: ${PROJECT_ROOT}`);
   });

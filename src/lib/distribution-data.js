@@ -267,6 +267,7 @@ function getDistributionSnapshot(options = {}) {
       && normalizeRealPath(entries.xhs.sourcePath) === normalizeRealPath(entries.douyin.sourcePath);
     const officialHistory = officialRows.filter((row) => row["作品集"] === name);
     const deviceHistory = deviceRows.filter((row) => row["源作品集"] === name);
+    const previouslySentToDevice = deviceHistory.length > 0;
     const officialLogState = officialStateFromRow(latestOfficial.get(name));
     const exclusionReasons = [];
     if (classification.hidden) exclusionReasons.push("隐藏作品集");
@@ -285,7 +286,11 @@ function getDistributionSnapshot(options = {}) {
       ? (entries.douyinArchive.valid ? "archived" : "invalid")
       : stateForPlatform(entries.douyin);
     const sourceValid = Boolean(source.valid);
-    const automaticEligible = classification.labelled && !classification.hidden && Boolean(activeSources.length);
+    if (previouslySentToDevice) exclusionReasons.push("已有手机分发记录");
+    const automaticEligible = classification.labelled
+      && !classification.hidden
+      && !previouslySentToDevice
+      && Boolean(activeSources.length);
 
     return {
       name,
@@ -296,8 +301,8 @@ function getDistributionSnapshot(options = {}) {
       fileCount: source.fileCount || 0,
       bytes: source.bytes || 0,
       items: source.items || [],
-      xhs: stateForPlatform(entries.xhs),
-      douyin,
+      xhs: previouslySentToDevice ? "used" : stateForPlatform(entries.xhs),
+      douyin: previouslySentToDevice ? "used" : douyin,
       officialAccount,
       dualPlatformEligible: automaticEligible && sameDualTarget,
       automaticEligible,

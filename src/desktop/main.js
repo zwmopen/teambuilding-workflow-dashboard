@@ -81,7 +81,10 @@ async function createWindow() {
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
-    if (params.src === APP_URL) return;
+    if (params.src === APP_URL) {
+      webPreferences.preload = path.join(__dirname, "preload.js");
+      return;
+    }
     if (!/^https:\/\/chatgpt\.com\//i.test(params.src)) event.preventDefault();
   });
   app.on("web-contents-created", (_event, contents) => secureGuest(contents));

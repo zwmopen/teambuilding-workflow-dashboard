@@ -216,11 +216,11 @@
         <section class="distribution-layout">
           <header class="page-heading">
             <div><p class="label">真实执行入口</p><h2>分发功能</h2><p>自动识别在线设备，完成手机补笔记、公众号上传和分发记录。</p></div>
-            <button class="primary-button" id="distributionRefreshBtn">立即刷新</button>
+            <button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button>
           </header>
           <div class="segment-tabs" id="distributionTabs">
             <button class="active" data-panel="phones">手机补笔记</button>
-            <button data-panel="official">公众号领取</button>
+            <button data-panel="official">公众号补笔记</button>
             <button data-panel="history">分发记录</button>
           </div>
           <section class="distribution-panel active" id="distributionPhones"></section>
