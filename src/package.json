@@ -1,6 +1,6 @@
 {
   "name": "teambuilding-workflow-dashboard",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "江湖有旅人团建图文生产工作流可视化控制台",
   "type": "commonjs",

@@ -52,6 +52,33 @@ test("classifyCollectionName recognizes distribution labels and hidden entries",
   assert.equal(classifyCollectionName(".作品集_041[转]").hidden, true);
 });
 
+test("snapshot reads labelled and unclassified collections directly from the selected library", () => {
+  const fixture = makeFixture();
+  try {
+    createCollection(fixture.collectionsRoot, "作品集_015[泛]");
+    createCollection(fixture.collectionsRoot, "作品集_038[转]");
+    createCollection(fixture.collectionsRoot, "作品集_046");
+    fs.mkdirSync(path.join(fixture.collectionsRoot, "临时散图"), { recursive: true });
+
+    const snapshot = getDistributionSnapshot({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot
+    });
+
+    assert.deepEqual(snapshot.collections.map((item) => item.name), [
+      "作品集_015[泛]",
+      "作品集_038[转]",
+      "作品集_046"
+    ]);
+    assert.equal(snapshot.collections[0].type, "traffic");
+    assert.equal(snapshot.collections[1].type, "conversion");
+    assert.equal(snapshot.collections[2].type, "unclassified");
+    assert.equal(snapshot.collections[2].itemCount, 14);
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
 test("snapshot only marks same-source valid junctions as dual-platform eligible", () => {
   const fixture = makeFixture();
   try {

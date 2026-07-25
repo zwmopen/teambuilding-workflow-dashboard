@@ -31,10 +31,6 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/><path d="m3 9 2-2 2 2M21 13l-2 2-2-2"/></svg>
           <span>分发功能</span>
         </button>
-        <button class="tab rail-tab" data-tab="review" type="button" title="发布复盘">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9M12 19V5M19 19v-7"/><path d="m4 6 5-3 5 2 6-3"/></svg>
-          <span>发布复盘</span>
-        </button>
         <button class="tab rail-tab rail-bottom" data-tab="settings" type="button" title="设置">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg>
           <span>设置</span>
@@ -63,7 +59,6 @@
             <article class="overview-card" data-jump="dashboard"><span class="overview-index">01</span><h3>素材生产</h3><p>读取本地素材树，选择帖子并进入 GPT 母版会话。</p><button type="button">进入素材生产</button></article>
             <article class="overview-card" data-jump="products"><span class="overview-index">02</span><h3>作品集</h3><p>按内容类型与平台资格筛选当前可用合集。</p><button type="button">查看作品集</button></article>
             <article class="overview-card" data-jump="distribution"><span class="overview-index">03</span><h3>分发功能</h3><p>手机补笔记、公众号领取、使用记录与归档恢复。</p><button type="button">进入分发</button></article>
-            <article class="overview-card" data-jump="review"><span class="overview-index">04</span><h3>发布复盘</h3><p>聚光数据、生产记录和已发布内容的效果复盘。</p><button type="button">查看复盘</button></article>
           </section>
         </section>
       </section>
@@ -189,19 +184,24 @@
       <section class="view" id="productsView">
         <section class="collection-layout">
           <header class="page-heading">
-            <div><p class="label">实时库存</p><h2>作品集</h2><p>标签来自本地台账和使用记录；可编辑、可筛选，也可导出给 Excel。</p></div>
-            <div class="detail-button-row"><a class="button-link" href="/api/collections/export" download>导出标签表</a><button class="primary-button" id="openPublishRootBtn">打开作品集目录</button></div>
+            <div><p class="label">实时库存</p><h2>作品集</h2><p>按内容类型和真实平台状态查看本地作品包。</p></div>
+            <div class="detail-button-row collection-view-switch" aria-label="作品集视图">
+              <button type="button" data-collection-view="list" title="列表视图">☷ 列表</button>
+              <button type="button" data-collection-view="grid" title="网格视图">▦ 网格</button>
+              <button class="primary-button" id="openPublishRootBtn">打开作品集目录</button>
+            </div>
           </header>
+          <section class="folder-source-bar" aria-label="作品集目录设置">
+            <input id="collectionRootInput" class="search-input" type="text" placeholder="粘贴作品集目录后按回车" />
+            <button id="chooseCollectionRootBtn" class="ghost-button" type="button">选择目录</button>
+            <button id="applyCollectionRootBtn" class="primary-button" type="button">读取目录</button>
+          </section>
           <div class="filter-toolbar">
             <div><span>内容类型</span><div class="chip-group" id="collectionTypeFilters"></div></div>
             <div><span>平台状态</span><div class="chip-group" id="collectionPlatformFilters"></div></div>
-            <label class="collection-search"><span>搜索</span><input id="collectionSearch" class="search-input" placeholder="作品集编号或状态" /></label>
           </div>
           <div class="collection-workspace">
             <section class="collection-list" id="collectionList"></section>
-            <aside class="collection-detail" id="collectionDetail">
-              <div class="empty-state"><strong>选择一个作品集</strong><p>查看三个平台的真实状态、资格判断和使用记录。</p></div>
-            </aside>
           </div>
           <div class="legacy-product-controls" hidden>
             <select id="productTemplateFilter"></select><input id="productSearch" /><select id="productWorkFilter"></select>
@@ -218,6 +218,11 @@
             <div><p class="label">真实执行入口</p><h2>分发功能</h2><p>自动识别在线设备，完成手机补笔记、公众号上传和分发记录。</p></div>
             <button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button>
           </header>
+          <section class="folder-source-bar compact" aria-label="分发作品集目录设置">
+            <input id="distributionCollectionRootInput" class="search-input" type="text" placeholder="粘贴分发作品集目录后按回车" />
+            <button id="chooseDistributionCollectionRootBtn" class="ghost-button" type="button">选择目录</button>
+            <button id="applyDistributionCollectionRootBtn" class="primary-button" type="button">读取目录</button>
+          </section>
           <div class="segment-tabs" id="distributionTabs">
             <button class="active" data-panel="phones">手机补笔记</button>
             <button data-panel="official">公众号补笔记</button>
@@ -230,16 +235,6 @@
             <strong>Codex</strong>
             <input id="distributionCommand" placeholder="例如：给5号补一个泛流量" />
             <button id="copyDistributionCommand" type="button">复制指令</button>
-          </section>
-        </section>
-      </section>
-
-      <section class="view" id="reviewView">
-        <section class="overview-layout">
-          <header class="page-heading"><div><p class="label">发布后再判断</p><h2>发布复盘</h2><p>生产记录与聚光数据都从这里进入，不与分发状态混在一起。</p></div></header>
-          <section class="overview-grid compact">
-            <article class="overview-card" data-jump="juguang"><span class="overview-index">数据</span><h3>聚光运营</h3><p>查看关键词、选题建议和脱敏线索归因。</p><button type="button">打开聚光运营</button></article>
-            <article class="overview-card" data-jump="workflow"><span class="overview-index">记录</span><h3>生产日志</h3><p>查看素材到成品的流程记录与续接历史。</p><button type="button">打开工作流记录</button></article>
           </section>
         </section>
       </section>

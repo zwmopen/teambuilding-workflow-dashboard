@@ -100,15 +100,18 @@ function inspectSource(sourcePath, cache) {
       const itemPath = path.join(sourcePath, entry.name);
       let previewPath = "";
       let imageCount = 0;
+      let textPath = "";
       try {
         const files = fs.readdirSync(itemPath, { withFileTypes: true });
         const images = files.filter((file) => file.isFile() && /\.(png|jpe?g|webp)$/i.test(file.name));
+        const texts = files.filter((file) => file.isFile() && /\.(txt|md)$/i.test(file.name));
         imageCount = images.length;
         previewPath = images[0] ? path.join(itemPath, images[0].name) : "";
+        textPath = texts[0] ? path.join(itemPath, texts[0].name) : "";
       } catch {
         // A work folder can temporarily be unavailable while it is moved.
       }
-      return { name: entry.name, path: itemPath, previewPath, imageCount };
+      return { name: entry.name, path: itemPath, previewPath, textPath, imageCount };
     });
     const stack = [sourcePath];
     while (stack.length) {
@@ -234,6 +237,7 @@ function stateForPlatform(entry, absentState = "used") {
 
 function getDistributionSnapshot(options = {}) {
   const publishRoot = path.resolve(options.publishRoot || "");
+  const libraryRoot = path.resolve(options.libraryRoot || "");
   const sourceCache = new Map();
   const officialRows = readCsv(path.join(publishRoot, "official-account-usage-log.csv"));
   const deviceRows = readCsv(path.join(publishRoot, "device-usage-log.csv"));
@@ -243,6 +247,9 @@ function getDistributionSnapshot(options = {}) {
   Object.values(PLATFORM_DIRS).forEach((relativeDirectory) => {
     listDirectoryNames(path.join(publishRoot, relativeDirectory)).forEach((name) => names.add(name));
   });
+  listDirectoryNames(libraryRoot)
+    .filter((name) => /^\.?作品集[_-]?\d+/i.test(name))
+    .forEach((name) => names.add(name));
   officialRows.forEach((row) => names.add(row["作品集"] || ""));
   deviceRows.forEach((row) => names.add(row["源作品集"] || ""));
   names.delete("");
@@ -261,7 +268,11 @@ function getDistributionSnapshot(options = {}) {
       .filter((row) => row["源作品集"] === name)
       .at(-1)?.["源路径"] || "";
     const recordedSource = inspectSource(recordedSourcePath, sourceCache);
-    const source = activeSources[0] || (recordedSource.valid ? { sourcePath: recordedSourcePath, ...recordedSource } : {});
+    const directSourcePath = path.join(libraryRoot, name);
+    const directSource = inspectSource(directSourcePath, sourceCache);
+    const source = activeSources[0]
+      || (directSource.valid ? { sourcePath: directSourcePath, ...directSource } : null)
+      || (recordedSource.valid ? { sourcePath: recordedSourcePath, ...recordedSource } : {});
     const sameDualTarget = entries.xhs.valid
       && entries.douyin.valid
       && normalizeRealPath(entries.xhs.sourcePath) === normalizeRealPath(entries.douyin.sourcePath);
@@ -345,6 +356,7 @@ function getDistributionSnapshot(options = {}) {
 
   return {
     publishRoot,
+    libraryRoot,
     generatedAt: new Date().toISOString(),
     summary,
     collections,

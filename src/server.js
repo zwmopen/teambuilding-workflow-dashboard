@@ -102,15 +102,10 @@ function mergeCollectionLedger(collections) {
   const recordMap = new Map(records.map((record) => [record.name, record]));
   return collections.map((collection) => {
     const record = recordMap.get(collection.name);
-    const type = ["traffic", "conversion", "unclassified"].includes(record?.type)
-      ? record.type
-      : collection.type;
     return {
       ...collection,
-      type,
-      typeLabel: type === "traffic"
-        ? "游戏/泛流量"
-        : type === "conversion" ? "团建转化" : "未分类",
+      type: collection.type,
+      typeLabel: collection.typeLabel,
       ledger: record || null
     };
   });
@@ -165,7 +160,10 @@ function updateDeviceNote(body) {
 }
 
 function collectionLedgerCsv() {
-  const distribution = getDistributionSnapshot({ publishRoot: PUBLISH_ROOT });
+  const distribution = getDistributionSnapshot({
+    publishRoot: PUBLISH_ROOT,
+    libraryRoot: getWorkspaceSettings().workPackage.libraryPath
+  });
   const collections = mergeCollectionLedger(distribution.collections || []);
   const escapeCell = (value) => {
     const text = String(value ?? "");
@@ -453,6 +451,9 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "") {
   function materialItem(post, categoryName, itemIndex) {
     const itemPath = post.path;
     const images = listImages(itemPath, PREVIEW_LIMITS.materialImagesPerItem);
+    const textFiles = safeList(itemPath)
+      .filter((entry) => entry.isFile() && textExts.has(path.extname(entry.name).toLowerCase()))
+      .map((entry) => path.join(itemPath, entry.name));
     const preview = readTextPreview(itemPath);
     const tags = Array.from(new Set([...inferMaterialTags(categoryName, post.name, preview), ...readHiddenTags(itemPath)]));
     return {
@@ -464,6 +465,7 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "") {
       textCount: post.textCount,
       relativePath: post.relativePath,
       images,
+      attachments: [...images.map((image) => image.path), ...textFiles].slice(0, 30),
       preview,
       tags,
       updatedAt: post.updatedAt || safeMtime(itemPath)
@@ -788,14 +790,18 @@ function getDashboard(force = false, selectedLibraryPath = "") {
   const logs = getLogs();
   const prompts = readJson(PROMPTS_FILE, { prompts: [] });
   const productionTasks = buildProductionTaskIndex(materials, templates, logs, state);
-  const distribution = getDistributionSnapshot({ publishRoot: PUBLISH_ROOT });
+  const workspaceSettings = getWorkspaceSettings();
+  const distribution = getDistributionSnapshot({
+    publishRoot: PUBLISH_ROOT,
+    libraryRoot: workspaceSettings.workPackage.libraryPath
+  });
   distribution.collections = mergeCollectionLedger(distribution.collections || []);
   distribution.devices = mergeDeviceNotes(
     readJson(DEVICE_REGISTRY_FILE, { devices: [] }).devices || []
   );
   return {
     projectRoot: PROJECT_ROOT,
-    workspaceSettings: getWorkspaceSettings(),
+    workspaceSettings,
     generatedAt: new Date().toISOString(),
     state,
     materials,

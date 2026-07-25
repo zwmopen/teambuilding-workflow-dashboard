@@ -14,7 +14,6 @@ let juguangData = null;
 let materialRenderLimit = 12;
 let productRenderLimit = 8;
 let collectionFilters = { type: "all", platform: "all", query: "" };
-let selectedCollectionName = "";
 let activeDistributionPanel = "phones";
 let distributionSummaryFilter = "devices";
 let selectedDistributionCollectionName = "";
@@ -37,6 +36,7 @@ const expandedMaterialPaths = new Set();
 const expandedCollectionNames = new Set();
 let materialTreeInitialized = false;
 let materialTreeView = window.localStorage.getItem("materialTreeView") === "icons" ? "icons" : "list";
+let collectionViewMode = window.localStorage.getItem("collectionViewMode") === "grid" ? "grid" : "list";
 
 const LOCATION_KEYWORDS = ["上海", "杭州", "安吉", "苏州", "南京", "湖州", "桐庐", "千岛湖", "莫干山", "宁波"];
 const ACTIVITY_KEYWORDS = ["露营", "溯溪", "漂流", "烧烤", "农庄", "采摘", "徒步", "越野", "轰趴", "玩水"];
@@ -431,6 +431,8 @@ function renderWorkspaceSettings() {
   if ($("#materialRootInput")) $("#materialRootInput").value = settings.materialRoot || "";
   if ($("#settingsMaterialRoot")) $("#settingsMaterialRoot").value = settings.materialRoot || "";
   if ($("#settingsPortfolioRoot")) $("#settingsPortfolioRoot").value = settings.workPackage?.libraryPath || "";
+  if ($("#collectionRootInput")) $("#collectionRootInput").value = settings.workPackage?.libraryPath || "";
+  if ($("#distributionCollectionRootInput")) $("#distributionCollectionRootInput").value = settings.workPackage?.libraryPath || "";
   if ($("#settingsBatchSize")) $("#settingsBatchSize").value = settings.workPackage?.batchSize || 14;
   if ($("#settingsAutoGroup")) $("#settingsAutoGroup").checked = settings.workPackage?.autoGroup !== false;
   if ($("#settingsAutoZip")) $("#settingsAutoZip").checked = settings.workPackage?.autoZip !== false;
@@ -450,7 +452,12 @@ async function saveWorkspacePaths(options = {}) {
     options.materialRoot || $("#settingsMaterialRoot")?.value || $("#materialRootInput")?.value || ""
   ).trim();
   const portfolioRoot = String(
-    $("#settingsPortfolioRoot")?.value || dashboard?.workspaceSettings?.workPackage?.libraryPath || ""
+    options.portfolioRoot
+      || $("#settingsPortfolioRoot")?.value
+      || $("#collectionRootInput")?.value
+      || $("#distributionCollectionRootInput")?.value
+      || dashboard?.workspaceSettings?.workPackage?.libraryPath
+      || ""
   ).trim();
   const payload = { materialRoot };
   if (options.materialOnly !== true) {
@@ -1301,7 +1308,7 @@ function collectionStateClass(state) {
 
 function humanizeCollectionReason(reason) {
   const value = String(reason || "");
-  if (/Junction|源目录|入口/.test(value)) return "作品文件未登记到台账";
+  if (/Junction|源目录|入口/.test(value)) return "未找到可用作品文件夹";
   if (/隐藏作品集/.test(value)) return "隐藏作品集";
   if (/缺少/.test(value)) return "尚未设置内容分类";
   return value;
@@ -1321,10 +1328,8 @@ function renderCollectionFilters() {
   const platformOptions = [
     ["all", "全部状态"],
     ["dual", "双平台可用"],
-    ["xhs", "小红书可用"],
     ["official", "公众号可用"],
-    ["official_pending", "公众号已打开"],
-    ["all_used", "全部已使用"]
+    ["official_pending", "公众号已打开"]
   ];
   const render = (selector, options, key) => {
     const container = $(selector);
@@ -1353,6 +1358,10 @@ function renderCollections() {
   renderCollectionFilters();
   const collections = getFilteredCollections();
   const list = $("#collectionList");
+  list.classList.toggle("grid-view", collectionViewMode === "grid");
+  document.querySelectorAll("[data-collection-view]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.collectionView === collectionViewMode);
+  });
   list.innerHTML = collections.length ? collections.map((collection) => {
     const expanded = expandedCollectionNames.has(collection.name);
     const badges = [
@@ -1362,7 +1371,7 @@ function renderCollections() {
       [`公众号 ${DistributionUI.platformStateLabel(collection.officialAccount)}`, collectionStateClass(collection.officialAccount)]
     ];
     return `
-      <article class="collection-row ${expanded ? "expanded" : ""} ${selectedCollectionName === collection.name ? "active" : ""}" data-collection="${escapeHtml(collection.name)}">
+      <article class="collection-row ${expanded ? "expanded" : ""}" data-collection="${escapeHtml(collection.name)}">
         <button class="collection-toggle" type="button" data-collection-toggle="${escapeHtml(collection.name)}" aria-expanded="${expanded}" aria-label="${expanded ? "收起" : "展开"} ${escapeHtml(collection.name)}">
           <span aria-hidden="true">⌄</span>
         </button>
@@ -1371,7 +1380,7 @@ function renderCollections() {
         <div class="collection-count">${collection.itemCount || 0}/14</div>
         <div class="collection-children">
           ${expanded ? (collection.items || []).map((item, index) => `
-            <button class="collection-work" type="button" data-preview-work="${escapeHtml(item.previewPath || "")}" data-work-path="${escapeHtml(item.path || "")}">
+            <button class="collection-work" type="button" data-preview-work="${escapeHtml(item.previewPath || "")}" data-preview-text="${escapeHtml(item.textPath || "")}" data-work-path="${escapeHtml(item.path || "")}">
               <span class="collection-branch" aria-hidden="true">${index === (collection.items || []).length - 1 ? "└" : "├"}</span>
               ${item.previewPath ? `<img src="/file?path=${encodeURIComponent(item.previewPath)}" alt="" />` : `<span class="work-placeholder">${item.imageCount || 0}图</span>`}
               <span><strong>${escapeHtml(item.name)}</strong><small>${item.imageCount || 0} 张图片 · 点击预览</small></span>
@@ -1381,15 +1390,20 @@ function renderCollections() {
       </article>
     `;
   }).join("") : `<div class="empty-state"><strong>没有匹配的作品集</strong><p>换一个类型或平台状态筛选。</p></div>`;
-  if (!selectedCollectionName || !collections.some((item) => item.name === selectedCollectionName)) {
-    selectedCollectionName = collections[0]?.name || "";
-  }
-  renderCollectionDetail(selectedCollectionName);
 }
 
-function showCollectionWorkPreview(previewPath, workPath) {
+async function showCollectionWorkPreview(previewPath, textPath, workPath) {
   const previous = $("#collectionPreviewDialog");
   if (previous) previous.remove();
+  let textPreview = "";
+  if (textPath) {
+    try {
+      const response = await fetch(`/file?path=${encodeURIComponent(textPath)}`);
+      if (response.ok) textPreview = await response.text();
+    } catch {
+      textPreview = "";
+    }
+  }
   const dialog = document.createElement("dialog");
   dialog.id = "collectionPreviewDialog";
   dialog.className = "work-preview-dialog";
@@ -1397,6 +1411,7 @@ function showCollectionWorkPreview(previewPath, workPath) {
     <button class="preview-close" type="button" aria-label="关闭">×</button>
     <div class="preview-stage">
       ${previewPath ? `<img src="/file?path=${encodeURIComponent(previewPath)}" alt="作品预览" />` : `<div class="empty-state"><strong>没有预览图</strong><p>可直接打开作品文件夹查看。</p></div>`}
+      ${textPreview ? `<textarea class="collection-text-preview" readonly>${escapeHtml(textPreview)}</textarea>` : ""}
     </div>
     <div class="detail-button-row">
       <button type="button" data-open-preview-folder="${escapeHtml(workPath)}">打开作品文件夹</button>
@@ -1409,56 +1424,6 @@ function showCollectionWorkPreview(previewPath, workPath) {
   });
   dialog.addEventListener("close", () => dialog.remove());
   dialog.showModal();
-}
-
-function renderCollectionDetail(name) {
-  const container = $("#collectionDetail");
-  const collection = dashboard?.distribution?.collections?.find((item) => item.name === name);
-  if (!container || !collection) {
-    if (container) container.innerHTML = `<div class="empty-state"><strong>选择一个作品集</strong><p>查看平台资格和使用记录。</p></div>`;
-    return;
-  }
-  selectedCollectionName = collection.name;
-  $$(".collection-row").forEach((row) => row.classList.toggle("active", row.dataset.collection === collection.name));
-  const platform = (label, state) => `
-    <div class="platform-state"><span>${label}</span><strong>${DistributionUI.platformStateLabel(state)}</strong></div>
-  `;
-  container.innerHTML = `
-    <h3>${escapeHtml(collection.name)}</h3>
-    <p>${escapeHtml(collection.typeLabel)} · ${collection.itemCount || 0} 条 · ${collection.fileCount || 0} 个文件 · ${formatBytes(collection.bytes)}</p>
-    <div class="platform-state-grid">
-      ${platform("小红书", collection.xhs)}
-      ${platform("抖音", collection.douyin)}
-      ${platform("公众号", collection.officialAccount)}
-      <div class="platform-state"><span>双平台手机</span><strong>${collection.dualPlatformEligible ? "可分发" : "不可分发"}</strong></div>
-      <div class="platform-state"><span>手机分发记录</span><strong>${collection.deviceHistoryCount || 0} 次</strong></div>
-      <div class="platform-state"><span>公众号记录</span><strong>${collection.officialAccountHistoryCount || 0} 次</strong></div>
-    </div>
-    ${collection.exclusionReasons?.length ? `<div class="detail-warning">${escapeHtml(collection.exclusionReasons.map(humanizeCollectionReason).join("；"))}</div>` : ""}
-    <section class="collection-ledger-editor">
-      <div>
-        <label for="collectionLedgerType">人工分类</label>
-        <select id="collectionLedgerType">
-          <option value="traffic" ${collection.type === "traffic" ? "selected" : ""}>游戏/泛流量</option>
-          <option value="conversion" ${collection.type === "conversion" ? "selected" : ""}>团建转化</option>
-          <option value="unclassified" ${collection.type === "unclassified" ? "selected" : ""}>未分类</option>
-        </select>
-      </div>
-      <div>
-        <label for="collectionLedgerTags">标签（用逗号分隔）</label>
-        <input id="collectionLedgerTags" value="${escapeHtml((collection.ledger?.tags || []).join(", "))}" placeholder="小红书, 公众号, 已复核" />
-      </div>
-      <div class="ledger-note">
-        <label for="collectionLedgerNote">备注</label>
-        <textarea id="collectionLedgerNote" placeholder="记录使用限制、缺页情况或人工判断">${escapeHtml(collection.ledger?.note || "")}</textarea>
-      </div>
-      <button type="button" class="primary-button" data-save-collection-ledger="${escapeHtml(collection.name)}">保存台账</button>
-    </section>
-    <div class="detail-button-row">
-      <button type="button" data-open-collection="${escapeHtml(collection.sourcePath)}">打开源文件夹</button>
-      <button type="button" data-distribute-collection="${escapeHtml(collection.name)}">进入分发</button>
-    </div>
-  `;
 }
 
 function renderDistribution() {
@@ -2020,7 +1985,7 @@ function activateTab(name) {
     });
     juguangRendered = true;
   }
-  if (name === "settings") applyTheme(localStorage.getItem("tb-dashboard-theme") || "solid");
+  if (name === "settings") applyTheme(localStorage.getItem("tb-dashboard-theme") || "jianghu");
   saveLocalState({ activeTab: name });
 }
 
@@ -2129,6 +2094,14 @@ async function transmitMaterialToGpt(itemId = selectedMaterial?.id) {
       preparedAt: new Date().toISOString()
     }
   });
+  if (window.desktopFiles?.sendToGpt) {
+    window.desktopFiles.sendToGpt({
+      instruction,
+      files: entry.item.attachments || entry.item.images?.map((image) => image.path) || []
+    });
+    toast("正在把帖子素材放入右侧 ChatGPT");
+    return;
+  }
   await openExternal("https://chatgpt.com/");
   toast("帖子与指令已准备，正在打开真实 ChatGPT");
 }
@@ -2198,49 +2171,25 @@ function bindEvents() {
       collectionFilters[filter.dataset.filterKey] = filter.dataset.filterValue;
       renderCollections();
     }
-    const collectionRow = event.target.closest("[data-collection]");
-    if (collectionRow && !event.target.closest("[data-collection-toggle], [data-preview-work]")) renderCollectionDetail(collectionRow.dataset.collection);
     const collectionToggle = event.target.closest("[data-collection-toggle]");
     if (collectionToggle) {
+      event.preventDefault();
+      event.stopPropagation();
       const name = collectionToggle.dataset.collectionToggle;
       if (expandedCollectionNames.has(name)) expandedCollectionNames.delete(name);
       else expandedCollectionNames.add(name);
       renderCollections();
     }
+    const collectionView = event.target.closest("[data-collection-view]");
+    if (collectionView) {
+      collectionViewMode = collectionView.dataset.collectionView === "grid" ? "grid" : "list";
+      window.localStorage.setItem("collectionViewMode", collectionViewMode);
+      renderCollections();
+    }
     const workPreview = event.target.closest("[data-preview-work]");
-    if (workPreview) showCollectionWorkPreview(workPreview.dataset.previewWork, workPreview.dataset.workPath);
+    if (workPreview) showCollectionWorkPreview(workPreview.dataset.previewWork, workPreview.dataset.previewText, workPreview.dataset.workPath);
     const openPreviewFolder = event.target.closest("[data-open-preview-folder]");
     if (openPreviewFolder?.dataset.openPreviewFolder) openPath(openPreviewFolder.dataset.openPreviewFolder);
-    const openCollection = event.target.closest("[data-open-collection]");
-    if (openCollection?.dataset.openCollection) openPath(openCollection.dataset.openCollection);
-    const enterDistribution = event.target.closest("[data-distribute-collection]");
-    if (enterDistribution) {
-      activateTab("distribution");
-      $("#distributionCommand").value = `分发 ${enterDistribution.dataset.distributeCollection}`;
-    }
-    const saveLedger = event.target.closest("[data-save-collection-ledger]");
-    if (saveLedger) {
-      const tags = String($("#collectionLedgerTags")?.value || "")
-        .split(/[,，]/)
-        .map((tag) => tag.trim())
-        .filter(Boolean);
-      api("/api/collections/ledger", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: saveLedger.dataset.saveCollectionLedger,
-          type: $("#collectionLedgerType")?.value,
-          tags,
-          note: $("#collectionLedgerNote")?.value || "",
-          enabled: true
-        })
-      }).then(async () => {
-        await loadDashboard(true);
-        activateTab("products");
-        renderCollectionDetail(saveLedger.dataset.saveCollectionLedger);
-        toast("作品集台账已保存");
-      }).catch((error) => showSystemNotice("作品集台账没有保存", error.message, { tone: "danger" }));
-    }
     const distributionTab = event.target.closest("#distributionTabs [data-panel]");
     if (distributionTab) showDistributionPanel(distributionTab.dataset.panel);
     const distributionFilter = event.target.closest("[data-distribution-filter]");
@@ -2395,6 +2344,29 @@ function bindEvents() {
       showSystemNotice("目录选择失败", error.message, { tone: "danger" });
     }
   });
+  const bindCollectionRootControls = (inputSelector, chooseSelector, applySelector, returnTab) => {
+    $(chooseSelector)?.addEventListener("click", async () => {
+      try {
+        const selectedPath = await chooseFolder("选择作品集存放目录");
+        if (selectedPath) $(inputSelector).value = selectedPath;
+      } catch (error) {
+        showSystemNotice("目录选择失败", error.message, { tone: "danger" });
+      }
+    });
+    $(applySelector)?.addEventListener("click", () => {
+      saveWorkspacePaths({
+        portfolioRoot: $(inputSelector).value,
+        returnTab
+      }).catch((error) => showSystemNotice("作品集目录读取失败", error.message, { tone: "danger" }));
+    });
+    $(inputSelector)?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      $(applySelector)?.click();
+    });
+  };
+  bindCollectionRootControls("#collectionRootInput", "#chooseCollectionRootBtn", "#applyCollectionRootBtn", "products");
+  bindCollectionRootControls("#distributionCollectionRootInput", "#chooseDistributionCollectionRootBtn", "#applyDistributionCollectionRootBtn", "distribution");
   $("#savePathSettingsBtn")?.addEventListener("click", () => {
     saveWorkspacePaths({ returnTab: "settings" })
       .catch((error) => showSystemNotice("设置没有保存", error.message, { tone: "danger" }));
@@ -2408,10 +2380,6 @@ function bindEvents() {
     await checkDistributionDevices();
   });
   $("#openPublishRootBtn")?.addEventListener("click", () => openPath(dashboard?.distribution?.publishRoot));
-  $("#collectionSearch")?.addEventListener("input", (event) => {
-    collectionFilters.query = event.target.value;
-    renderCollections();
-  });
   $("#copyDistributionCommand")?.addEventListener("click", () => copyText($("#distributionCommand").value, "分发指令已复制"));
   $("#refreshJuguangBtn")?.addEventListener("click", async () => {
     await loadJuguang(true);
@@ -2529,7 +2497,23 @@ function bindEvents() {
 
 bindEvents();
 bindPaneResizers();
-applyTheme(localStorage.getItem("tb-dashboard-theme") || "solid");
+window.addEventListener("desktop-gpt-transfer-result", (event) => {
+  const result = event.detail || {};
+  if (!result.ok) {
+    showSystemNotice("素材没有放入 ChatGPT", result.error || "请打开一个 ChatGPT 对话后重试", { tone: "danger" });
+    return;
+  }
+  toast(result.filesAttached
+    ? `已放入 ${result.fileCount} 个文件和生产指令，请在右侧确认发送`
+    : "生产指令已填入；请打开一个对话后再次点击传 GPT 上传文件");
+});
+const themeDefaultVersion = "jianghu-v1";
+const storedThemeDefaultVersion = localStorage.getItem("tb-dashboard-theme-default-version");
+const initialTheme = storedThemeDefaultVersion === themeDefaultVersion
+  ? (localStorage.getItem("tb-dashboard-theme") || "jianghu")
+  : "jianghu";
+localStorage.setItem("tb-dashboard-theme-default-version", themeDefaultVersion);
+applyTheme(initialTheme);
 loadDashboard()
   .then(() => {
     restoreTransferTasks();
