@@ -1,7 +1,16 @@
 ﻿{
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.3.0",
-  "source_commit": "unreleased",
-  "artifacts": []
+  "version": "0.8.2",
+  "source_commit": "v0.8.2",
+  "artifacts": [
+    {
+      "file": "0.8.2/团建内容工作台-0.8.2-便携版.exe",
+      "sha256": "FC697C2ED6953A35F783D1D4A330E8D3226C2502AFBAF12069407B8A292FE1B7",
+      "size": 89558348,
+      "platform": "Windows x64",
+      "built_at": "2026-07-25",
+      "known_limits": "平台发布自动点击、网络隔离与账号调度不在本版本范围；首次全量素材扫描耗时取决于本地文件数量。"
+    }
+  ]
 }
 

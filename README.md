@@ -34,7 +34,13 @@
 
 日常使用请双击桌面的“团建内容工作台”。浏览器地址 `http://127.0.0.1:4327` 仅用于调试，不能在右侧内嵌登录 ChatGPT。
 
-便携版文件：`releases\0.8.1\团建内容工作台-0.8.1-便携版.exe`。
+便携版文件：`releases\0.8.2\团建内容工作台-0.8.2-便携版.exe`。
+
+当前版本：`0.8.2`。设置页可检查版本、打开真实发布包目录、打开运行数据并复制诊断信息。
+
+源码仓库：<https://github.com/zwmopen/teambuilding-workflow-dashboard>
+
+公开版本：<https://github.com/zwmopen/teambuilding-workflow-dashboard/releases/tag/v0.8.2>
 
 命令行启动：
 
@@ -51,6 +57,14 @@ npm test
 ```
 
 启动后应能读取当前项目的素材、模板、作品集、生产日志和分发日志，并把可变状态写入运行数据目录。
+
+发布级验收还包括：
+
+```powershell
+node .\tests\desktop-live-smoke.js
+```
+
+详细结果见 `docs\RELEASE-0.8.2.md`。
 
 ## 分发安全
 

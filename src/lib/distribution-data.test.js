@@ -162,12 +162,13 @@ test("snapshot combines archive and latest official-account log state", () => {
   }
 });
 
-test("hidden, unlabelled and broken entries stay visible but never enter automatic stock", () => {
+test("dot-prefixed labelled collections stay eligible while unlabelled and broken entries do not", () => {
   const fixture = makeFixture();
   try {
     const hidden = createCollection(fixture.collectionsRoot, ".作品集_041[转]");
     const unlabelled = createCollection(fixture.collectionsRoot, "作品集_046");
     linkCollection(fixture.publishRoot, "小红书", ".作品集_041[转]", hidden);
+    linkCollection(fixture.publishRoot, "抖音", ".作品集_041[转]", hidden);
     linkCollection(fixture.publishRoot, "小红书", "作品集_046", unlabelled);
     fs.symlinkSync(
       path.join(fixture.collectionsRoot, "不存在"),
@@ -180,10 +181,12 @@ test("hidden, unlabelled and broken entries stay visible but never enter automat
     const unlabelledItem = snapshot.collections.find((item) => item.name === "作品集_046");
     const brokenItem = snapshot.collections.find((item) => item.name === "作品集_099[泛]");
 
-    assert.equal(hiddenItem.automaticEligible, false);
+    assert.equal(hiddenItem.automaticEligible, true);
+    assert.equal(hiddenItem.dualPlatformEligible, true);
     assert.equal(unlabelledItem.automaticEligible, false);
     assert.equal(brokenItem.automaticEligible, false);
-    assert.equal(snapshot.summary.automaticEligible, 0);
+    assert.equal(snapshot.summary.automaticEligible, 1);
+    assert.equal(snapshot.summary.conversion, 1);
   } finally {
     cleanup(fixture.root);
   }

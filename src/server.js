@@ -15,6 +15,12 @@ const PROJECT_ROOT = process.env.TEAMBUILDING_ROOT || "D:\\AICode\\项目推进\
 const SKILL_ROOT = process.env.TEAMBUILDING_SKILL_ROOT || "D:\\AICode\\AI\\skills\\图文创作相关技能\\团建相关技能";
 const APP_ROOT = __dirname;
 const PUBLIC_ROOT = path.join(APP_ROOT, "public");
+const PROJECT_APP_ROOT = path.resolve(APP_ROOT, "..");
+const APP_VERSION = (() => {
+  try { return fs.readFileSync(path.join(PROJECT_APP_ROOT, "VERSION"), "utf8").trim() || "0.0.0"; }
+  catch { return require("./package.json").version || "0.0.0"; }
+})();
+const RELEASE_ROOT = process.env.TEAMBUILDING_RELEASE_ROOT || path.join(PROJECT_APP_ROOT, "releases");
 const DATA_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运行数据\\江湖有旅人\\图文生产控制台";
 const STATE_FILE = path.join(DATA_ROOT, "state.json");
 const PROMPTS_FILE = path.join(DATA_ROOT, "prompt-versions.json");
@@ -22,6 +28,8 @@ const TASK_INDEX_FILE = path.join(DATA_ROOT, "production-task-index.json");
 const APP_SETTINGS_FILE = path.join(DATA_ROOT, "app-settings.json");
 const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
 const DEVICE_NOTES_FILE = path.join(DATA_ROOT, "device-notes.json");
+const MATERIAL_SCAN_CACHE_FILE = path.join(DATA_ROOT, "material-scan-cache.json");
+const MATERIAL_LIBRARY_CACHE_FILE = path.join(DATA_ROOT, "material-library-cache.json");
 const WORKPKG_CONFIG_FILE = "D:\\Download\\workpkg_config.json";
 const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
   || path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）", "发布空间");
@@ -444,9 +452,39 @@ function parseCsv(text) {
   });
 }
 
+let materialPostCache = null;
+let materialLibraryCache = null;
+
+function getDetectedMaterialPosts(root, force = false) {
+  if (!force && materialPostCache?.root === root && Array.isArray(materialPostCache.posts)) {
+    return materialPostCache.posts;
+  }
+  if (!force) {
+    const saved = readJson(MATERIAL_SCAN_CACHE_FILE, null);
+    if (saved?.root === root && Array.isArray(saved.posts) && exists(root)) {
+      materialPostCache = saved;
+      return saved.posts;
+    }
+  }
+  const posts = scanPostFolders(root);
+  materialPostCache = { root, scannedAt: new Date().toISOString(), posts };
+  writeJson(MATERIAL_SCAN_CACHE_FILE, materialPostCache);
+  return posts;
+}
+
 function getMaterialLibrary(force = false, selectedLibraryPath = "") {
   const root = getWorkspaceSettings().materialRoot;
-  const detectedPosts = scanPostFolders(root);
+  if (!force && materialLibraryCache?.root === root && materialLibraryCache.library) {
+    return materialLibraryCache.library;
+  }
+  if (!force) {
+    const saved = readJson(MATERIAL_LIBRARY_CACHE_FILE, null);
+    if (saved?.root === root && saved.library?.categories && exists(root)) {
+      materialLibraryCache = saved;
+      return saved.library;
+    }
+  }
+  const detectedPosts = getDetectedMaterialPosts(root, force);
 
   function materialItem(post, categoryName, itemIndex) {
     const itemPath = post.path;
@@ -502,7 +540,10 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "") {
       index + 1
     )
   );
-  return { root, recursive: true, detectionRule: "图片 + 文案", categories };
+  const library = { root, recursive: true, detectionRule: "图片 + 文案", categories };
+  materialLibraryCache = { root, scannedAt: new Date().toISOString(), library };
+  writeJson(MATERIAL_LIBRARY_CACHE_FILE, materialLibraryCache);
+  return library;
 }
 
 function getTemplateLibrary() {
@@ -800,6 +841,14 @@ function getDashboard(force = false, selectedLibraryPath = "") {
     readJson(DEVICE_REGISTRY_FILE, { devices: [] }).devices || []
   );
   return {
+    appInfo: {
+      name: "团建内容工作台",
+      version: APP_VERSION,
+      channel: "公开便携版",
+      runtimeRoot: DATA_ROOT,
+      releaseRoot: RELEASE_ROOT,
+      desktop: Boolean(process.versions.electron)
+    },
     projectRoot: PROJECT_ROOT,
     workspaceSettings,
     generatedAt: new Date().toISOString(),
@@ -836,6 +885,8 @@ function isAllowedFile(filePath) {
     path.resolve(PROJECT_ROOT),
     path.resolve(SKILL_ROOT),
     path.resolve(APP_ROOT),
+    path.resolve(PROJECT_APP_ROOT),
+    path.resolve(DATA_ROOT),
     path.resolve("D:\\Download\\素材下载"),
     path.resolve(getWorkspaceSettings().materialRoot),
     path.resolve(getWorkspaceSettings().workPackage.libraryPath)
@@ -1104,6 +1155,8 @@ function startGenericTransfer(source, device) {
     device: deviceName,
     source: resolvedSource,
     state: "running",
+    stage: "queued",
+    stageLabel: "准备开始发送",
     progress: 0,
     message: "准备传送",
     output: "",
@@ -1124,19 +1177,27 @@ function startGenericTransfer(source, device) {
   child.stderr.on("data", (chunk) => updateTransferProgress(record, chunk, true));
   child.on("error", (error) => {
     record.state = "failed";
+    record.stage = "failed";
+    record.stageLabel = "发送未完成";
     record.message = error.message;
     record.finishedAt = new Date().toISOString();
   });
   child.on("close", (code) => {
     if (record.state === "cancelling") {
       record.state = "cancelled";
+      record.stage = "cancelled";
+      record.stageLabel = "已停止发送";
       record.message = "已取消传送";
     } else if (code === 0) {
       record.state = "completed";
+      record.stage = "completed";
+      record.stageLabel = "发送完成并确认接收";
       record.progress = 100;
       record.message = "发送完成";
     } else {
       record.state = "failed";
+      record.stage = "failed";
+      record.stageLabel = "发送未完成";
       record.message = record.error || record.message || `传送进程退出码 ${code}`;
     }
     record.finishedAt = new Date().toISOString();
@@ -1150,6 +1211,8 @@ function cancelGenericTransfer(taskId) {
   if (!record) throw new Error("传送任务不存在");
   if (record.state !== "running") return publicTransferTask(record);
   record.state = "cancelling";
+  record.stage = "cancelling";
+  record.stageLabel = "正在安全停止";
   record.message = "正在取消";
   if (record.child && !record.child.killed) record.child.kill();
   if (record.remoteTaskId) {
@@ -1339,6 +1402,8 @@ function saveWorkspaceSettings(body) {
     writeJson(WORKPKG_CONFIG_FILE, next);
   }
   materialCategoryCache.clear();
+  materialPostCache = null;
+  materialLibraryCache = null;
   return getWorkspaceSettings();
 }
 
@@ -1397,7 +1462,7 @@ async function route(req, res) {
 
   if (pathname === "/api/dashboard") {
     const libraryPath = parsed.query.library ? decodeURIComponent(parsed.query.library) : "";
-    return sendJson(res, getDashboard(parsed.query.refresh === "1", libraryPath));
+    return sendJson(res, getDashboard(parsed.query.refresh === "materials", libraryPath));
   }
 
   if (pathname === "/api/juguang") {

@@ -281,7 +281,6 @@ function getDistributionSnapshot(options = {}) {
     const previouslySentToDevice = deviceHistory.length > 0;
     const officialLogState = officialStateFromRow(latestOfficial.get(name));
     const exclusionReasons = [];
-    if (classification.hidden) exclusionReasons.push("隐藏作品集");
     if (!classification.labelled) exclusionReasons.push("缺少[泛]/[转]标签");
     if (!source.valid) exclusionReasons.push("没有可用源目录");
     if (entries.xhs.valid && entries.douyin.valid && !sameDualTarget) exclusionReasons.push("小红书与抖音目标不一致");
@@ -299,7 +298,6 @@ function getDistributionSnapshot(options = {}) {
     const sourceValid = Boolean(source.valid);
     if (previouslySentToDevice) exclusionReasons.push("已有手机分发记录");
     const automaticEligible = classification.labelled
-      && !classification.hidden
       && !previouslySentToDevice
       && Boolean(activeSources.length);
 

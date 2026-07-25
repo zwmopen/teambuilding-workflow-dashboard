@@ -1,6 +1,6 @@
 {
   "name": "teambuilding-workflow-dashboard",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "description": "江湖有旅人团建图文生产工作流可视化控制台",
   "main": "desktop/main.js",
@@ -23,13 +23,14 @@
     "asar": false,
     "files": [
       "desktop/**/*",
+      "integrations/**/*",
       "lib/**/*",
       "public/**/*",
       "server.js",
       "package.json"
     ],
     "directories": {
-      "output": "../releases/0.8.1"
+      "output": "../releases/0.8.2"
     },
     "win": {
       "target": ["portable"],

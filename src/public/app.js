@@ -324,7 +324,7 @@ function getSavedState() {
 
 async function loadDashboard(force = false, libraryPath = "") {
   const params = new URLSearchParams();
-  if (force) params.set("refresh", "1");
+  if (force) params.set("refresh", force === "materials" ? "materials" : "1");
   if (libraryPath) params.set("library", libraryPath);
   const query = params.toString();
   dashboard = await api(`/api/dashboard${query ? `?${query}` : ""}`);
@@ -436,6 +436,29 @@ function renderWorkspaceSettings() {
   if ($("#settingsBatchSize")) $("#settingsBatchSize").value = settings.workPackage?.batchSize || 14;
   if ($("#settingsAutoGroup")) $("#settingsAutoGroup").checked = settings.workPackage?.autoGroup !== false;
   if ($("#settingsAutoZip")) $("#settingsAutoZip").checked = settings.workPackage?.autoZip !== false;
+  const appInfo = dashboard?.appInfo || {};
+  if ($("#settingsVersion")) $("#settingsVersion").textContent = `v${appInfo.version || "未知"}`;
+  if ($("#settingsVersionChannel")) $("#settingsVersionChannel").textContent = appInfo.channel || "本地便携版";
+  if ($("#settingsVersionStatus")) $("#settingsVersionStatus").textContent = appInfo.desktop ? "桌面版运行中" : "浏览器预览中";
+  if ($("#settingsDiagnosticsSummary")) {
+    $("#settingsDiagnosticsSummary").textContent = `运行数据：${appInfo.runtimeRoot || "未识别"}`;
+  }
+}
+
+function buildDiagnosticsText() {
+  const appInfo = dashboard?.appInfo || {};
+  const distribution = dashboard?.distribution || {};
+  const online = (distribution.devices || []).filter((device) => device.online).length;
+  return [
+    `${appInfo.name || "团建内容工作台"} v${appInfo.version || "未知"}`,
+    `运行方式：${appInfo.desktop ? "桌面版" : "浏览器预览"}`,
+    `项目目录：${dashboard?.projectRoot || "未识别"}`,
+    `素材目录：${dashboard?.workspaceSettings?.materialRoot || "未识别"}`,
+    `作品集目录：${dashboard?.workspaceSettings?.workPackage?.libraryPath || "未识别"}`,
+    `设备在线：${online}/${(distribution.devices || []).length}`,
+    `数据生成时间：${dashboard?.generatedAt || "未知"}`,
+    `运行数据：${appInfo.runtimeRoot || "未识别"}`
+  ].join("\n");
 }
 
 async function chooseFolder(description) {
@@ -2130,7 +2153,7 @@ async function renamePath(targetPath, currentLabel) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: targetPath, newName: nextName })
     });
-    await loadDashboard(true, $("#materialLibraryFilter")?.value || "");
+    await loadDashboard("materials", $("#materialLibraryFilter")?.value || "");
     toast("已重命名并刷新");
   } catch (error) {
     showSystemNotice("文件夹没有重命名", error.message, { tone: "danger" });
@@ -2310,11 +2333,11 @@ function bindEvents() {
   });
 
   $("#refreshBtn").addEventListener("click", async () => {
-    await loadDashboard(true, $("#materialLibraryFilter")?.value || "");
+    await loadDashboard("materials", $("#materialLibraryFilter")?.value || "");
     toast("已刷新本地库");
   });
   $("#materialRefreshBtn")?.addEventListener("click", async () => {
-    await loadDashboard(true);
+    await loadDashboard("materials");
     toast("本地文件树已刷新");
   });
   $("#openChatGptBtn")?.addEventListener("click", () => openExternal("https://chatgpt.com/"));
@@ -2377,6 +2400,15 @@ function bindEvents() {
     saveWorkspacePaths({ returnTab: "settings" })
       .catch((error) => showSystemNotice("设置没有保存", error.message, { tone: "danger" }));
   });
+  $("#checkAppUpdateBtn")?.addEventListener("click", async () => {
+    const previousVersion = dashboard?.appInfo?.version || "未知";
+    await loadDashboard(true);
+    const currentVersion = dashboard?.appInfo?.version || previousVersion;
+    showSystemNotice("版本检查完成", `当前已安装 v${currentVersion}，发布包目录可直接打开核对。`, { tone: "success" });
+  });
+  $("#openReleaseRootBtn")?.addEventListener("click", () => openPath(dashboard?.appInfo?.releaseRoot));
+  $("#openRuntimeRootBtn")?.addEventListener("click", () => openPath(dashboard?.appInfo?.runtimeRoot));
+  $("#copyDiagnosticsBtn")?.addEventListener("click", () => copyText(buildDiagnosticsText(), "诊断信息已复制"));
   $("#overviewRefreshBtn")?.addEventListener("click", async () => {
     await loadDashboard(true);
     activateTab("overview");

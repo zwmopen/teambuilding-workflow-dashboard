@@ -266,6 +266,19 @@
               <button id="runExistingWorkPackageBtn" type="button">运行现有一键工作包</button>
             </div>
           </section>
+          <section class="settings-card version-card">
+            <div class="version-summary">
+              <div><p class="label">应用版本</p><h3 id="settingsVersion">读取中…</h3><p id="settingsVersionChannel">本地便携版</p></div>
+              <span class="version-status" id="settingsVersionStatus">已安装</span>
+            </div>
+            <div class="settings-actions">
+              <button id="checkAppUpdateBtn" class="primary-button" type="button">检查当前版本</button>
+              <button id="openReleaseRootBtn" type="button">打开发布包目录</button>
+              <button id="copyDiagnosticsBtn" type="button">复制诊断信息</button>
+              <button id="openRuntimeRootBtn" type="button">打开运行数据</button>
+            </div>
+            <p class="path-line" id="settingsDiagnosticsSummary">版本、数据目录和桌面运行状态会在这里核对。</p>
+          </section>
           <section class="settings-card"><h3>高级入口</h3><div class="settings-actions"><button data-jump="prompts">提示词版本</button><button data-jump="juguang">聚光运营</button><button data-jump="workflow">生产日志</button></div></section>
         </section>
       </section>

@@ -4269,6 +4269,33 @@ body[data-theme="midnight"] .rail-tab.active {
   }
 }
 
+.version-card {
+  display: grid;
+  gap: 18px;
+}
+
+.version-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.version-summary h3 {
+  margin: 3px 0 2px;
+  font-size: 28px;
+}
+
+.version-summary p { margin: 0; color: var(--muted); }
+
+.version-status {
+  padding: 8px 12px;
+  border-radius: 999px;
+  color: var(--accent-dark);
+  background: var(--selection);
+  font-weight: 700;
+}
+
 @media (max-width: 860px) {
   .app-shell {
     grid-template-columns: 76px minmax(0, 1fr);

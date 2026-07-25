@@ -6,9 +6,38 @@ const http = require("node:http");
 
 const APP_URL = "http://127.0.0.1:4327/";
 const DOWNLOAD_ROOT = "D:\\Download";
-const CHATGPT_USERSCRIPT = "D:\\AICode\\工具开发\\projects\\chatgpt-conversation-tree\\src\\chatgpt-conversation-tree.user.js";
-const CHATGPT_HISTORY_EXPORT = "D:\\Download\\chatgpt-helper-data-2026-07-13T08-04-14.json";
+const RUNTIME_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运行数据\\江湖有旅人\\图文生产控制台";
+const DESKTOP_LOG_FILE = path.join(RUNTIME_ROOT, "desktop.log");
+const CHATGPT_USERSCRIPT_CANDIDATES = [
+  path.join(__dirname, "..", "integrations", "chatgpt-conversation-tree.user.js"),
+  "D:\\AICode\\工具开发\\projects\\chatgpt-conversation-tree\\src\\chatgpt-conversation-tree.user.js"
+];
+const CHATGPT_HISTORY_CANDIDATES = [
+  path.join(RUNTIME_ROOT, "chatgpt-history.json"),
+  "D:\\Download\\chatgpt-helper-data-2026-07-13T08-04-14.json"
+];
 let serverProcess = null;
+let mainWindow = null;
+
+function importPrivateHistoryToRuntime() {
+  const runtimeHistory = CHATGPT_HISTORY_CANDIDATES[0];
+  const externalHistory = CHATGPT_HISTORY_CANDIDATES[1];
+  if (fs.existsSync(runtimeHistory) || !fs.existsSync(externalHistory)) return;
+  fs.mkdirSync(path.dirname(runtimeHistory), { recursive: true });
+  fs.copyFileSync(externalHistory, runtimeHistory);
+}
+
+if (!app.isPackaged) app.commandLine.appendSwitch("remote-debugging-port", "9333");
+
+function appendDesktopLog(event, detail = "") {
+  try {
+    fs.mkdirSync(RUNTIME_ROOT, { recursive: true });
+    const safeDetail = String(detail || "").replace(/[\r\n]+/g, " ").slice(0, 2000);
+    fs.appendFileSync(DESKTOP_LOG_FILE, `${new Date().toISOString()}\t${event}\t${safeDetail}\n`, "utf8");
+  } catch {
+    // Diagnostics must never prevent the app from starting.
+  }
+}
 
 function readJson(filePath, fallback = null) {
   try {
@@ -19,9 +48,11 @@ function readJson(filePath, fallback = null) {
 }
 
 function userscriptBootstrap() {
-  if (!fs.existsSync(CHATGPT_USERSCRIPT)) return "";
-  const userscript = fs.readFileSync(CHATGPT_USERSCRIPT, "utf8");
-  const history = readJson(CHATGPT_HISTORY_EXPORT, null);
+  const userscriptPath = CHATGPT_USERSCRIPT_CANDIDATES.find((candidate) => fs.existsSync(candidate));
+  if (!userscriptPath) return "";
+  const userscript = fs.readFileSync(userscriptPath, "utf8");
+  const historyPath = CHATGPT_HISTORY_CANDIDATES.find((candidate) => fs.existsSync(candidate));
+  const history = historyPath ? readJson(historyPath, null) : null;
   const seed = history && history.format === "cgpt-conversation-tree" ? history : null;
   const shim = `(() => {
     if (window.__TB_CHATGPT_USERSCRIPT_LOADED__) return;
@@ -94,12 +125,23 @@ function canReachServer() {
 async function ensureServer() {
   if (await canReachServer()) return;
   const serverFile = path.join(__dirname, "..", "server.js");
+  const releaseRoot = app.isPackaged
+    ? (process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath))
+    : path.resolve(__dirname, "..", "..", "releases");
   serverProcess = childProcess.spawn(process.execPath, [serverFile], {
     cwd: path.dirname(serverFile),
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PORT: "4327" },
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      PORT: "4327",
+      TEAMBUILDING_RELEASE_ROOT: releaseRoot
+    },
     windowsHide: true,
-    stdio: "ignore"
+    stdio: ["ignore", "pipe", "pipe"]
   });
+  serverProcess.stdout?.on("data", (chunk) => appendDesktopLog("server", chunk));
+  serverProcess.stderr?.on("data", (chunk) => appendDesktopLog("server-error", chunk));
+  serverProcess.on("exit", (code, signal) => appendDesktopLog("server-exit", `code=${code} signal=${signal || ""}`));
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     if (await canReachServer()) return;
@@ -135,6 +177,8 @@ function secureGuest(contents) {
 }
 
 async function createWindow() {
+  importPrivateHistoryToRuntime();
+  appendDesktopLog("desktop-start", `electron=${process.versions.electron} chrome=${process.versions.chrome}`);
   await ensureServer();
   const window = new BrowserWindow({
     width: 1520,
@@ -153,8 +197,16 @@ async function createWindow() {
       preload: path.join(__dirname, "shell-preload.js")
     }
   });
+  mainWindow = window;
+  window.on("closed", () => { mainWindow = null; });
 
   window.once("ready-to-show", () => window.show());
+  window.webContents.on("did-fail-load", (_event, code, description, validatedURL, isMainFrame) => {
+    appendDesktopLog("shell-load-failed", `code=${code} main=${isMainFrame} url=${validatedURL} ${description}`);
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    appendDesktopLog("shell-render-gone", `${details.reason} exitCode=${details.exitCode}`);
+  });
 
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     delete webPreferences.preload;
@@ -215,10 +267,22 @@ ipcMain.handle("gpt:prepare-transfer", async (_event, payload = {}) => {
   return { ok: true, filesAttached, fileCount: filesAttached ? files.length : 0 };
 });
 
-app.whenReady().then(createWindow).catch((error) => {
-  console.error(error);
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
   app.quit();
-});
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+  app.whenReady().then(createWindow).catch((error) => {
+    appendDesktopLog("startup-failed", error.stack || error.message);
+    console.error(error);
+    app.quit();
+  });
+}
 
 app.on("window-all-closed", () => {
   if (serverProcess && !serverProcess.killed) serverProcess.kill();
