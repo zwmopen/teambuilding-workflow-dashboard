@@ -1,16 +1,23 @@
-﻿{
+{
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.8.2",
-  "source_commit": "v0.8.2",
+  "version": "0.8.8",
+  "source_commit": "v0.8.8",
   "artifacts": [
+    {
+      "file": "0.8.8/团建内容工作台-0.8.8-便携版.exe",
+      "sha256": "EC002C15C8341327DA62FD76B94DC9ACEB6A768940F7DF3FBE134E9B1D6A6CE6",
+      "size": 89568190,
+      "platform": "Windows x64",
+      "built_at": "2026-07-27",
+      "known_limits": "平台发布自动点击、网络隔离与账号调度不在本版本范围；首次全量素材扫描耗时取决于本地文件数量；素材使用台账在第一次真实记录时创建。"
+    },
     {
       "file": "0.8.2/团建内容工作台-0.8.2-便携版.exe",
       "sha256": "FC697C2ED6953A35F783D1D4A330E8D3226C2502AFBAF12069407B8A292FE1B7",
       "size": 89558348,
       "platform": "Windows x64",
       "built_at": "2026-07-25",
-      "known_limits": "平台发布自动点击、网络隔离与账号调度不在本版本范围；首次全量素材扫描耗时取决于本地文件数量。"
+      "known_limits": "历史版本，保留回退用。"
     }
   ]
 }
-
