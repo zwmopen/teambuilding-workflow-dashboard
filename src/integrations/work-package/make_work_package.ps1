@@ -3,11 +3,13 @@
     [string]$ConversationMetadataJsonOverride,
     [switch]$NoMessage,
     [switch]$Preview,
+    [switch]$RebuildHistory,
+    [switch]$CleanExistingDuplicates,
     [int]$TestFailAfterImageMove = 0
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.4.1"
+$workPackageScriptVersion = "1.5.0"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -22,6 +24,7 @@ function Get-ClipboardText {
         return $null
     }
 }
+
 function Get-TitleLine {
     param([string]$Text)
 
@@ -296,6 +299,9 @@ function Get-WorkPackageConfig {
         portfolio_batch_size = 14
         portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
         portfolio_log_folder = "_portfolio_move_logs"
+        visual_similarity_enabled = $true
+        visual_similarity_max_distance = 6
+        visual_similarity_max_average = 3
     }
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -416,7 +422,7 @@ public class WorkPkgToastForm : Form
     }
 }
 
-function Get-TextHash {
+function Get-Sha256Hex {
     param([string]$Text)
 
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -531,6 +537,426 @@ function Get-TopLevelImages {
     } | Sort-Object LastWriteTime, Name)
 }
 
+function Get-FileSha256Hex {
+    param([string]$Path)
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        return -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString("x2") })
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        $sha.Dispose()
+    }
+}
+
+function Get-ImageDHash {
+    param([string]$Path)
+
+    $sourceImage = $null
+    $smallBitmap = $null
+    $graphics = $null
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $sourceImage = [System.Drawing.Image]::FromFile($Path)
+        $smallBitmap = New-Object System.Drawing.Bitmap 9, 8
+        $graphics = [System.Drawing.Graphics]::FromImage($smallBitmap)
+        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+        $graphics.DrawImage($sourceImage, 0, 0, 9, 8)
+
+        $hashBytes = New-Object byte[] 8
+        for ($y = 0; $y -lt 8; $y++) {
+            for ($x = 0; $x -lt 8; $x++) {
+                $left = $smallBitmap.GetPixel($x, $y)
+                $right = $smallBitmap.GetPixel($x + 1, $y)
+                $leftLuma = (299 * $left.R) + (587 * $left.G) + (114 * $left.B)
+                $rightLuma = (299 * $right.R) + (587 * $right.G) + (114 * $right.B)
+                if ($leftLuma -gt $rightLuma) {
+                    $bitIndex = ($y * 8) + $x
+                    $byteIndex = [Math]::Floor($bitIndex / 8)
+                    $bitInByte = 7 - ($bitIndex % 8)
+                    $hashBytes[$byteIndex] = $hashBytes[$byteIndex] -bor (1 -shl $bitInByte)
+                }
+            }
+        }
+
+        return -join ($hashBytes | ForEach-Object { $_.ToString("x2") })
+    } catch {
+        return ""
+    } finally {
+        if ($null -ne $graphics) {
+            $graphics.Dispose()
+        }
+        if ($null -ne $smallBitmap) {
+            $smallBitmap.Dispose()
+        }
+        if ($null -ne $sourceImage) {
+            $sourceImage.Dispose()
+        }
+    }
+}
+
+function Get-HammingDistanceHex {
+    param(
+        [string]$First,
+        [string]$Second
+    )
+
+    if ($First.Length -ne 16 -or $Second.Length -ne 16) {
+        return 64
+    }
+
+    $distance = 0
+    for ($i = 0; $i -lt 16; $i += 2) {
+        $value = [Convert]::ToByte($First.Substring($i, 2), 16) -bxor [Convert]::ToByte($Second.Substring($i, 2), 16)
+        while ($value -ne 0) {
+            $distance += ($value -band 1)
+            $value = $value -shr 1
+        }
+    }
+    return $distance
+}
+
+function Get-ImageHashInfo {
+    param([object[]]$Images)
+
+    $hashes = @($Images | ForEach-Object { Get-FileSha256Hex -Path $_.FullName } | Sort-Object)
+    $perceptualHashes = @($Images | ForEach-Object { Get-ImageDHash -Path $_.FullName })
+    $payload = "$($hashes.Count)`n$($hashes -join "`n")"
+
+    return [pscustomobject]@{
+        Count = $hashes.Count
+        Hashes = $hashes
+        PerceptualHashes = $perceptualHashes
+        SetHash = Get-Sha256Hex -Text $payload
+    }
+}
+
+function Get-VisualSimilarityMatch {
+    param(
+        [object]$Database,
+        [object]$ImageHashInfo,
+        [int]$MaxDistance = 6,
+        [double]$MaxAverageDistance = 3
+    )
+
+    $currentHashes = @($ImageHashInfo.PerceptualHashes)
+    if ($currentHashes.Count -eq 0 -or @($currentHashes | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+        return $null
+    }
+
+    $bestMatch = $null
+    foreach ($entry in @($Database.entries)) {
+        $property = $entry.PSObject.Properties["imagePerceptualHash"]
+        if ($null -eq $property) {
+            continue
+        }
+
+        $historyHashes = @($entry.imagePerceptualHash)
+        if ($historyHashes.Count -ne $currentHashes.Count -or @($historyHashes | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+            continue
+        }
+
+        $pairs = New-Object System.Collections.Generic.List[object]
+        for ($currentIndex = 0; $currentIndex -lt $currentHashes.Count; $currentIndex++) {
+            for ($historyIndex = 0; $historyIndex -lt $historyHashes.Count; $historyIndex++) {
+                $distance = Get-HammingDistanceHex -First $currentHashes[$currentIndex] -Second $historyHashes[$historyIndex]
+                if ($distance -le $MaxDistance) {
+                    $pairs.Add([pscustomobject]@{
+                        Current = $currentIndex
+                        History = $historyIndex
+                        Distance = $distance
+                    }) | Out-Null
+                }
+            }
+        }
+
+        $usedCurrent = @{}
+        $usedHistory = @{}
+        $matchedDistances = New-Object System.Collections.Generic.List[int]
+        foreach ($pair in @($pairs | Sort-Object Distance, Current, History)) {
+            if (-not $usedCurrent.ContainsKey($pair.Current) -and -not $usedHistory.ContainsKey($pair.History)) {
+                $usedCurrent[$pair.Current] = $true
+                $usedHistory[$pair.History] = $true
+                $matchedDistances.Add([int]$pair.Distance) | Out-Null
+            }
+        }
+
+        if ($matchedDistances.Count -ne $currentHashes.Count) {
+            continue
+        }
+
+        $averageDistance = ($matchedDistances | Measure-Object -Average).Average
+        if ($averageDistance -gt $MaxAverageDistance) {
+            continue
+        }
+
+        if ($null -eq $bestMatch -or $averageDistance -lt $bestMatch.AverageDistance) {
+            $bestMatch = [pscustomobject]@{
+                Entry = $entry
+                AverageDistance = [Math]::Round($averageDistance, 2)
+                MaximumDistance = ($matchedDistances | Measure-Object -Maximum).Maximum
+            }
+        }
+    }
+
+    return $bestMatch
+}
+
+function New-WorkHistoryDatabase {
+    $now = [DateTime]::UtcNow.ToString("o")
+    return [pscustomobject][ordered]@{
+        schemaVersion = 1
+        createdAt = $now
+        updatedAt = $now
+        entries = @()
+    }
+}
+
+function Test-WorkHistoryDatabase {
+    param([object]$Database)
+
+    return (
+        $null -ne $Database -and
+        $null -ne $Database.PSObject.Properties["schemaVersion"] -and
+        [int]$Database.schemaVersion -eq 1 -and
+        $null -ne $Database.PSObject.Properties["entries"]
+    )
+}
+
+function Read-WorkHistoryDatabaseFile {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        $database = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (Test-WorkHistoryDatabase -Database $database) {
+            return $database
+        }
+    } catch {
+    }
+
+    return $null
+}
+
+function Write-JsonFileAtomic {
+    param(
+        [string]$Path,
+        [string]$Json
+    )
+
+    $directory = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    $temporaryPath = "$Path.tmp-$([guid]::NewGuid().ToString('N'))"
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, $Json, (New-Object System.Text.UTF8Encoding($false)))
+        $validated = Get-Content -LiteralPath $temporaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not (Test-WorkHistoryDatabase -Database $validated)) {
+            throw "History database validation failed."
+        }
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Save-WorkHistoryDatabase {
+    param(
+        [object]$Database,
+        [string]$PrimaryPath,
+        [string]$BackupPath,
+        [string]$RuntimeMirrorPath
+    )
+
+    $Database.updatedAt = [DateTime]::UtcNow.ToString("o")
+    $json = $Database | ConvertTo-Json -Depth 8
+
+    if (Test-Path -LiteralPath $PrimaryPath -PathType Leaf) {
+        $existingDatabase = Read-WorkHistoryDatabaseFile -Path $PrimaryPath
+        if ($null -ne $existingDatabase) {
+            $existingJson = $existingDatabase | ConvertTo-Json -Depth 8
+            Write-JsonFileAtomic -Path $BackupPath -Json $existingJson
+        }
+    }
+
+    Write-JsonFileAtomic -Path $PrimaryPath -Json $json
+    if ($null -eq (Read-WorkHistoryDatabaseFile -Path $BackupPath)) {
+        Write-JsonFileAtomic -Path $BackupPath -Json $json
+    }
+    Write-JsonFileAtomic -Path $RuntimeMirrorPath -Json $json
+
+    try {
+        $mirrorItem = Get-Item -LiteralPath $RuntimeMirrorPath -Force
+        $mirrorItem.Attributes = $mirrorItem.Attributes -bor [System.IO.FileAttributes]::Hidden
+    } catch {
+    }
+}
+
+function Get-WorkHistoryDatabase {
+    param(
+        [string]$PrimaryPath,
+        [string]$BackupPath,
+        [string]$RuntimeMirrorPath
+    )
+
+    $candidates = New-Object System.Collections.Generic.List[object]
+    foreach ($candidate in @(
+        [pscustomobject]@{ Path = $PrimaryPath; Priority = 3 },
+        [pscustomobject]@{ Path = $RuntimeMirrorPath; Priority = 2 },
+        [pscustomobject]@{ Path = $BackupPath; Priority = 1 }
+    )) {
+        $database = Read-WorkHistoryDatabaseFile -Path $candidate.Path
+        if ($null -ne $database) {
+            $updatedAt = [datetime]::MinValue
+            try {
+                $updatedAt = [datetime]::Parse([string]$database.updatedAt).ToUniversalTime()
+            } catch {
+            }
+            $candidates.Add([pscustomobject]@{
+                Path = $candidate.Path
+                Priority = $candidate.Priority
+                UpdatedAt = $updatedAt
+                Database = $database
+            }) | Out-Null
+        }
+    }
+
+    $selected = @($candidates | Sort-Object UpdatedAt, Priority -Descending | Select-Object -First 1)
+    if ($selected.Count -gt 0) {
+        return [pscustomobject]@{
+            Database = $selected[0].Database
+            SourcePath = $selected[0].Path
+            IsNew = $false
+        }
+    }
+
+    return [pscustomobject]@{
+        Database = New-WorkHistoryDatabase
+        SourcePath = ""
+        IsNew = $true
+    }
+}
+
+function Add-WorkHistoryEntry {
+    param(
+        [object]$Database,
+        [string]$TextHash,
+        [object]$ImageHashInfo,
+        [string]$Title,
+        [string]$PackageFolder,
+        [string]$PackagePath = "",
+        [string]$Source = "created",
+        [datetime]$RecordedAt = (Get-Date)
+    )
+
+    if (@($Database.entries | Where-Object { $_.imageSetSha256 -eq $ImageHashInfo.SetHash }).Count -gt 0) {
+        return $false
+    }
+
+    $entry = [pscustomobject][ordered]@{
+        id = [guid]::NewGuid().ToString("N")
+        recordedAt = $RecordedAt.ToUniversalTime().ToString("o")
+        textSha256 = $TextHash
+        imageSetSha256 = $ImageHashInfo.SetHash
+        imageCount = $ImageHashInfo.Count
+        imageSha256 = @($ImageHashInfo.Hashes)
+        imagePerceptualHash = @($ImageHashInfo.PerceptualHashes)
+        title = $Title
+        packageFolder = $PackageFolder
+        packagePath = $PackagePath
+        source = $Source
+    }
+    $Database.entries = @($Database.entries) + @($entry)
+    return $true
+}
+
+function Test-ImageSetHashExists {
+    param(
+        [object]$Database,
+        [string]$ImageSetHash
+    )
+
+    return @($Database.entries | Where-Object { $_.imageSetSha256 -eq $ImageSetHash }).Count -gt 0
+}
+
+function Import-ExistingPackagesIntoHistory {
+    param(
+        [object]$Database,
+        [string]$LibraryDirectory,
+        [string]$TextPrefix
+    )
+
+    $imported = 0
+    $duplicateFolders = New-Object System.Collections.Generic.List[string]
+    foreach ($textFile in @(Get-PackagedTextFiles -Directory $LibraryDirectory -TextPrefix $TextPrefix -Recurse | Sort-Object LastWriteTime, FullName)) {
+        try {
+            $packageImages = Get-TopLevelImages -Directory $textFile.DirectoryName
+            if ($packageImages.Count -eq 0) {
+                continue
+            }
+
+            $text = [System.IO.File]::ReadAllText($textFile.FullName)
+            $imageHashInfo = Get-ImageHashInfo -Images $packageImages
+            $title = Get-TitleLine -Text $text
+            if (Add-WorkHistoryEntry `
+                -Database $Database `
+                -TextHash (Get-TextHash -Text $text) `
+                -ImageHashInfo $imageHashInfo `
+                -Title $title `
+                -PackageFolder $textFile.Directory.Name `
+                -PackagePath $textFile.DirectoryName `
+                -Source "migration" `
+                -RecordedAt $textFile.LastWriteTime) {
+                $imported++
+            } elseif (-not $duplicateFolders.Contains($textFile.DirectoryName)) {
+                $duplicateFolders.Add($textFile.DirectoryName) | Out-Null
+            }
+        } catch {
+        }
+    }
+
+    return [pscustomobject]@{
+        Imported = $imported
+        DuplicateFolders = $duplicateFolders.ToArray()
+    }
+}
+
+function Remove-DirectoryToRecycleBin {
+    param(
+        [string]$Path,
+        [string]$AllowedRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return $false
+    }
+
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $resolvedRoot = [System.IO.Path]::GetFullPath($AllowedRoot).TrimEnd('\') + '\'
+    if (-not $resolvedPath.StartsWith($resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove a folder outside the configured library: $resolvedPath"
+    }
+
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(
+        $resolvedPath,
+        [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+        [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+    )
+    return -not (Test-Path -LiteralPath $resolvedPath)
+}
+
 function Set-FileTimes {
     param(
         [string]$Path,
@@ -546,31 +972,27 @@ function Set-FileTimes {
     }
 }
 
-function Move-DuplicateDownloadImagesToQuarantine {
+function Remove-DuplicateDownloadImages {
     param(
-        [object[]]$Images,
-        [string]$Directory,
-        [string]$Stamp
+        [object[]]$Images
     )
 
-    $holdingDir = Join-Path $Directory ".workpkg_duplicate_downloads_$Stamp"
-    if (-not (Test-Path -LiteralPath $holdingDir)) {
-        New-Item -ItemType Directory -Path $holdingDir | Out-Null
-        try {
-            $holdingItem = Get-Item -LiteralPath $holdingDir -Force
-            $holdingItem.Attributes = $holdingItem.Attributes -bor [System.IO.FileAttributes]::Hidden
-        } catch {
-        }
-    }
-
-    $moved = 0
+    $deleted = 0
     foreach ($image in $Images) {
-        $destination = Get-UniqueFilePath -Path (Join-Path $holdingDir $image.Name)
-        Move-Item -LiteralPath $image.FullName -Destination $destination -ErrorAction Stop
-        $moved++
+        if ($clipboardTextOverrideSpecified) {
+            Remove-Item -LiteralPath $image.FullName -Force -ErrorAction Stop
+        } else {
+            Add-Type -AssemblyName Microsoft.VisualBasic
+            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+                $image.FullName,
+                [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+                [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+            )
+        }
+        $deleted++
     }
 
-    return $moved
+    return $deleted
 }
 
 function Restore-StagedImages {
@@ -874,6 +1296,95 @@ function Clear-ClipboardAfterSuccess {
     }
 }
 
+function Resolve-HistoryPackagePath {
+    param(
+        [object]$Entry,
+        [string]$LibraryDirectory
+    )
+
+    $storedPath = [string]$Entry.packagePath
+    if (-not [string]::IsNullOrWhiteSpace($storedPath) -and (Test-Path -LiteralPath $storedPath -PathType Container)) {
+        return $storedPath
+    }
+
+    $folderName = [string]$Entry.packageFolder
+    if (-not [string]::IsNullOrWhiteSpace($folderName) -and (Test-Path -LiteralPath $LibraryDirectory -PathType Container)) {
+        $found = @(Get-ChildItem -LiteralPath $LibraryDirectory -Directory -Force -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq $folderName } |
+            Select-Object -First 1)
+        if ($found.Count -gt 0) {
+            return $found[0].FullName
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($storedPath)) {
+        return $storedPath
+    }
+    return $folderName
+}
+
+function Copy-PathToClipboard {
+    param([string]$Path)
+
+    if ($clipboardTextOverrideSpecified -or [string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    try {
+        Set-Clipboard -Value $Path
+    } catch {
+        try {
+            Add-Type -AssemblyName System.Windows.Forms
+            [System.Windows.Forms.Clipboard]::SetText($Path)
+        } catch {
+        }
+    }
+}
+
+function Save-VisualSimilarityOverride {
+    param(
+        [string]$Path,
+        [string]$ImageSetHash
+    )
+
+    $state = [ordered]@{
+        imageSetSha256 = $ImageSetHash
+        createdAt = [DateTime]::UtcNow.ToString("o")
+    }
+    [System.IO.File]::WriteAllText($Path, ($state | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        $item = Get-Item -LiteralPath $Path -Force
+        $item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden
+    } catch {
+    }
+}
+
+function Test-AndConsumeVisualSimilarityOverride {
+    param(
+        [string]$Path,
+        [string]$ImageSetHash,
+        [int]$ValidMinutes = 30
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+
+    $isValid = $false
+    try {
+        $state = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $createdAt = [datetime]::Parse([string]$state.createdAt).ToUniversalTime()
+        $isValid = (
+            [string]$state.imageSetSha256 -eq $ImageSetHash -and
+            ([DateTime]::UtcNow - $createdAt).TotalMinutes -le $ValidMinutes
+        )
+    } catch {
+    }
+
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    return $isValid
+}
+
 function Save-LastTextHash {
     param(
         [string]$Path,
@@ -913,9 +1424,38 @@ if ([string]::IsNullOrWhiteSpace($configuredLibraryPath)) {
     }
     $libraryDir = [System.IO.Path]::GetFullPath($configuredLibraryPath)
 }
+$historyDirectory = Join-Path $libraryDir "_作品历史数据"
+$historyPath = Join-Path $historyDirectory "作品历史数据库.json"
+$historyBackupPath = Join-Path $historyDirectory "作品历史数据库.backup.json"
+$historyRuntimeMirrorPath = Join-Path $scriptDir ".workpkg_history_backup.json"
+
+function Normalize-TextForDuplicateHash {
+    param([string]$Text)
+
+    if ($null -eq $Text) {
+        return ""
+    }
+
+    $normalized = $Text.Replace(([string][char]0xFEFF), "")
+    $normalized = $normalized -replace "`r`n?", "`n"
+    $normalized = $normalized -replace '[\t ]+(?=\n|$)', ''
+    $normalized = $normalized.Trim([char[]]@(0x20, 0x09, 0x0A))
+    return $normalized.Normalize([System.Text.NormalizationForm]::FormC)
+}
+
+function Get-TextHash {
+    param([string]$Text)
+    return Get-Sha256Hex -Text (Normalize-TextForDuplicateHash -Text $Text)
+}
+
+function Get-LegacyTextHash {
+    param([string]$Text)
+    return Get-Sha256Hex -Text $Text
+}
 $successMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305)
 $noImageMessage = New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE)
-$duplicateExistingMessage = New-TextFromCodePoints @(0x8BE5, 0x4F5C, 0x54C1, 0x5DF2, 0x521B, 0x5EFA, 0x8FC7, 0xFF0C, 0x5DF2, 0x6E05, 0x7406, 0x672C, 0x6B21, 0x91CD, 0x590D, 0x4E0B, 0x8F7D)
+$duplicateExistingMessage = New-TextFromCodePoints @(0x672C, 0x6B21, 0x4E3A, 0x91CD, 0x590D, 0x4E0B, 0x8F7D, 0xFF0C, 0x5DF2, 0x5220, 0x9664, 0x672C, 0x5730, 0x56FE, 0x7247, 0x548C, 0x6587, 0x6848, 0x3002)
+$similarTextMessage = "本组有历史相似文案，但图片不同，已继续创建作品包。"
 $portfolioGroupedMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6)
 $portfolioZippedMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x5E76, 0x538B, 0x7F29, 0x4F5C, 0x54C1, 0x96C6)
 $portfolioGroupDoneMessage = New-TextFromCodePoints @(0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6)
@@ -927,9 +1467,13 @@ $portfolioAutoZip = [bool]$config.portfolio_auto_zip
 $portfolioBatchSize = [Math]::Max(1, [int]$config.portfolio_batch_size)
 $portfolioPrefix = ([string]$config.portfolio_prefix).TrimStart('.')
 $portfolioLogFolder = [string]$config.portfolio_log_folder
+$visualSimilarityEnabled = [bool]$config.visual_similarity_enabled
+$visualSimilarityMaxDistance = [Math]::Max(0, [Math]::Min(64, [int]$config.visual_similarity_max_distance))
+$visualSimilarityMaxAverage = [Math]::Max(0, [double]$config.visual_similarity_max_average)
 $lockStream = $null
 $lockPath = Join-Path $scriptDir ".workpkg.lock"
 $lastHashPath = Join-Path $scriptDir ".workpkg_last_text.sha256"
+$visualOverridePath = Join-Path $scriptDir ".workpkg_visual_similarity_override.json"
 $stagingDir = $null
 $movedImages = New-Object System.Collections.Generic.List[object]
 $packageCommitted = $false
@@ -951,6 +1495,60 @@ try {
         return
     }
 
+    if ($RebuildHistory) {
+        if (-not (Test-Path -LiteralPath $libraryDir -PathType Container)) {
+            throw "Configured library does not exist: $libraryDir"
+        }
+
+        $rebuiltDatabase = New-WorkHistoryDatabase
+        $migrationResult = Import-ExistingPackagesIntoHistory `
+            -Database $rebuiltDatabase `
+            -LibraryDirectory $libraryDir `
+            -TextPrefix $textPrefix
+
+        if ($Preview) {
+            Write-Output "PREVIEW_HISTORY_REBUILD"
+            Write-Output "Version=$workPackageScriptVersion"
+            Write-Output "UniqueImageSets=$($migrationResult.Imported)"
+            Write-Output "DuplicateFolders=$(@($migrationResult.DuplicateFolders).Count)"
+            foreach ($duplicateFolder in @($migrationResult.DuplicateFolders)) {
+                Write-Output "DuplicateFolder=$duplicateFolder"
+            }
+            return
+        }
+
+        Save-WorkHistoryDatabase `
+            -Database $rebuiltDatabase `
+            -PrimaryPath $historyPath `
+            -BackupPath $historyBackupPath `
+            -RuntimeMirrorPath $historyRuntimeMirrorPath
+
+        $removedDuplicateFolders = 0
+        $failedDuplicateFolders = 0
+        if ($CleanExistingDuplicates) {
+            foreach ($duplicateFolder in @($migrationResult.DuplicateFolders)) {
+                try {
+                    if (Remove-DirectoryToRecycleBin -Path $duplicateFolder -AllowedRoot $libraryDir) {
+                        $removedDuplicateFolders++
+                    } else {
+                        $failedDuplicateFolders++
+                    }
+                } catch {
+                    $failedDuplicateFolders++
+                }
+            }
+        }
+
+        Write-Output "HISTORY_REBUILT"
+        Write-Output "Version=$workPackageScriptVersion"
+        Write-Output "HistoryDatabase=$historyPath"
+        Write-Output "UniqueImageSets=$($migrationResult.Imported)"
+        Write-Output "DuplicateFolders=$(@($migrationResult.DuplicateFolders).Count)"
+        Write-Output "RemovedDuplicateFolders=$removedDuplicateFolders"
+        Write-Output "FailedDuplicateFolders=$failedDuplicateFolders"
+        return
+    }
+
     $text = Get-ClipboardText
     if ($null -eq $text -or [string]::IsNullOrWhiteSpace($text)) {
         Show-Tip -Message (New-TextFromCodePoints @(0x8BF7, 0x5148, 0x590D, 0x5236, 0x6587, 0x6848))
@@ -963,49 +1561,83 @@ try {
         return
     }
 
+    if (-not $Preview -and -not (Test-Path -LiteralPath $libraryDir)) {
+        New-Item -ItemType Directory -Path $libraryDir | Out-Null
+    }
+
     $currentHash = Get-TextHash -Text $text
-    $duplicateExists = Test-PackagedTextHashExists -Directory $libraryDir -TextPrefix $textPrefix -Hash $currentHash -Recurse
-    if (-not $duplicateExists) {
-        $duplicateExists = Test-PackagedTextHashExists -Directory $scriptDir -TextPrefix $textPrefix -Hash $currentHash
+    $imageHashInfo = Get-ImageHashInfo -Images $images
+    $historyState = Get-WorkHistoryDatabase `
+        -PrimaryPath $historyPath `
+        -BackupPath $historyBackupPath `
+        -RuntimeMirrorPath $historyRuntimeMirrorPath
+    $historyDatabase = $historyState.Database
+    $historyMigrated = 0
+
+    if ($historyState.IsNew) {
+        $migrationResult = Import-ExistingPackagesIntoHistory `
+            -Database $historyDatabase `
+            -LibraryDirectory $libraryDir `
+            -TextPrefix $textPrefix
+        $historyMigrated = $migrationResult.Imported
     }
 
-    $lastHash = $null
-
-    if (Test-Path -LiteralPath $lastHashPath) {
-        try {
-            $lastHash = ([System.IO.File]::ReadAllText($lastHashPath)).Trim()
-        } catch {
-            $lastHash = $null
-        }
+    if (-not $Preview -and ($historyState.IsNew -or $historyState.SourcePath -ne $historyPath)) {
+        Save-WorkHistoryDatabase `
+            -Database $historyDatabase `
+            -PrimaryPath $historyPath `
+            -BackupPath $historyBackupPath `
+            -RuntimeMirrorPath $historyRuntimeMirrorPath
     }
 
-    if (-not $duplicateExists -and [string]::IsNullOrWhiteSpace($lastHash)) {
-        $lastHash = Get-LatestPackagedTextHash -Directory $libraryDir -TextPrefix $textPrefix -Recurse
-        if ([string]::IsNullOrWhiteSpace($lastHash)) {
-            $lastHash = Get-LatestPackagedTextHash -Directory $scriptDir -TextPrefix $textPrefix
-        }
-    }
+    $duplicateExists = Test-ImageSetHashExists -Database $historyDatabase -ImageSetHash $imageHashInfo.SetHash
+    $similarTextExists = @($historyDatabase.entries | Where-Object { $_.textSha256 -eq $currentHash }).Count -gt 0
 
-    if ($duplicateExists -or $lastHash -eq $currentHash) {
+    if ($duplicateExists) {
         if ($Preview) {
             Write-Output "PREVIEW_DUPLICATE"
             Write-Output "Version=$workPackageScriptVersion"
-            Write-Output "WouldQuarantineImages=$($images.Count)"
+            Write-Output "WouldDeleteImages=$($images.Count)"
+            Write-Output "DuplicateReason=ExactImageSet"
             return
         }
-        $removedImages = Move-DuplicateDownloadImagesToQuarantine -Images $images -Directory $scriptDir -Stamp $stamp
+        $removedImages = Remove-DuplicateDownloadImages -Images $images
         Clear-ClipboardAfterSuccess
         Show-Tip -Message $duplicateExistingMessage
         if ($NoMessage) {
             Write-Output "DUPLICATE"
             Write-Output "Version=$workPackageScriptVersion"
-            Write-Output "CleanedImages=$removedImages"
+            Write-Output "DeletedImages=$removedImages"
+            Write-Output "DuplicateReason=ExactImageSet"
+            Write-Output "HistoryEntries=$(@($historyDatabase.entries).Count)"
         }
         return
     }
 
-    if (-not $Preview -and -not (Test-Path -LiteralPath $libraryDir)) {
-        New-Item -ItemType Directory -Path $libraryDir | Out-Null
+    $visualSimilarityBypassed = Test-AndConsumeVisualSimilarityOverride `
+        -Path $visualOverridePath `
+        -ImageSetHash $imageHashInfo.SetHash
+    if ($visualSimilarityEnabled -and -not $visualSimilarityBypassed) {
+        $visualMatch = Get-VisualSimilarityMatch `
+            -Database $historyDatabase `
+            -ImageHashInfo $imageHashInfo `
+            -MaxDistance $visualSimilarityMaxDistance `
+            -MaxAverageDistance $visualSimilarityMaxAverage
+        if ($null -ne $visualMatch) {
+            $similarPackagePath = Resolve-HistoryPackagePath -Entry $visualMatch.Entry -LibraryDirectory $libraryDir
+            Save-VisualSimilarityOverride -Path $visualOverridePath -ImageSetHash $imageHashInfo.SetHash
+            Copy-PathToClipboard -Path $similarPackagePath
+            Show-Tip -Message "检测到图片视觉近似历史作品，已停止打包；相似包路径已复制。"
+            if ($NoMessage) {
+                Write-Output "VISUAL_SIMILAR"
+                Write-Output "Version=$workPackageScriptVersion"
+                Write-Output "SimilarPackage=$similarPackagePath"
+                Write-Output "AverageDistance=$($visualMatch.AverageDistance)"
+                Write-Output "MaximumDistance=$($visualMatch.MaximumDistance)"
+                Write-Output "ImagesPreserved=$($images.Count)"
+            }
+            return
+        }
     }
 
     $title = Get-SafeNamePart -Text (Get-TitleLine -Text $text)
@@ -1110,9 +1742,27 @@ try {
         }
     }
 
+    [void](Add-WorkHistoryEntry `
+        -Database $historyDatabase `
+        -TextHash $currentHash `
+        -ImageHashInfo $imageHashInfo `
+        -Title $title `
+        -PackageFolder (Split-Path -Leaf $finalTargetDir) `
+        -PackagePath $finalTargetDir `
+        -Source "created" `
+        -RecordedAt $packageTime)
+    Save-WorkHistoryDatabase `
+        -Database $historyDatabase `
+        -PrimaryPath $historyPath `
+        -BackupPath $historyBackupPath `
+        -RuntimeMirrorPath $historyRuntimeMirrorPath
+
     Clear-ClipboardAfterSuccess
     $stageMessages = New-Object System.Collections.Generic.List[string]
     $stageMessages.Add($successMessage)
+    if ($similarTextExists) {
+        $stageMessages.Add($similarTextMessage)
+    }
 
     if ($null -ne $portfolioResult -and $portfolioResult.Moved -gt 0) {
         $stageMessages.Add($portfolioGroupDoneMessage)
@@ -1135,6 +1785,10 @@ try {
         Write-Output "GptConversationTitle=$gptConversationTitle"
         Write-Output "Images=$($images.Count)"
         Write-Output "Txt=$([System.IO.Path]::GetFileName($txtPath))"
+        Write-Output "SimilarText=$similarTextExists"
+        Write-Output "HistoryEntries=$(@($historyDatabase.entries).Count)"
+        Write-Output "HistoryMigrated=$historyMigrated"
+        Write-Output "HistoryDatabase=$historyPath"
         if ($null -ne $portfolioResult) {
             Write-Output "PortfolioMoved=$($portfolioResult.Moved)"
             Write-Output "PortfolioFailed=$($portfolioResult.Failed)"
@@ -1182,3 +1836,4 @@ try {
         Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
     }
 }
+

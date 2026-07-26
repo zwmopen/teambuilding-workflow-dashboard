@@ -3,8 +3,16 @@ const fs = require("fs");
 const path = require("path");
 const url = require("url");
 const childProcess = require("child_process");
+const crypto = require("crypto");
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
 const { confirmOfficialUpload, getDistributionSnapshot } = require("./lib/distribution-data");
+const {
+  isDownloadedText,
+  ledgerStatus,
+  productionHistoryStatus,
+  registerDownloadedText,
+  syncDedupLedger
+} = require("./lib/dedup-ledger");
 const {
   publicTransferTask,
   updateTransferProgress
@@ -30,7 +38,11 @@ const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
 const DEVICE_NOTES_FILE = path.join(DATA_ROOT, "device-notes.json");
 const MATERIAL_SCAN_CACHE_FILE = path.join(DATA_ROOT, "material-scan-cache.json");
 const MATERIAL_LIBRARY_CACHE_FILE = path.join(DATA_ROOT, "material-library-cache.json");
+const DEDUP_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "dedup-ledger.json");
+const EXTENSION_DOWNLOAD_LOG_FILE = path.join(DATA_ROOT, "防重复账本", "extension-download-events.json");
+const MATERIAL_USAGE_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "material-usage-ledger.json");
 const WORKPKG_CONFIG_FILE = "D:\\Download\\workpkg_config.json";
+const DOWNLOAD_ROOT = process.env.TEAMBUILDING_DOWNLOAD_ROOT || "D:\\Download";
 const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
   || path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）", "发布空间");
 const DEVICE_TRANSFER_ROOT = process.env.DEVICE_TRANSFER_SKILL_ROOT
@@ -63,6 +75,300 @@ function ensureDataFiles() {
       materialRoot: path.join(PROJECT_ROOT, "01-素材库")
     });
   }
+  if (!fs.existsSync(DEDUP_LEDGER_FILE)) syncHistoricalDedupLedger();
+}
+
+function syncHistoricalDedupLedger() {
+  const settings = getWorkspaceSettings();
+  return syncDedupLedger({
+    ledgerFile: DEDUP_LEDGER_FILE,
+    libraryRoot: settings.workPackage.libraryPath,
+    downloadRoot: DOWNLOAD_ROOT,
+    publishRoot: PUBLISH_ROOT
+  });
+}
+
+function getDedupLedger() {
+  if (!fs.existsSync(DEDUP_LEDGER_FILE)) return syncHistoricalDedupLedger();
+  return readJson(DEDUP_LEDGER_FILE, {
+    version: 1,
+    updatedAt: "",
+    localOnly: true,
+    downloads: [],
+    distributions: [],
+    archives: [],
+    imports: []
+  });
+}
+
+function publicDedupStatus(ledger = getDedupLedger()) {
+  const settings = getWorkspaceSettings();
+  const historyFile = path.join(
+    settings.workPackage.libraryPath,
+    "_作品历史数据",
+    "作品历史数据库.json"
+  );
+  return {
+    ...ledgerStatus(ledger),
+    production: productionHistoryStatus(historyFile),
+    ledgerPath: DEDUP_LEDGER_FILE,
+    dataRoot: path.dirname(DEDUP_LEDGER_FILE),
+    localOnly: true,
+    rules: {
+      production: "整组图片 SHA-256 精确去重；64 位 dHash 只做视觉近似预警",
+      downloads: "旧文案 SHA-256 仅作兼容提示，不再作为作品重复的主判据",
+      mobile: "小红书与抖音同属手机组，任一平台使用后整组不可再分发",
+      official: "公众号独立记录，只有人工确认上传完成才标记已使用"
+    }
+  };
+}
+
+function materialUsageKey(value) {
+  return path.resolve(String(value || "")).toLowerCase();
+}
+
+function materialUsageFingerprint(entryPath) {
+  const digests = safeList(entryPath)
+    .filter((entry) => entry.isFile())
+    .filter((entry) => imageExts.has(path.extname(entry.name).toLowerCase()) || textExts.has(path.extname(entry.name).toLowerCase()))
+    .map((entry) => {
+      const filePath = path.join(entryPath, entry.name);
+      return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+    })
+    .sort();
+  if (!digests.length) return "";
+  return crypto.createHash("sha256").update(digests.join("\u0000")).digest("hex");
+}
+
+function getMaterialUsageLedger(ledgerFile = MATERIAL_USAGE_LEDGER_FILE) {
+  return readJson(ledgerFile, {
+    version: 1,
+    updatedAt: "",
+    entries: {},
+    events: []
+  });
+}
+
+function recordMaterialUsage(body = {}, options = {}) {
+  const ledgerFile = options.ledgerFile || MATERIAL_USAGE_LEDGER_FILE;
+  const materialRoot = path.resolve(options.materialRoot || getWorkspaceSettings().materialRoot);
+  const entryPath = path.resolve(String(body.entryPath || "").trim());
+  if (!String(body.entryPath || "").trim() || !isPathInside(materialRoot, entryPath) || !exists(entryPath)) {
+    throw new Error("只能记录当前素材库中真实存在的素材");
+  }
+  const status = body.status === "used" ? "used" : "prepared";
+  const now = new Date().toISOString();
+  const ledger = getMaterialUsageLedger(ledgerFile);
+  const key = materialUsageKey(entryPath);
+  const previous = ledger.entries?.[key] || {};
+  const fingerprint = materialUsageFingerprint(entryPath);
+  const record = {
+    ...previous,
+    entryPath,
+    name: String(body.name || path.basename(entryPath)),
+    status: previous.status === "used" ? "used" : status,
+    preparedAt: previous.preparedAt || now,
+    usedAt: status === "used" ? now : (previous.usedAt || ""),
+    conversationUrl: String(body.conversationUrl || previous.conversationUrl || ""),
+    fingerprint: fingerprint || previous.fingerprint || "",
+    updatedAt: now
+  };
+  ledger.entries = { ...(ledger.entries || {}), [key]: record };
+  ledger.events = [...(ledger.events || []), {
+    entryPath,
+    status,
+    conversationUrl: record.conversationUrl,
+    recordedAt: now
+  }].slice(-2000);
+  ledger.updatedAt = now;
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  writeJson(ledgerFile, ledger);
+  return record;
+}
+
+function checkMaterialUsage(body = {}, options = {}) {
+  const ledgerFile = options.ledgerFile || MATERIAL_USAGE_LEDGER_FILE;
+  const materialRoot = path.resolve(options.materialRoot || getWorkspaceSettings().materialRoot);
+  const entryPath = path.resolve(String(body.entryPath || "").trim());
+  if (!String(body.entryPath || "").trim() || !isPathInside(materialRoot, entryPath) || !exists(entryPath)) {
+    throw new Error("只能检查当前素材库中真实存在的素材");
+  }
+  const ledger = getMaterialUsageLedger(ledgerFile);
+  const direct = ledger.entries?.[materialUsageKey(entryPath)] || null;
+  const fingerprint = materialUsageFingerprint(entryPath);
+  const matched = direct || (fingerprint
+    ? Object.values(ledger.entries || {}).find((entry) => entry.fingerprint === fingerprint) || null
+    : null);
+  return {
+    duplicate: matched?.status === "used",
+    status: matched?.status || "unused",
+    match: direct ? "path" : matched ? "fingerprint" : "",
+    fingerprint,
+    record: matched
+  };
+}
+
+function extensionProductSnapshot(collectionName = "") {
+  const settings = getWorkspaceSettings();
+  const distribution = getDistributionSnapshot({
+    publishRoot: PUBLISH_ROOT,
+    libraryRoot: settings.workPackage.libraryPath
+  });
+  const collections = (distribution.collections || []).map((collection) => ({
+    name: collection.name,
+    path: collection.sourcePath,
+    type: collection.type,
+    typeLabel: collection.typeLabel,
+    itemCount: collection.itemCount,
+    fileCount: collection.fileCount,
+    bytes: collection.bytes,
+    mobileAvailable: collection.dualPlatformEligible,
+    officialAccount: collection.officialAccount
+  }));
+  const selected = collections.find((item) => item.name === collectionName);
+  let works = [];
+  if (selected?.path && isAllowedFile(selected.path) && exists(selected.path)) {
+    works = safeList(selected.path)
+      .filter((entry) => entry.isDirectory())
+      .slice(0, 60)
+      .map((entry) => {
+        const workPath = path.join(selected.path, entry.name);
+        const files = safeList(workPath)
+          .filter((file) => file.isFile())
+          .map((file) => path.join(workPath, file.name))
+          .filter((file) => imageExts.has(path.extname(file).toLowerCase()) || textExts.has(path.extname(file).toLowerCase()));
+        return {
+          id: workPath,
+          name: entry.name,
+          path: workPath,
+          imageCount: files.filter((file) => imageExts.has(path.extname(file).toLowerCase())).length,
+          attachments: files.slice(0, 30)
+        };
+      });
+  }
+  return {
+    root: settings.workPackage.libraryPath,
+    batchSize: settings.workPackage.batchSize,
+    collections,
+    selected: selected || null,
+    works
+  };
+}
+
+function extensionProductTreeSnapshot(requestedPath = "", rootOverride = "") {
+  const settings = getWorkspaceSettings();
+  const root = path.resolve(rootOverride || settings.workPackage.libraryPath);
+  const target = requestedPath
+    ? path.resolve(requestedPath)
+    : root;
+  if (!isPathInside(root, target)) {
+    throw new Error("只能读取当前成品库内部的文件夹");
+  }
+  if (!exists(target) || !fs.statSync(target).isDirectory()) {
+    throw new Error("成品文件夹不存在或不是文件夹");
+  }
+
+  const entries = safeList(target).map((entry) => {
+    const entryPath = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      const children = safeList(entryPath);
+      const directFiles = children
+        .filter((child) => child.isFile())
+        .map((child) => path.join(entryPath, child.name));
+      const attachments = directFiles.filter((file) => {
+        const extension = path.extname(file).toLowerCase();
+        return imageExts.has(extension) || textExts.has(extension);
+      });
+      return {
+        id: entryPath,
+        kind: "directory",
+        name: entry.name,
+        path: entryPath,
+        hasChildren: children.length > 0,
+        folderCount: children.filter((child) => child.isDirectory()).length,
+        fileCount: directFiles.length,
+        imageCount: attachments.filter((file) => imageExts.has(path.extname(file).toLowerCase())).length,
+        textCount: attachments.filter((file) => textExts.has(path.extname(file).toLowerCase())).length,
+        attachments: attachments.slice(0, 30)
+      };
+    }
+    let size = 0;
+    try {
+      size = fs.statSync(entryPath).size;
+    } catch {}
+    const extension = path.extname(entry.name).toLowerCase();
+    const uploadable = imageExts.has(extension) || textExts.has(extension);
+    return {
+      id: entryPath,
+      kind: "file",
+      name: entry.name,
+      path: entryPath,
+      size,
+      uploadable,
+      imageCount: imageExts.has(extension) ? 1 : 0,
+      textCount: textExts.has(extension) ? 1 : 0,
+      attachments: uploadable ? [entryPath] : []
+    };
+  });
+
+  return {
+    root,
+    path: target,
+    relativePath: path.relative(root, target),
+    parentPath: target === root ? "" : path.dirname(target),
+    entries
+  };
+}
+
+function runExtensionWorkPackage(body = {}) {
+  const script = path.join(DOWNLOAD_ROOT, "make_work_package.ps1");
+  if (!exists(script)) {
+    throw new Error("本地打包程序不存在，请先在设置中恢复正式打包程序");
+  }
+  const clipboardText = String(body.clipboardText || "");
+  if (!clipboardText.trim()) {
+    throw new Error("请先复制本次作品文案，再执行打包");
+  }
+  const metadata = JSON.stringify({
+    accountName: String(body.accountName || ""),
+    conversationUrl: String(body.conversationUrl || ""),
+    title: String(body.title || "")
+  });
+  const args = [
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", script,
+    "-ClipboardTextOverride", clipboardText,
+    "-ConversationMetadataJsonOverride", metadata,
+    "-NoMessage"
+  ];
+  if (body.preview === true) args.push("-Preview");
+
+  return new Promise((resolve, reject) => {
+    const child = childProcess.spawn("powershell.exe", args, {
+      cwd: DOWNLOAD_ROOT,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || stdout.trim() || `打包程序退出码 ${code}`));
+        return;
+      }
+      resolve({
+        ok: true,
+        mode: "workbench-direct",
+        fallback: false,
+        preview: body.preview === true,
+        output: stdout.trim()
+      });
+    });
+  });
 }
 
 function getWorkspaceSettings() {
@@ -455,31 +761,65 @@ function parseCsv(text) {
 let materialPostCache = null;
 let materialLibraryCache = null;
 
+function materialTreeSignature(root) {
+  if (!exists(root)) return "";
+  const rows = safeList(root)
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const full = path.join(root, entry.name);
+      return `${entry.name}\u0000${safeMtime(full)}`;
+    })
+    .sort((a, b) => a.localeCompare(b, "zh-CN"));
+  return rows.join("\u0001");
+}
+
 function getDetectedMaterialPosts(root, force = false) {
-  if (!force && materialPostCache?.root === root && Array.isArray(materialPostCache.posts)) {
+  const sourceSignature = materialTreeSignature(root);
+  if (
+    !force
+    && materialPostCache?.root === root
+    && materialPostCache?.sourceSignature === sourceSignature
+    && Array.isArray(materialPostCache.posts)
+  ) {
     return materialPostCache.posts;
   }
   if (!force) {
     const saved = readJson(MATERIAL_SCAN_CACHE_FILE, null);
-    if (saved?.root === root && Array.isArray(saved.posts) && exists(root)) {
+    if (
+      saved?.root === root
+      && saved?.sourceSignature === sourceSignature
+      && Array.isArray(saved.posts)
+      && exists(root)
+    ) {
       materialPostCache = saved;
       return saved.posts;
     }
   }
   const posts = scanPostFolders(root);
-  materialPostCache = { root, scannedAt: new Date().toISOString(), posts };
+  materialPostCache = { root, sourceSignature, scannedAt: new Date().toISOString(), posts };
   writeJson(MATERIAL_SCAN_CACHE_FILE, materialPostCache);
   return posts;
 }
 
 function getMaterialLibrary(force = false, selectedLibraryPath = "") {
   const root = getWorkspaceSettings().materialRoot;
-  if (!force && materialLibraryCache?.root === root && materialLibraryCache.library) {
+  const sourceSignature = materialTreeSignature(root);
+  if (
+    !force
+    && materialLibraryCache?.root === root
+    && materialLibraryCache?.sourceSignature === sourceSignature
+    && materialLibraryCache.library
+  ) {
     return materialLibraryCache.library;
   }
   if (!force) {
     const saved = readJson(MATERIAL_LIBRARY_CACHE_FILE, null);
-    if (saved?.root === root && saved.library?.categories && exists(root)) {
+    if (
+      saved?.root === root
+      && saved?.sourceSignature === sourceSignature
+      && saved.library?.categories
+      && exists(root)
+    ) {
       materialLibraryCache = saved;
       return saved.library;
     }
@@ -541,9 +881,41 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "") {
     )
   );
   const library = { root, recursive: true, detectionRule: "图片 + 文案", categories };
-  materialLibraryCache = { root, scannedAt: new Date().toISOString(), library };
+  materialLibraryCache = { root, sourceSignature, scannedAt: new Date().toISOString(), library };
   writeJson(MATERIAL_LIBRARY_CACHE_FILE, materialLibraryCache);
   return library;
+}
+
+function compactMaterialItem(item, usageByPath = {}) {
+  return {
+    id: item.id,
+    name: item.name,
+    path: item.path,
+    imageCount: item.imageCount,
+    textCount: item.textCount,
+    attachments: item.attachments || [],
+    usage: usageByPath[materialUsageKey(item.path)] || null
+  };
+}
+
+function compactMaterialIndex(library, categoryId = "") {
+  const usageByPath = getMaterialUsageLedger().entries || {};
+  const categories = (library.categories || []).map((category) => ({
+    id: category.id,
+    name: category.name,
+    path: category.path,
+    count: category.count,
+    loaded: category.id === categoryId,
+    items: category.id === categoryId
+      ? (category.items || []).map((item) => compactMaterialItem(item, usageByPath))
+      : []
+  }));
+  return {
+    root: library.root,
+    recursive: library.recursive,
+    detectionRule: library.detectionRule,
+    categories
+  };
 }
 
 function getTemplateLibrary() {
@@ -895,8 +1267,34 @@ function isAllowedFile(filePath) {
 }
 
 function send(res, status, body, type = "application/json; charset=utf-8") {
-  res.writeHead(status, { "Content-Type": type });
+  res.writeHead(status, {
+    "Content-Type": type
+  });
   res.end(body);
+}
+
+function extensionCorsHeaders(req) {
+  const origin = String(req.headers.origin || "");
+  const isAllowed = origin === "https://chatgpt.com"
+    || origin === "https://chat.openai.com"
+    || /^chrome-extension:\/\/[a-z]{32}$/.test(origin)
+    || /^edge-extension:\/\/[a-z]{32}$/.test(origin);
+  if (!isAllowed) return {};
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Private-Network": "true",
+    "Vary": "Origin"
+  };
+}
+
+function sendExtensionJson(req, res, body) {
+  res.writeHead(200, {
+    "Content-Type": "application/json; charset=utf-8",
+    ...extensionCorsHeaders(req)
+  });
+  res.end(JSON.stringify(body));
 }
 
 
@@ -1460,9 +1858,89 @@ async function route(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
 
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, extensionCorsHeaders(req));
+    return res.end();
+  }
+
   if (pathname === "/api/dashboard") {
     const libraryPath = parsed.query.library ? decodeURIComponent(parsed.query.library) : "";
-    return sendJson(res, getDashboard(parsed.query.refresh === "materials", libraryPath));
+    return sendExtensionJson(req, res, getDashboard(parsed.query.refresh === "materials", libraryPath));
+  }
+
+  if (pathname === "/api/extension/workspace" && req.method === "GET") {
+    const settings = getWorkspaceSettings();
+    return sendExtensionJson(req, res, {
+      generatedAt: new Date().toISOString(),
+      settings,
+      products: extensionProductSnapshot(),
+      dedup: publicDedupStatus()
+    });
+  }
+
+  if (pathname === "/api/extension/settings" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const settings = saveWorkspaceSettings(body);
+    return sendExtensionJson(req, res, {
+      ok: true,
+      settings,
+      products: extensionProductSnapshot(),
+      dedup: publicDedupStatus()
+    });
+  }
+
+  if (pathname === "/api/extension/products" && req.method === "GET") {
+    const collection = parsed.query.collection ? decodeURIComponent(parsed.query.collection) : "";
+    return sendExtensionJson(req, res, {
+      generatedAt: new Date().toISOString(),
+      products: extensionProductSnapshot(collection)
+    });
+  }
+
+  if (pathname === "/api/extension/product-tree" && req.method === "GET") {
+    const target = parsed.query.path ? decodeURIComponent(parsed.query.path) : "";
+    return sendExtensionJson(req, res, {
+      generatedAt: new Date().toISOString(),
+      tree: extensionProductTreeSnapshot(target)
+    });
+  }
+
+  if (pathname === "/api/extension/work-package" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 256_000) || "{}");
+    return sendExtensionJson(req, res, await runExtensionWorkPackage(body));
+  }
+
+  if (pathname === "/api/extension/material-use" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    try {
+      return sendExtensionJson(req, res, { ok: true, record: recordMaterialUsage(body) });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
+  }
+
+  if (pathname === "/api/extension/material-usage-check" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    try {
+      return sendExtensionJson(req, res, { ok: true, ...checkMaterialUsage(body) });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
+  }
+
+  if (pathname === "/api/materials" && req.method === "GET") {
+    ensureDataFiles();
+    const state = readJson(STATE_FILE, {});
+    const libraryPath = parsed.query.library ? decodeURIComponent(parsed.query.library) : "";
+    const materials = getMaterialLibrary(
+      parsed.query.refresh === "true",
+      libraryPath || state.selectedMaterialCategoryPath || ""
+    );
+    const categoryId = parsed.query.category ? decodeURIComponent(parsed.query.category) : "";
+    return sendExtensionJson(req, res, {
+      generatedAt: new Date().toISOString(),
+      materials: compactMaterialIndex(materials, categoryId)
+    });
   }
 
   if (pathname === "/api/juguang") {
@@ -1523,6 +2001,89 @@ async function route(req, res) {
   if (pathname === "/api/settings/paths" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     return sendJson(res, { ok: true, settings: saveWorkspaceSettings(body) });
+  }
+
+  if (pathname === "/api/dedup/status" && req.method === "GET") {
+    return sendJson(res, publicDedupStatus());
+  }
+
+  if (pathname === "/api/dedup/sync" && req.method === "POST") {
+    return sendJson(res, publicDedupStatus(syncHistoricalDedupLedger()));
+  }
+
+  if (pathname === "/api/dedup/export" && req.method === "GET") {
+    res.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="teambuilding-dedup-ledger.json"',
+      "Cache-Control": "no-store"
+    });
+    return res.end(JSON.stringify(getDedupLedger(), null, 2));
+  }
+
+  if (pathname === "/api/dedup/check-text" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 256_000) || "{}");
+    const result = isDownloadedText(getDedupLedger(), String(body.text || ""));
+    return sendExtensionJson(req, res, {
+      duplicate: result.duplicate,
+      textHash: result.textHash,
+      record: result.record ? {
+        title: result.record.title,
+        path: result.record.path,
+        recordedAt: result.record.recordedAt,
+        source: result.record.source
+      } : null
+    });
+  }
+
+  if (pathname === "/api/dedup/register-download" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 256_000) || "{}");
+    if (!String(body.text || "").trim()) {
+      return send(res, 400, JSON.stringify({ error: "文案内容不能为空" }));
+    }
+    const result = registerDownloadedText(DEDUP_LEDGER_FILE, body.text, {
+      title: body.title,
+      path: body.path,
+      conversationUrl: body.conversationUrl
+    });
+    return sendJson(res, {
+      duplicate: result.duplicate,
+      textHash: result.textHash,
+      status: publicDedupStatus(result.ledger)
+    });
+  }
+
+  if (pathname === "/api/extension/download-event" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 256_000) || "{}");
+    const filename = path.resolve(String(body.filename || "").trim());
+    if (!filename || !isPathInside(path.resolve(DOWNLOAD_ROOT), filename)) {
+      return send(res, 400, JSON.stringify({ error: "只记录下载目录中的文件" }));
+    }
+    const saved = readJson(EXTENSION_DOWNLOAD_LOG_FILE, { version: 1, events: [] });
+    const event = {
+      downloadId: Number(body.downloadId || 0),
+      requestId: String(body.requestId || ""),
+      filename,
+      url: String(body.url || ""),
+      finalUrl: String(body.finalUrl || ""),
+      totalBytes: Number(body.totalBytes || 0),
+      conversationUrl: String(body.conversationUrl || ""),
+      completedAt: String(body.completedAt || new Date().toISOString()),
+      exists: exists(filename)
+    };
+    saved.events = [...(saved.events || []), event].slice(-500);
+    saved.updatedAt = new Date().toISOString();
+    fs.mkdirSync(path.dirname(EXTENSION_DOWNLOAD_LOG_FILE), { recursive: true });
+    writeJson(EXTENSION_DOWNLOAD_LOG_FILE, saved);
+    return sendExtensionJson(req, res, { ok: true, event });
+  }
+
+  if (pathname === "/api/extension/info" && req.method === "GET") {
+    return sendExtensionJson(req, res, {
+      name: "团建内容工作台 · GPT 助手",
+      path: "D:\\AICode\\工具开发\\projects\\teambuilding-gpt-production-extension\\src",
+      modules: ["最新版会话树", "成品区", "素材区", "生产去重状态", "上传到当前 GPT"],
+      localApi: `http://127.0.0.1:${PORT}`
+    });
   }
 
   if (pathname === "/api/collections/ledger" && req.method === "POST") {
@@ -1657,7 +2218,11 @@ async function route(req, res) {
   if (pathname === "/file") {
     const target = parsed.query.path ? decodeURIComponent(parsed.query.path) : "";
     if (!target || !isAllowedFile(target) || !exists(target)) return send(res, 404, "not found", "text/plain; charset=utf-8");
-    res.writeHead(200, { "Content-Type": contentType(target), "Cache-Control": "no-store" });
+    res.writeHead(200, {
+      "Content-Type": contentType(target),
+      "Cache-Control": "no-store",
+      ...extensionCorsHeaders(req)
+    });
     return fs.createReadStream(target).pipe(res);
   }
 
@@ -1684,14 +2249,24 @@ if (require.main === module) {
 module.exports = {
   buildDistributionArgs,
   collectMaterialLinks,
+  extensionCorsHeaders,
+  extensionProductTreeSnapshot,
   getBody,
   httpServer,
   isAllowedFile,
   isAllowedExternalTarget,
   isPathInside,
+  materialTreeSignature,
+  getMaterialUsageLedger,
+  checkMaterialUsage,
+  materialUsageFingerprint,
+  recordMaterialUsage,
   resolvePublicFile,
   parseOnlineDeviceStatus,
+  publicDedupStatus,
+  runExtensionWorkPackage,
   scanPostFolders,
+  syncHistoricalDedupLedger,
   safeName
 };
 

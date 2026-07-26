@@ -10,9 +10,15 @@
 AI/skills/技能包/技能
   ├─ teambuilding-xhs-workflow（生产方法）
   └─ device-folder-transfer（分发执行与安全规则）
+
+独立浏览器扩展 teambuilding-gpt-production-extension
+              ↓ 仅本机接口
+   授权目录 / 文件流 / 生产去重只读状态
 ```
 
-`server.js` 提供仅监听本机回环地址的 HTTP API、静态页面、设备自动刷新、可恢复传输任务进度/取消和分发 Skill 白名单调用；`lib/transfer-progress.js` 把底层输出转换为用户可见阶段和百分比；`lib/juguang-data.js` 负责聚光数据读取；`lib/distribution-data.js` 从 Junction、台账和 CSV 日志计算作品集状态；`public/` 是工作流控制台；`desktop/` 用隔离的 Electron `webview` 承载本地界面与真实 ChatGPT；`mcp/` 保留聚光数据调用入口。
+`server.js` 提供仅监听本机回环地址的 HTTP API、静态页面、设备自动刷新、可恢复传输任务进度/取消、扩展只读协作接口和分发 Skill 白名单调用；`lib/transfer-progress.js` 把底层输出转换为用户可见阶段和百分比；`lib/dedup-ledger.js` 区分生产历史与分发历史；`lib/distribution-data.js` 从 Junction、台账和 CSV 日志计算作品集状态；`public/` 是工作流控制台；`desktop/` 承载本地界面；`mcp/` 保留聚光数据调用入口。
+
+生产防重与分发防重是两套独立事实：生产历史库按整组图片 SHA-256 确定重复，并用 64 位 dHash 做近似预警；分发防重继续使用 claim、使用日志和入口状态。两类数据都不复制进公开源码。
 
 手机发送、接收确认和 Junction 安全删除不在工作台中重写，而是调用 `device-folder-transfer`。工作台负责任务选择、输入校验、系统内最终确认、进度、取消、结果呈现和状态刷新；普通文件传输与作品包补笔记使用同一设备发现、任务表现和传输真源。软链接兼容层属于执行内核，不在前台显示。
 

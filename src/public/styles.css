@@ -3362,6 +3362,56 @@ label {
   margin: 0 0 14px;
 }
 
+.settings-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.settings-card-heading h3 {
+  margin: 3px 0 0;
+}
+
+.dedup-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.dedup-stats article {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(101, 132, 121, .13);
+  border-radius: 15px;
+  background: rgba(239, 246, 242, .78);
+}
+
+.dedup-stats span,
+.dedup-stats small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dedup-stats strong {
+  display: inline-block;
+  margin: 5px 4px 2px 0;
+  font-size: 25px;
+}
+
+.dedup-card {
+  background:
+    linear-gradient(135deg, rgba(219, 237, 227, .78), rgba(249, 251, 249, .78));
+}
+
+.extension-card {
+  background:
+    radial-gradient(circle at 94% 0%, rgba(178, 210, 197, .34), transparent 26%),
+    rgba(249, 251, 249, .72);
+}
+
 .theme-options {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -4316,7 +4366,8 @@ body[data-theme="midnight"] .rail-tab.active {
   .overview-stats,
   .distribution-stats,
   .overview-grid,
-  .theme-options {
+  .theme-options,
+  .dedup-stats {
     grid-template-columns: 1fr 1fr;
   }
   .filter-toolbar {

@@ -445,6 +445,27 @@ function renderWorkspaceSettings() {
   }
 }
 
+let dedupInfo = null;
+
+async function loadDedupStatus(sync = false) {
+  dedupInfo = await api(sync ? "/api/dedup/sync" : "/api/dedup/status", {
+    method: sync ? "POST" : "GET"
+  });
+  if ($("#dedupProductionGroups")) $("#dedupProductionGroups").textContent = dedupInfo.production?.uniqueImageGroups ?? 0;
+  if ($("#dedupExactGroups")) $("#dedupExactGroups").textContent = dedupInfo.production?.exactHashGroups ?? 0;
+  if ($("#dedupPerceptualGroups")) $("#dedupPerceptualGroups").textContent = dedupInfo.production?.perceptualHashGroups ?? 0;
+  if ($("#dedupMobileUsed")) $("#dedupMobileUsed").textContent = dedupInfo.mobileUsed ?? 0;
+  if ($("#dedupOfficialUsed")) $("#dedupOfficialUsed").textContent = dedupInfo.officialUsed ?? 0;
+  if ($("#dedupSummary")) {
+    const updatedAt = dedupInfo.production?.updatedAt || dedupInfo.updatedAt;
+    const updated = updatedAt ? new Date(updatedAt).toLocaleString("zh-CN") : "尚未同步";
+    $("#dedupSummary").textContent = dedupInfo.production?.available
+      ? `生产历史 ${dedupInfo.production.uniqueImageGroups} 组 · 最后更新 ${updated} · ${dedupInfo.production.historyPath}`
+      : `生产历史库尚未连接 · 分发账本 ${dedupInfo.ledgerPath || ""}`;
+  }
+  return dedupInfo;
+}
+
 function buildDiagnosticsText() {
   const appInfo = dashboard?.appInfo || {};
   const distribution = dashboard?.distribution || {};
@@ -2014,7 +2035,12 @@ function activateTab(name) {
     });
     juguangRendered = true;
   }
-  if (name === "settings") applyTheme(localStorage.getItem("tb-dashboard-theme") || "jianghu");
+  if (name === "settings") {
+    applyTheme(localStorage.getItem("tb-dashboard-theme") || "jianghu");
+    loadDedupStatus().catch((error) => {
+      if ($("#dedupSummary")) $("#dedupSummary").textContent = `防重复账本读取失败：${error.message}`;
+    });
+  }
   saveLocalState({ activeTab: name });
 }
 
@@ -2409,6 +2435,36 @@ function bindEvents() {
   $("#openReleaseRootBtn")?.addEventListener("click", () => openPath(dashboard?.appInfo?.releaseRoot));
   $("#openRuntimeRootBtn")?.addEventListener("click", () => openPath(dashboard?.appInfo?.runtimeRoot));
   $("#copyDiagnosticsBtn")?.addEventListener("click", () => copyText(buildDiagnosticsText(), "诊断信息已复制"));
+  $("#syncDedupHistoryBtn")?.addEventListener("click", async () => {
+    try {
+      await loadDedupStatus(true);
+      toast("生产历史与分发记录已同步");
+    } catch (error) {
+      showSystemNotice("历史数据没有同步", error.message, { tone: "danger" });
+    }
+  });
+  $("#openDedupRootBtn")?.addEventListener("click", async () => {
+    const info = dedupInfo || await loadDedupStatus();
+    await openPath(info.dataRoot);
+  });
+  $("#exportDedupLedgerBtn")?.addEventListener("click", () => {
+    const anchor = document.createElement("a");
+    anchor.href = "/api/dedup/export";
+    anchor.download = "teambuilding-dedup-ledger.json";
+    anchor.click();
+  });
+  $("#openExtensionRootBtn")?.addEventListener("click", async () => {
+    try {
+      const info = await api("/api/extension/info");
+      await openPath(info.path);
+    } catch (error) {
+      showSystemNotice("扩展目录没有打开", error.message, { tone: "danger" });
+    }
+  });
+  $("#copyExtensionAddressBtn")?.addEventListener("click", async () => {
+    const info = await api("/api/extension/info");
+    copyText(info.path, "扩展安装地址已复制");
+  });
   $("#overviewRefreshBtn")?.addEventListener("click", async () => {
     await loadDashboard(true);
     activateTab("overview");
@@ -2545,7 +2601,7 @@ window.addEventListener("desktop-gpt-transfer-result", (event) => {
     ? `已放入 ${result.fileCount} 个文件和生产指令，请在右侧确认发送`
     : "生产指令已填入；请打开一个对话后再次点击传 GPT 上传文件");
 });
-const themeDefaultVersion = "jianghu-v1";
+const themeDefaultVersion = "jianghu-v2";
 const storedThemeDefaultVersion = localStorage.getItem("tb-dashboard-theme-default-version");
 const initialTheme = storedThemeDefaultVersion === themeDefaultVersion
   ? (localStorage.getItem("tb-dashboard-theme") || "jianghu")

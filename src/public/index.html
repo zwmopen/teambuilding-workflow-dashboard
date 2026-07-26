@@ -242,10 +242,10 @@
           <section class="settings-card">
             <h3>视觉风格</h3>
             <div class="theme-options">
-              <button class="theme-option active" data-theme="solid"><b>雾绿实体</b><span>当前风格，稳定耐看</span></button>
+              <button class="theme-option" data-theme="solid"><b>雾绿实体</b><span>稳定耐看</span></button>
               <button class="theme-option" data-theme="glass"><b>克制玻璃</b><span>原项目名称：半透明但仍有实体感</span></button>
               <button class="theme-option" data-theme="neumorphic"><b>柔和拟态</b><span>更强的悬浮实体感</span></button>
-              <button class="theme-option theme-preview-jianghu" data-theme="jianghu"><b>拟态悬浮</b><span>原项目名称：冷灰蓝底与双向柔光</span></button>
+              <button class="theme-option theme-preview-jianghu active" data-theme="jianghu"><b>拟态悬浮</b><span>默认风格：冷灰蓝底与双向柔光</span></button>
               <button class="theme-option theme-preview-editorial" data-theme="editorial"><b>纸墨编辑部</b><span>暖纸、黑墨与紧凑信息排版</span></button>
               <button class="theme-option theme-preview-midnight" data-theme="midnight"><b>深海夜航</b><span>深蓝夜色与克制青色信号</span></button>
             </div>
@@ -264,6 +264,37 @@
               <button id="choosePortfolioRootBtn" type="button">选择作品集目录</button>
               <button id="savePathSettingsBtn" class="primary-button" type="button">保存目录设置</button>
               <button id="runExistingWorkPackageBtn" type="button">运行现有一键工作包</button>
+            </div>
+          </section>
+          <section class="settings-card dedup-card">
+            <div class="settings-card-heading">
+              <div><p class="label">本地历史沉淀</p><h3>数据与防重复</h3></div>
+              <span class="version-status">只存本机</span>
+            </div>
+            <p class="path-line">生产去重读取一键工作包的图片组 SHA-256 与 dHash 历史库；手机和公众号使用记录单独保存。</p>
+            <div class="dedup-stats">
+              <article><span>历史图片组</span><strong id="dedupProductionGroups">—</strong><small>组作品</small></article>
+              <article><span>精确哈希</span><strong id="dedupExactGroups">—</strong><small>组可查</small></article>
+              <article><span>视觉哈希</span><strong id="dedupPerceptualGroups">—</strong><small>组可查</small></article>
+              <article><span>手机已使用</span><strong id="dedupMobileUsed">—</strong><small>个合集</small></article>
+              <article><span>公众号已使用</span><strong id="dedupOfficialUsed">—</strong><small>个合集</small></article>
+            </div>
+            <div class="settings-actions">
+              <button id="syncDedupHistoryBtn" class="primary-button" type="button">同步本地记录</button>
+              <button id="openDedupRootBtn" type="button">打开数据目录</button>
+              <button id="exportDedupLedgerBtn" type="button">导出防重复账本</button>
+            </div>
+            <p class="path-line" id="dedupSummary">尚未读取防重复账本。</p>
+          </section>
+          <section class="settings-card extension-card">
+            <div class="settings-card-heading">
+              <div><p class="label">真实 ChatGPT 页面</p><h3>GPT 助手扩展</h3></div>
+              <span class="version-status">并行测试</span>
+            </div>
+            <p class="path-line">左侧使用最新版对话树，中间保留真实 ChatGPT，右侧生产舱分为成品区和素材区；本地中控负责路径、文件和去重数据。</p>
+            <div class="settings-actions">
+              <button id="openExtensionRootBtn" class="primary-button" type="button">打开扩展目录</button>
+              <button id="copyExtensionAddressBtn" type="button">复制安装地址</button>
             </div>
           </section>
           <section class="settings-card version-card">

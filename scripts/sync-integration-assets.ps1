@@ -4,8 +4,9 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $projectsRoot = Split-Path -Parent $projectRoot
 $integrationRoot = Join-Path $projectRoot "src\integrations"
 $workPackageRoot = Join-Path $integrationRoot "work-package"
+$extensionVendorRoot = "D:\AICode\工具开发\projects\teambuilding-gpt-production-extension\src\vendor"
 
-New-Item -ItemType Directory -Force -Path $integrationRoot, $workPackageRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $integrationRoot, $workPackageRoot, $extensionVendorRoot | Out-Null
 
 $publicAssets = @(
   @{
@@ -26,6 +27,13 @@ foreach ($asset in $publicAssets) {
   if (Test-Path -LiteralPath $asset.Source) {
     Copy-Item -LiteralPath $asset.Source -Destination $asset.Target -Force
   }
+}
+
+$syncedUserscript = Join-Path $integrationRoot "chatgpt-conversation-tree.user.js"
+if (Test-Path -LiteralPath $syncedUserscript) {
+  Copy-Item -LiteralPath $syncedUserscript `
+    -Destination (Join-Path $extensionVendorRoot "chatgpt-conversation-tree.user.js") `
+    -Force
 }
 
 # Preserve the existing VBS launchers as parallel fallbacks without depending on localized names.

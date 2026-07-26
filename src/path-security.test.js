@@ -31,6 +31,71 @@ test('isPathInside rejects sibling paths that share a prefix', () => {
   }
 });
 
+test('extension product tree exposes every local folder and rejects path escape', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-product-tree-'));
+  const root = path.join(parent, 'products');
+  const sent = path.join(root, '已发送');
+  const publish = path.join(root, '发布空间');
+  const recent = path.join(root, '刚刚下载打包');
+  fs.mkdirSync(sent, { recursive: true });
+  fs.mkdirSync(publish, { recursive: true });
+  fs.mkdirSync(recent, { recursive: true });
+  fs.writeFileSync(path.join(recent, '封面.png'), 'image');
+  fs.writeFileSync(path.join(recent, '文案.txt'), 'copy');
+  try {
+    const snapshot = server.extensionProductTreeSnapshot('', root);
+    assert.deepEqual(
+      new Set(snapshot.entries.map((entry) => entry.name)),
+      new Set(['刚刚下载打包', '发布空间', '已发送'])
+    );
+    const packageFolder = snapshot.entries.find((entry) => entry.name === '刚刚下载打包');
+    assert.equal(packageFolder.imageCount, 1);
+    assert.equal(packageFolder.textCount, 1);
+    assert.equal(packageFolder.attachments.length, 2);
+    assert.throws(
+      () => server.extensionProductTreeSnapshot(parent, root),
+      /只能读取当前成品库内部/
+    );
+  } finally {
+    cleanup(parent);
+  }
+});
+
+test('material usage ledger records prepared and used without moving source files', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-material-usage-'));
+  const root = path.join(parent, 'materials');
+  const post = path.join(root, '待加工帖子');
+  const ledgerFile = path.join(parent, 'runtime', 'material-usage-ledger.json');
+  fs.mkdirSync(post, { recursive: true });
+  fs.writeFileSync(path.join(post, '封面.png'), 'image');
+  try {
+    const prepared = server.recordMaterialUsage(
+      { entryPath: post, name: '待加工帖子', status: 'prepared', conversationUrl: 'https://chatgpt.com/c/test' },
+      { materialRoot: root, ledgerFile }
+    );
+    assert.equal(prepared.status, 'prepared');
+    assert.equal(fs.existsSync(post), true);
+    const used = server.recordMaterialUsage(
+      { entryPath: post, name: '待加工帖子', status: 'used', conversationUrl: 'https://chatgpt.com/c/test' },
+      { materialRoot: root, ledgerFile }
+    );
+    assert.equal(used.status, 'used');
+    assert.ok(used.usedAt);
+    assert.equal(fs.existsSync(path.join(post, '封面.png')), true);
+    assert.equal(server.getMaterialUsageLedger(ledgerFile).events.length, 2);
+    const renamed = path.join(root, '已经改过名字的帖子');
+    fs.renameSync(post, renamed);
+    const duplicate = server.checkMaterialUsage(
+      { entryPath: renamed },
+      { materialRoot: root, ledgerFile }
+    );
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(duplicate.match, 'fingerprint');
+  } finally {
+    cleanup(parent);
+  }
+});
+
 test('safeName removes unsafe and Windows-reserved names', () => {
   assert.equal(server.safeName('../客户:素材*'), '.._客户_素材_');
   assert.equal(server.safeName('CON'), '_CON');
@@ -119,6 +184,14 @@ test('external launcher only allows approved workflow sites and the existing wor
   assert.equal(server.isAllowedExternalTarget('cgpt-workpkg://configure'), true);
   assert.equal(server.isAllowedExternalTarget('https://example.com/'), false);
   assert.equal(server.isAllowedExternalTarget('file:///C:/Windows/System32'), false);
+});
+
+test('ChatGPT and the extension may access the localhost bridge through private-network preflight', () => {
+  const chatgpt = server.extensionCorsHeaders({ headers: { origin: 'https://chatgpt.com' } });
+  assert.equal(chatgpt['Access-Control-Allow-Origin'], 'https://chatgpt.com');
+  assert.equal(chatgpt['Access-Control-Allow-Private-Network'], 'true');
+  const rejected = server.extensionCorsHeaders({ headers: { origin: 'https://evil.example' } });
+  assert.equal(rejected['Access-Control-Allow-Origin'], undefined);
 });
 
 test('buildDistributionArgs only creates allowlisted transfer commands', () => {

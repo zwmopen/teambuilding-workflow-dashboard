@@ -224,8 +224,11 @@ async function main() {
     assert(distributionInteraction.offlineActionsDisabled, "离线设备仍可点击分发");
     checks.push({ name: "分发子页与设备按钮联动", value: distributionInteraction });
     const distributionDialogs = await evaluate(`(async () => {
+      document.querySelector('[data-distribution-filter="devices"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
       const onlineRow = document.querySelector('.device-row.is-online');
       onlineRow?.querySelector('[data-upload-other]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
       const uploadChoice = Boolean(document.querySelector('.upload-choice-panel'));
       document.querySelector('[data-close-upload-choice]')?.click();
       document.querySelector('[data-distribution-filter="traffic"]')?.click();

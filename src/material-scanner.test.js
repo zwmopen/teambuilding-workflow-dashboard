@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { scanPostFolders } = require("./server");
+const { materialTreeSignature, scanPostFolders } = require("./server");
 
 test("scanPostFolders recursively finds folders containing images and text", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "material-scan-"));
@@ -22,6 +22,22 @@ test("scanPostFolders recursively finds folders containing images and text", () 
     assert.equal(result[0].imageCount, 1);
     assert.equal(result[0].textCount, 1);
     assert.equal(result[0].relativeDepth, 3);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("materialTreeSignature changes when a top-level material category is renamed", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "material-signature-"));
+  try {
+    const oldCategory = path.join(root, "信息流素材（高转化）");
+    const newCategory = path.join(root, "转化素材-信息流素材（高转化）");
+    fs.mkdirSync(oldCategory, { recursive: true });
+    const before = materialTreeSignature(root);
+    fs.renameSync(oldCategory, newCategory);
+    const after = materialTreeSignature(root);
+    assert.notEqual(after, before);
+    assert.match(after, /转化素材-信息流素材/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
