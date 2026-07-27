@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.9.0",
-  "source_commit": "7882c0f",
+  "version": "0.9.1",
+  "source_commit": "dc538fe",
   "artifacts": [
+    {
+      "file": "0.9.1/团建内容工作台-0.9.1-便携版.exe",
+      "sha256": "D6C3FF47EED18EB935D816F630ED5855CCD2D8D99D0F8F5BB082FA0D78BDD324",
+      "size": 89570212,
+      "platform": "Windows x64",
+      "built_at": "2026-07-27",
+      "known_limits": "素材按分类懒加载；真实 ChatGPT 页面中的扩展更新仍需用户在扩展管理页点击一次重新加载。"
+    },
     {
       "file": "0.9.0/团建内容工作台-0.9.0-便携版.exe",
       "sha256": "E138D54EB50DBC6A30E9B929008A3550C302F2BA07D834661CEC42B95BE6CC5B",
