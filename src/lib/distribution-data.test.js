@@ -7,14 +7,16 @@ const test = require("node:test");
 const {
   classifyCollectionName,
   confirmOfficialUpload,
-  getDistributionSnapshot
+  getDistributionSnapshot,
+  markOfficialUsed,
+  moveCollectionSourceToStage
 } = require("./distribution-data");
 
 function makeFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "distribution-data-"));
   const collectionsRoot = path.join(root, "collections");
   const publishRoot = path.join(root, "发布空间");
-  ["小红书", "抖音", "公众号", path.join("归档", "抖音")].forEach((name) => {
+  ["小红书", "抖音", "公众号", "已使用", path.join("归档", "抖音")].forEach((name) => {
     fs.mkdirSync(path.join(publishRoot, name), { recursive: true });
   });
   fs.mkdirSync(collectionsRoot, { recursive: true });
@@ -244,6 +246,58 @@ test("confirmOfficialUpload appends an auditable state transition only from pend
       collection: "作品集_045[转]",
       now: "2026-07-24T13:00:00"
     }), /不是待上传状态/);
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
+test("physical stage folders are the workflow source of truth in both directions", () => {
+  const fixture = makeFixture();
+  try {
+    const source = createCollection(fixture.collectionsRoot, "作品集_050[泛]");
+    linkCollection(fixture.publishRoot, "小红书", "作品集_050[泛]", source);
+    linkCollection(fixture.publishRoot, "抖音", "作品集_050[泛]", source);
+    linkCollection(fixture.publishRoot, "公众号", "作品集_050[泛]", source);
+    let item = getDistributionSnapshot({ publishRoot: fixture.publishRoot, libraryRoot: fixture.collectionsRoot })
+      .collections.find((entry) => entry.name === "作品集_050[泛]");
+    assert.equal(item.workflowStage, "mobile");
+
+    fs.unlinkSync(path.join(fixture.publishRoot, "小红书", "作品集_050[泛]"));
+    fs.unlinkSync(path.join(fixture.publishRoot, "抖音", "作品集_050[泛]"));
+    item = getDistributionSnapshot({ publishRoot: fixture.publishRoot, libraryRoot: fixture.collectionsRoot })
+      .collections.find((entry) => entry.name === "作品集_050[泛]");
+    assert.equal(item.workflowStage, "official");
+
+    markOfficialUsed({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot,
+      collection: "作品集_050[泛]",
+      now: "2026-07-27T20:00:00"
+    });
+    assert.equal(fs.existsSync(source), false);
+    assert.equal(fs.existsSync(path.join(fixture.publishRoot, "已使用", "作品集_050[泛]")), true);
+    item = getDistributionSnapshot({ publishRoot: fixture.publishRoot, libraryRoot: fixture.collectionsRoot })
+      .collections.find((entry) => entry.name === "作品集_050[泛]");
+    assert.equal(item.workflowStage, "used");
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
+test("successful phone stage move replaces the official link with the original folder", () => {
+  const fixture = makeFixture();
+  try {
+    const source = createCollection(fixture.collectionsRoot, "作品集_051[转]");
+    linkCollection(fixture.publishRoot, "公众号", "作品集_051[转]", source);
+    const result = moveCollectionSourceToStage({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot,
+      collection: "作品集_051[转]",
+      stage: "official"
+    });
+    assert.equal(fs.existsSync(source), false);
+    assert.equal(fs.lstatSync(result.targetPath).isSymbolicLink(), false);
+    assert.equal(fs.statSync(result.targetPath).isDirectory(), true);
   } finally {
     cleanup(fixture.root);
   }

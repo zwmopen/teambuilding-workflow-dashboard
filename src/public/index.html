@@ -184,7 +184,7 @@
       <section class="view" id="productsView">
         <section class="collection-layout">
           <header class="page-heading">
-            <div><p class="label">实时库存</p><h2>作品集</h2><p>按内容类型和真实平台状态查看本地作品包。</p></div>
+            <div><p class="label">内容流水线</p><h2>作品集</h2><p>作品从抖音、小红书依次流转到公众号和已使用。</p></div>
             <div class="detail-button-row"><button class="primary-button" id="openPublishRootBtn">打开作品集目录</button></div>
           </header>
           <section class="folder-source-bar" aria-label="作品集目录设置">
@@ -192,9 +192,8 @@
             <button id="chooseCollectionRootBtn" class="ghost-button" type="button">选择目录</button>
             <button id="applyCollectionRootBtn" class="primary-button" type="button">读取目录</button>
           </section>
-          <div class="filter-toolbar">
-            <div><span>内容类型</span><div class="chip-group" id="collectionTypeFilters"></div></div>
-            <div><span>平台状态</span><div class="chip-group" id="collectionPlatformFilters"></div></div>
+          <div class="workflow-stage-toolbar">
+            <div class="workflow-stage-tabs" id="collectionStageTabs" aria-label="作品阶段"></div>
             <button class="collection-view-toggle" type="button" data-collection-view-toggle title="切换为网格视图" aria-label="切换为网格视图"></button>
           </div>
           <div class="collection-workspace">

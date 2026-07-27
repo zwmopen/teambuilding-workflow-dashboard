@@ -13,7 +13,7 @@ let juguangRendered = false;
 let juguangData = null;
 let materialRenderLimit = 12;
 let productRenderLimit = 8;
-let collectionFilters = { type: "all", platform: "all", query: "" };
+let collectionFilters = { stage: "mobile" };
 let activeDistributionPanel = "phones";
 let distributionSummaryFilter = "devices";
 let selectedDistributionCollectionName = "";
@@ -1359,41 +1359,25 @@ function humanizeCollectionReason(reason) {
 }
 
 function renderCollectionFilters() {
-  const counts = DistributionUI.countCollectionFacets(
-    dashboard?.distribution?.collections || [],
-    collectionFilters
-  );
-  const typeOptions = [
-    ["all", "全部"],
-    ["traffic", "游戏/泛流量"],
-    ["conversion", "团建转化"],
-    ["unclassified", "未分类"]
+  const collections = dashboard?.distribution?.collections || [];
+  const options = [
+    ["mobile", "抖音、小红书"],
+    ["official", "公众号"],
+    ["used", "已使用"]
   ];
-  const platformOptions = [
-    ["all", "全部状态"],
-    ["dual", "双平台可用"],
-    ["official", "公众号可用"],
-    ["official_pending", "公众号已打开"]
-  ];
-  const render = (selector, options, key) => {
-    const container = $(selector);
-    if (!container) return;
-    const facetCounts = key === "type" ? counts.types : counts.platforms;
-    container.innerHTML = options.map(([value, label]) => `
-      <button type="button" class="filter-chip ${collectionFilters[key] === value ? "active" : ""}" data-filter-key="${key}" data-filter-value="${value}">
-        <span>${label}</span><strong class="filter-chip-count">${formatNumber(facetCounts[value])}</strong>
-      </button>
-    `).join("");
-  };
-  render("#collectionTypeFilters", typeOptions, "type");
-  render("#collectionPlatformFilters", platformOptions, "platform");
+  const container = $("#collectionStageTabs");
+  if (!container) return;
+  container.innerHTML = options.map(([value, label], index) => {
+    const count = collections.filter((item) => item.workflowStage === value).length;
+    return `<button type="button" class="workflow-stage-tab ${collectionFilters.stage === value ? "active" : ""}" data-workflow-stage="${value}">
+      <span class="stage-number">0${index + 1}</span><span>${label}</span><strong>${formatNumber(count)}</strong>
+    </button>`;
+  }).join("");
 }
 
 function getFilteredCollections() {
-  return DistributionUI.filterCollections(
-    dashboard?.distribution?.collections || [],
-    collectionFilters
-  );
+  return (dashboard?.distribution?.collections || [])
+    .filter((item) => item.workflowStage === collectionFilters.stage);
 }
 
 function renderCollections() {
@@ -1414,20 +1398,25 @@ function renderCollections() {
   }
   list.innerHTML = collections.length ? collections.map((collection) => {
     const expanded = expandedCollectionNames.has(collection.name);
-    const badges = [
-      [collection.typeLabel, collection.type === "unclassified" ? "warn" : ""],
-      [`小红书 ${DistributionUI.platformStateLabel(collection.xhs)}`, collectionStateClass(collection.xhs)],
-      [`抖音 ${DistributionUI.platformStateLabel(collection.douyin)}`, collectionStateClass(collection.douyin)],
-      [`公众号 ${DistributionUI.platformStateLabel(collection.officialAccount)}`, collectionStateClass(collection.officialAccount)]
-    ];
+    const stageLabel = collection.workflowStage === "mobile" ? "待发送到手机"
+      : collection.workflowStage === "official" ? "待公众号使用" : "流程已完成";
+    const primaryAction = collection.workflowStage === "mobile"
+      ? `<button class="collection-primary-action" type="button" data-send-package="${escapeHtml(collection.name)}">发到手机</button>`
+      : collection.workflowStage === "official"
+        ? `<button class="collection-primary-action" type="button" data-mark-used="${escapeHtml(collection.name)}">标记已使用</button>`
+        : "";
     return `
       <article class="collection-row ${expanded ? "expanded" : ""}" data-collection="${escapeHtml(collection.name)}">
         <button class="collection-toggle" type="button" data-collection-toggle="${escapeHtml(collection.name)}" aria-expanded="${expanded}" aria-label="${expanded ? "收起" : "展开"} ${escapeHtml(collection.name)}">
           <span aria-hidden="true">⌄</span>
         </button>
-        <div class="collection-title"><strong>${escapeHtml(collection.name)}</strong><span>${collection.dualPlatformEligible ? "可用于双平台手机" : humanizeCollectionReason(collection.exclusionReasons?.[0] || "查看平台使用标签")}</span></div>
-        <div class="badge-line">${badges.map(([label, className]) => `<span class="state-badge ${className}">${escapeHtml(label)}</span>`).join("")}</div>
+        <div class="collection-title"><strong>${escapeHtml(collection.name)}</strong><span>${stageLabel}</span></div>
+        <div class="badge-line"><span class="state-badge ${collection.type === "unclassified" ? "warn" : ""}">${escapeHtml(collection.typeLabel)}</span></div>
         <div class="collection-count">${collection.itemCount || 0}/14</div>
+        <div class="collection-stage-actions">
+          <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品</button>
+          ${primaryAction}
+        </div>
         <div class="collection-children">
           ${expanded ? (collection.items || []).map((item, index) => `
             <button class="collection-work" type="button" data-preview-work="${escapeHtml(item.previewPath || "")}" data-preview-text="${escapeHtml(item.textPath || "")}" data-work-path="${escapeHtml(item.path || "")}">
@@ -1439,7 +1428,21 @@ function renderCollections() {
         </div>
       </article>
     `;
-  }).join("") : `<div class="empty-state"><strong>没有匹配的作品集</strong><p>换一个类型或平台状态筛选。</p></div>`;
+  }).join("") : `<div class="empty-state"><strong>这个文件夹现在是空的</strong><p>在资源管理器里移动作品后，刷新就会同步显示。</p></div>`;
+  if (packageDevicePickerCollectionName && collectionFilters.stage === "mobile") {
+    const onlineDevices = DistributionUI.decorateDevices(
+      dashboard?.distribution?.devices || [],
+      deviceCheckState.onlineDevices || []
+    ).filter((device) => device.online);
+    list.insertAdjacentHTML("beforeend", `<div class="device-picker-backdrop" data-close-device-picker>
+      <section class="device-picker-dialog" role="dialog" aria-modal="true" aria-label="选择当前在线设备">
+        <header><div><strong>发到哪台手机？</strong><span>${escapeHtml(packageDevicePickerCollectionName)}</span></div><button type="button" data-close-device-picker aria-label="关闭">×</button></header>
+        <div class="device-picker-list">
+          ${onlineDevices.length ? onlineDevices.map((device) => `<button type="button" data-confirm-package-device="${escapeHtml(device.id)}"><strong>${escapeHtml(device.note || device.displayName)}</strong><small>当前在线</small></button>`).join("") : `<div class="empty-state"><strong>当前没有在线设备</strong><p>设备上线后刷新即可发送。</p></div>`}
+        </div>
+      </section>
+    </div>`);
+  }
 }
 
 async function showCollectionWorkPreview(previewPath, textPath, workPath) {
@@ -1760,6 +1763,7 @@ async function startDistributionTransfer(payload) {
     distributionTransferUiTasks.set(task.id, task);
     packageDevicePickerCollectionName = "";
     renderDistribution();
+    renderCollections();
     ensureTransferPolling();
     toast("发送任务已经建立，可在页面查看进度");
   } catch (error) {
@@ -1827,6 +1831,32 @@ async function confirmOfficialCollection(collection) {
     toast("已记录为公众号上传完成");
   } catch (error) {
     showSystemNotice("确认记录没有保存", error.message, { tone: "danger" });
+  }
+}
+
+async function markCollectionUsed(collection) {
+  const confirmed = await openSystemDialog({
+    eyebrow: "公众号",
+    title: "将这份作品标记为已使用？",
+    description: "确认后，原始作品文件夹会真实移动到“已使用”。",
+    details: [{ label: "作品包", value: collection }],
+    warning: "资源管理器和工作台会同时更新；需要恢复时可把文件夹移回“公众号”。",
+    cancelLabel: "取消",
+    confirmLabel: "标记已使用"
+  });
+  if (!confirmed) return;
+  try {
+    await api("/api/distribution/mark-used", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ collection, confirmed: true })
+    });
+    await loadDashboard(true);
+    collectionFilters.stage = "used";
+    renderCollections();
+    toast("已移动到“已使用”");
+  } catch (error) {
+    showSystemNotice("没有完成移动", error.message, { tone: "danger" });
   }
 }
 
@@ -2234,6 +2264,12 @@ function bindEvents() {
       collectionFilters[filter.dataset.filterKey] = filter.dataset.filterValue;
       renderCollections();
     }
+    const workflowStage = event.target.closest("[data-workflow-stage]");
+    if (workflowStage) {
+      collectionFilters.stage = workflowStage.dataset.workflowStage;
+      packageDevicePickerCollectionName = "";
+      renderCollections();
+    }
     const collectionToggle = event.target.closest("[data-collection-toggle]");
     if (collectionToggle) {
       event.preventDefault();
@@ -2302,19 +2338,24 @@ function bindEvents() {
     if (sendPackage) {
       selectedDistributionCollectionName = sendPackage.dataset.sendPackage;
       packageDevicePickerCollectionName = sendPackage.dataset.sendPackage;
-      renderDistribution();
+      if (sendPackage.closest("#productsView")) renderCollections();
+      else renderDistribution();
     }
+    const markUsed = event.target.closest("[data-mark-used]");
+    if (markUsed) markCollectionUsed(markUsed.dataset.markUsed);
     const confirmPackageDevice = event.target.closest("[data-confirm-package-device]");
     if (confirmPackageDevice) {
       selectedDistributionDeviceId = confirmPackageDevice.dataset.confirmPackageDevice;
       packageDevicePickerCollectionName = "";
       renderDistribution();
+      renderCollections();
       sendSelectedDistributionPackage();
     }
     const closeDevicePicker = event.target.closest("[data-close-device-picker]");
     if (closeDevicePicker && event.target === closeDevicePicker) {
       packageDevicePickerCollectionName = "";
       renderDistribution();
+      renderCollections();
     }
     if (event.target.closest("[data-open-official-site]")) openExternal("https://mp.weixin.qq.com/");
     const deviceAction = event.target.closest("[data-device-action]");

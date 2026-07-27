@@ -5,7 +5,12 @@ const url = require("url");
 const childProcess = require("child_process");
 const crypto = require("crypto");
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
-const { confirmOfficialUpload, getDistributionSnapshot } = require("./lib/distribution-data");
+const {
+  confirmOfficialUpload,
+  getDistributionSnapshot,
+  markOfficialUsed,
+  moveCollectionSourceToStage
+} = require("./lib/distribution-data");
 const {
   isDownloadedText,
   ledgerStatus,
@@ -2014,7 +2019,19 @@ function startDistributionTask(body = {}) {
       record.stage = "completed";
       record.stageLabel = "发送完成并已记录";
       record.progress = 100;
-      record.message = "作品包已发送，手机分发组已标记为使用";
+      record.message = "作品包已发送，已自动进入公众号";
+      try {
+        const libraryRoot = getWorkspaceSettings().workPackage.libraryPath;
+        moveCollectionSourceToStage({
+          publishRoot: PUBLISH_ROOT,
+          libraryRoot,
+          collection: record.collection,
+          stage: "official"
+        });
+      } catch (error) {
+        record.stageLabel = "发送完成，文件待整理";
+        record.message = `手机已确认接收；自动移动失败：${error.message}`;
+      }
     } else {
       record.state = "failed";
       record.stage = "failed";
@@ -2744,6 +2761,15 @@ async function route(req, res) {
     if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认电脑上传已经完成" }));
     return sendJson(res, confirmOfficialUpload({
       publishRoot: PUBLISH_ROOT,
+      collection: body.collection
+    }));
+  }
+  if (pathname === "/api/distribution/mark-used" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认作品已经使用" }));
+    return sendJson(res, markOfficialUsed({
+      publishRoot: PUBLISH_ROOT,
+      libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
       collection: body.collection
     }));
   }

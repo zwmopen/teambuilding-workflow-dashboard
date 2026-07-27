@@ -5,6 +5,7 @@ const PLATFORM_DIRS = {
   xhs: "小红书",
   douyin: "抖音",
   officialAccount: "公众号",
+  used: "已使用",
   douyinArchive: path.join("归档", "抖音")
 };
 
@@ -153,8 +154,20 @@ function inspectPlatformEntry(publishRoot, relativeDirectory, name, sourceCache)
   } catch {
     return { present: false, valid: false, path: entryPath, sourcePath: "" };
   }
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    const source = inspectSource(entryPath, sourceCache);
+    return {
+      present: true,
+      valid: source.valid,
+      path: entryPath,
+      sourcePath: entryPath,
+      physical: true,
+      ...source,
+      reason: source.valid ? "" : "作品文件夹为空或不可用"
+    };
+  }
   if (!stat.isSymbolicLink()) {
-    return { present: true, valid: false, path: entryPath, sourcePath: "", reason: "不是 Junction" };
+    return { present: true, valid: false, path: entryPath, sourcePath: "", reason: "不是作品文件夹" };
   }
   try {
     const sourcePath = fs.realpathSync.native(entryPath);
@@ -230,6 +243,82 @@ function confirmOfficialUpload(options = {}) {
   };
 }
 
+function removeMatchingLink(entryPath, sourcePath) {
+  try {
+    const stat = fs.lstatSync(entryPath);
+    if (!stat.isSymbolicLink()) return false;
+    if (normalizeRealPath(fs.realpathSync.native(entryPath)) !== normalizeRealPath(sourcePath)) return false;
+    fs.unlinkSync(entryPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function moveCollectionSourceToStage(options = {}) {
+  const publishRoot = path.resolve(options.publishRoot || "");
+  const libraryRoot = path.resolve(options.libraryRoot || "");
+  const collection = String(options.collection || "").trim();
+  const stage = options.stage === "used" ? "used" : "officialAccount";
+  if (!collection || path.basename(collection) !== collection || /[\\/\r\n\0]/.test(collection)) {
+    throw new Error("作品集名称无效");
+  }
+  const snapshot = getDistributionSnapshot({ publishRoot, libraryRoot });
+  const item = snapshot.collections.find((entry) => entry.name === collection);
+  if (!item?.sourceValid || !item.sourcePath) throw new Error("没有找到可移动的原始作品文件夹");
+  const sourcePath = fs.realpathSync.native(item.sourcePath);
+  const targetDirectory = path.join(publishRoot, PLATFORM_DIRS[stage]);
+  const targetPath = path.join(targetDirectory, collection);
+  fs.mkdirSync(targetDirectory, { recursive: true });
+  if (normalizeRealPath(sourcePath) === normalizeRealPath(targetPath)) {
+    return { ok: true, collection, sourcePath, targetPath, stage: stage === "used" ? "used" : "official" };
+  }
+  if (fs.existsSync(targetPath)) {
+    const targetReal = fs.realpathSync.native(targetPath);
+    if (normalizeRealPath(targetReal) !== normalizeRealPath(sourcePath)) throw new Error("目标文件夹已有同名作品，已停止移动");
+    const targetStat = fs.lstatSync(targetPath);
+    if (targetStat.isSymbolicLink()) fs.unlinkSync(targetPath);
+    else throw new Error("目标文件夹已经是原始作品位置");
+  }
+  Object.values(PLATFORM_DIRS).forEach((relativeDirectory) => {
+    removeMatchingLink(path.join(publishRoot, relativeDirectory, collection), sourcePath);
+  });
+  if (!fs.existsSync(sourcePath)) throw new Error("移动前原始作品已经不存在");
+  fs.renameSync(sourcePath, targetPath);
+  return { ok: true, collection, sourcePath, targetPath, stage: stage === "used" ? "used" : "official" };
+}
+
+function markOfficialUsed(options = {}) {
+  const publishRoot = path.resolve(options.publishRoot || "");
+  const libraryRoot = path.resolve(options.libraryRoot || "");
+  const collection = String(options.collection || "").trim();
+  const snapshot = getDistributionSnapshot({ publishRoot, libraryRoot });
+  const item = snapshot.collections.find((entry) => entry.name === collection);
+  if (!item || item.workflowStage !== "official") throw new Error("该作品当前不在公众号文件夹");
+  const moved = moveCollectionSourceToStage({ publishRoot, libraryRoot, collection, stage: "used" });
+  const logFile = path.join(publishRoot, "official-account-usage-log.csv");
+  const rows = readCsv(logFile);
+  const latest = latestRowsByCollection(rows).get(collection) || {};
+  const header = "时间,公众号账号,承载设备,作品集,源路径,文件数,字节数,小红书抖音连接剩余数,状态,操作";
+  if (!fs.existsSync(logFile)) fs.writeFileSync(logFile, `${header}\n`, "utf8");
+  const fields = [
+    options.now || new Date().toISOString().slice(0, 19),
+    latest["公众号账号"] || "江湖有旅人团建策划师",
+    latest["承载设备"] || "",
+    collection,
+    moved.targetPath,
+    item.fileCount || 0,
+    item.bytes || 0,
+    0,
+    "公众号已使用",
+    "工作台标记并移动到已使用"
+  ];
+  const existing = fs.readFileSync(logFile, "utf8");
+  const prefix = existing.endsWith("\n") || existing.endsWith("\r") ? "" : "\n";
+  fs.appendFileSync(logFile, `${prefix}${fields.map(csvCell).join(",")}\n`, "utf8");
+  return { ...moved, status: "confirmed_published" };
+}
+
 function stateForPlatform(entry, absentState = "used") {
   if (!entry.present) return absentState;
   return entry.valid ? "available" : "invalid";
@@ -260,9 +349,10 @@ function getDistributionSnapshot(options = {}) {
       xhs: inspectPlatformEntry(publishRoot, PLATFORM_DIRS.xhs, name, sourceCache),
       douyin: inspectPlatformEntry(publishRoot, PLATFORM_DIRS.douyin, name, sourceCache),
       officialAccount: inspectPlatformEntry(publishRoot, PLATFORM_DIRS.officialAccount, name, sourceCache),
+      used: inspectPlatformEntry(publishRoot, PLATFORM_DIRS.used, name, sourceCache),
       douyinArchive: inspectPlatformEntry(publishRoot, PLATFORM_DIRS.douyinArchive, name, sourceCache)
     };
-    const activeSources = [entries.xhs, entries.douyin, entries.officialAccount, entries.douyinArchive]
+    const activeSources = [entries.xhs, entries.douyin, entries.officialAccount, entries.used, entries.douyinArchive]
       .filter((entry) => entry.valid && entry.sourcePath);
     const recordedSourcePath = latestOfficial.get(name)?.["源路径"] || deviceRows
       .filter((row) => row["源作品集"] === name)
@@ -284,7 +374,7 @@ function getDistributionSnapshot(options = {}) {
     if (!classification.labelled) exclusionReasons.push("缺少[泛]/[转]标签");
     if (!source.valid) exclusionReasons.push("没有可用源目录");
     if (entries.xhs.valid && entries.douyin.valid && !sameDualTarget) exclusionReasons.push("小红书与抖音目标不一致");
-    [entries.xhs, entries.douyin, entries.officialAccount, entries.douyinArchive].forEach((entry) => {
+    [entries.xhs, entries.douyin, entries.officialAccount, entries.used, entries.douyinArchive].forEach((entry) => {
       if (entry.present && !entry.valid && entry.reason && !exclusionReasons.includes(entry.reason)) {
         exclusionReasons.push(entry.reason);
       }
@@ -300,6 +390,13 @@ function getDistributionSnapshot(options = {}) {
     const automaticEligible = classification.labelled
       && !previouslySentToDevice
       && Boolean(activeSources.length);
+    const workflowStage = sameDualTarget && entries.xhs.valid && entries.douyin.valid
+      ? "mobile"
+      : (entries.officialAccount.valid || officialLogState === "reserved_pending_upload")
+        ? "official"
+        : (entries.used.valid || officialLogState === "confirmed_published" || previouslySentToDevice)
+          ? "used"
+          : "unassigned";
 
     return {
       name,
@@ -313,6 +410,7 @@ function getDistributionSnapshot(options = {}) {
       xhs: previouslySentToDevice ? "used" : stateForPlatform(entries.xhs),
       douyin: previouslySentToDevice ? "used" : douyin,
       officialAccount,
+      workflowStage,
       dualPlatformEligible: automaticEligible && sameDualTarget,
       automaticEligible,
       exclusionReasons,
@@ -367,5 +465,7 @@ module.exports = {
   classifyCollectionName,
   confirmOfficialUpload,
   getDistributionSnapshot,
+  markOfficialUsed,
+  moveCollectionSourceToStage,
   parseCsv
 };
