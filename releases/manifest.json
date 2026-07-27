@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.8.9",
-  "source_commit": "26f6da70a861eb077e6c79368fc6cdeb58cfea0c",
+  "version": "0.9.0",
+  "source_commit": "7882c0f",
   "artifacts": [
+    {
+      "file": "0.9.0/团建内容工作台-0.9.0-便携版.exe",
+      "sha256": "E138D54EB50DBC6A30E9B929008A3550C302F2BA07D834661CEC42B95BE6CC5B",
+      "size": 89569684,
+      "platform": "Windows x64",
+      "built_at": "2026-07-27",
+      "known_limits": "文件夹身份哈希可在同卷改名和移动后保持；跨卷复制会成为新的文件夹身份；真实 ChatGPT 页面交互需在扩展重新加载后验收。"
+    },
     {
       "file": "0.8.9/团建内容工作台-0.8.9-便携版.exe",
       "sha256": "5D418A268B852A2FE5A09AC6688CD8862CADA00DF1D8F7DA3F41109B1D083570",
