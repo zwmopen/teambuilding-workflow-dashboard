@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.9.1",
-  "source_commit": "dc538fe",
+  "version": "0.9.2",
+  "source_commit": "e039464",
   "artifacts": [
+    {
+      "file": "0.9.2/团建内容工作台-0.9.2-便携版.exe",
+      "sha256": "0798C260829CCD36222DC5A12736409A164E9CA80D0F7D12784E7FA70AA19795",
+      "size": 89572702,
+      "platform": "Windows x64",
+      "built_at": "2026-07-27",
+      "known_limits": "全库索引按分类后台生成；历史日志仅自动回填唯一匹配的成功记录，歧义项进入待核对列表。"
+    },
     {
       "file": "0.9.1/团建内容工作台-0.9.1-便携版.exe",
       "sha256": "D6C3FF47EED18EB935D816F630ED5855CCD2D8D99D0F8F5BB082FA0D78BDD324",
