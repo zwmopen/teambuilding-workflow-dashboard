@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.9.2",
-  "source_commit": "e039464",
+  "version": "0.9.3",
+  "source_commit": "655fd3d",
   "artifacts": [
+    {
+      "file": "0.9.3/团建内容工作台-0.9.3-便携版.exe",
+      "sha256": "23BA638EE9065EF03BAAC0129240EFC2AF8CC845AE472DFB4CEC9F8CADC8992C",
+      "size": 89574101,
+      "platform": "Windows x64",
+      "built_at": "2026-07-27",
+      "known_limits": "真实文件夹流转已用临时目录和桌面交互验收；首次真实业务发送后需观察旧平台 Junction 与新物理阶段的兼容结果。"
+    },
     {
       "file": "0.9.2/团建内容工作台-0.9.2-便携版.exe",
       "sha256": "0798C260829CCD36222DC5A12736409A164E9CA80D0F7D12784E7FA70AA19795",
