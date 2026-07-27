@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.9.3",
-  "source_commit": "f0e5e67",
+  "version": "0.9.4",
+  "source_commit": "80fce76",
   "artifacts": [
+    {
+      "file": "0.9.4/团建内容工作台-0.9.4-便携版.exe",
+      "sha256": "480FD9F3192B8EF1A6F73F7188778248A486691AE80C588DA955C8CAFB367EE7",
+      "size": 89529505,
+      "platform": "Windows x64",
+      "built_at": "2026-07-28",
+      "known_limits": "生图 API 已提供安全配置入口，实际生成调用待选定服务后接入；远程中继仍待部署；最近在线采用 10 分钟发现记忆，发送前会重新验证。"
+    },
     {
       "file": "0.9.3/团建内容工作台-0.9.3-便携版.exe",
       "sha256": "AF5296155BB1D3F106F32BB30A71B442AF4E120A1D59766B8CA043E1003255D4",
