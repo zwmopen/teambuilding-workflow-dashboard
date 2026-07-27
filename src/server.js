@@ -41,6 +41,8 @@ const MATERIAL_LIBRARY_CACHE_FILE = path.join(DATA_ROOT, "material-library-cache
 const DEDUP_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "dedup-ledger.json");
 const EXTENSION_DOWNLOAD_LOG_FILE = path.join(DATA_ROOT, "防重复账本", "extension-download-events.json");
 const MATERIAL_USAGE_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "material-usage-ledger.json");
+const MATERIAL_METADATA_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "material-metadata-ledger.json");
+const MATERIAL_HASH_CACHE_FILE = path.join(DATA_ROOT, "material-hash-cache.json");
 const WORKPKG_CONFIG_FILE = "D:\\Download\\workpkg_config.json";
 const DOWNLOAD_ROOT = process.env.TEAMBUILDING_DOWNLOAD_ROOT || "D:\\Download";
 const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
@@ -51,6 +53,7 @@ const DEVICE_REGISTRY_FILE = path.join(DEVICE_TRANSFER_ROOT, "references", "devi
 
 const imageExts = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const textExts = new Set([".txt", ".md"]);
+const MATERIAL_MAIN_TAGS = ["团建游戏", "团建转化", "合集攻略"];
 const PREVIEW_LIMITS = {
   materialItemsPerCategory: 1000,
   materialImagesPerItem: 12,
@@ -140,6 +143,118 @@ function materialUsageFingerprint(entryPath) {
   return crypto.createHash("sha256").update(digests.join("\u0000")).digest("hex");
 }
 
+function materialFolderSignature(entryPath) {
+  const stat = fs.statSync(entryPath, { bigint: true });
+  const birth = stat.birthtimeNs ?? BigInt(Math.round(Number(stat.birthtimeMs || 0) * 1_000_000));
+  return `${stat.dev}:${stat.ino}:${birth}`;
+}
+
+function getMaterialHashCache(cacheFile = MATERIAL_HASH_CACHE_FILE) {
+  return readJson(cacheFile, { version: 1, updatedAt: "", entries: {} });
+}
+
+function materialFolderHash(entryPath, options = {}) {
+  const cacheFile = options.cacheFile || MATERIAL_HASH_CACHE_FILE;
+  const cache = options.cache || getMaterialHashCache(cacheFile);
+  const key = materialUsageKey(entryPath);
+  const signature = materialFolderSignature(entryPath);
+  const direct = cache.entries?.[key];
+  if (direct?.signature === signature && direct?.hash) return { hash: direct.hash, cache, changed: false };
+  // Directory identity stays stable after a same-volume rename and remains distinct
+  // even when two folders contain identical files. Content dedup uses a separate hash.
+  const hash = crypto.createHash("sha256").update(`tb-folder-v1\u0000${signature}`).digest("hex");
+  cache.entries = { ...(cache.entries || {}), [key]: { entryPath, signature, hash, updatedAt: new Date().toISOString() } };
+  cache.updatedAt = new Date().toISOString();
+  return { hash, cache, changed: true };
+}
+
+function getMaterialMetadataLedger(ledgerFile = MATERIAL_METADATA_LEDGER_FILE) {
+  return readJson(ledgerFile, { version: 1, updatedAt: "", entries: {}, events: [] });
+}
+
+function inferMaterialMainTag(categoryName, itemName, preview) {
+  const haystack = `${categoryName || ""} ${itemName || ""} ${preview || ""}`.toLowerCase();
+  const gameKeywords = ["团建游戏", "团建小游戏", "小团建游戏", "聚会游戏", "破冰游戏", "团队游戏", "室内团建游戏", "户外团建游戏"];
+  const guideKeywords = ["合集", "攻略", "好去处", "周边游", "大集合", "爬山", "一句话攻略"];
+  if (gameKeywords.some((keyword) => haystack.includes(keyword))) return "团建游戏";
+  if (guideKeywords.some((keyword) => haystack.includes(keyword))) return "合集攻略";
+  return "团建转化";
+}
+
+function materialMetadataProfile(item, categoryName, options = {}) {
+  const metadata = options.metadata || getMaterialMetadataLedger(options.ledgerFile);
+  const hashResult = materialFolderHash(item.path, options);
+  const saved = metadata.entries?.[hashResult.hash] || {};
+  const automaticMainTag = inferMaterialMainTag(categoryName, item.name, item.preview);
+  const automaticTags = inferMaterialTags(categoryName, item.name, item.preview);
+  return {
+    folderHash: hashResult.hash,
+    mainTag: MATERIAL_MAIN_TAGS.includes(saved.mainTag) ? saved.mainTag : automaticMainTag,
+    mainTagSource: MATERIAL_MAIN_TAGS.includes(saved.mainTag) ? "manual" : "automatic",
+    tags: Array.from(new Set([...(automaticTags || []), ...(saved.tags || [])])),
+    usageCount: Math.max(0, Number(saved.usageCount || 0)),
+    updatedAt: saved.updatedAt || "",
+    hashCache: hashResult.cache,
+    hashCacheChanged: hashResult.changed
+  };
+}
+
+function updateMaterialMetadata(body = {}, options = {}) {
+  const ledgerFile = options.ledgerFile || MATERIAL_METADATA_LEDGER_FILE;
+  const cacheFile = options.cacheFile || MATERIAL_HASH_CACHE_FILE;
+  const materialRoot = path.resolve(options.materialRoot || getWorkspaceSettings().materialRoot);
+  const entryPath = path.resolve(String(body.entryPath || "").trim());
+  if (!String(body.entryPath || "").trim() || !isPathInside(materialRoot, entryPath) || !exists(entryPath)) {
+    throw new Error("只能更新当前素材库中真实存在的素材");
+  }
+  const materialFiles = safeList(entryPath).filter((entry) => entry.isFile());
+  const hasImage = materialFiles.some((entry) => imageExts.has(path.extname(entry.name).toLowerCase()));
+  const hasText = materialFiles.some((entry) => textExts.has(path.extname(entry.name).toLowerCase()));
+  if (!hasImage || !hasText) throw new Error("只能更新同时包含图片和文案的素材文件夹");
+  const hashResult = materialFolderHash(entryPath, { cacheFile });
+  const requestedFolderHash = String(body.folderHash || "").trim();
+  if (requestedFolderHash && requestedFolderHash !== hashResult.hash) {
+    throw new Error("素材文件夹已经变化，请刷新列表后再操作");
+  }
+  if (hashResult.changed) writeJson(cacheFile, hashResult.cache);
+  const ledger = getMaterialMetadataLedger(ledgerFile);
+  const previous = ledger.entries?.[hashResult.hash] || {};
+  const requestedMainTag = String(body.mainTag || "").trim();
+  if (requestedMainTag && requestedMainTag !== "自动" && !MATERIAL_MAIN_TAGS.includes(requestedMainTag)) {
+    throw new Error("主标签只能是团建游戏、团建转化或合集攻略");
+  }
+  const tags = Array.isArray(body.tags)
+    ? body.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 30)
+    : (previous.tags || []);
+  const usageCount = body.incrementUsage === true
+    ? Math.max(0, Number(previous.usageCount || 0)) + 1
+    : Math.max(0, Number(body.usageCount ?? previous.usageCount ?? 0));
+  const now = new Date().toISOString();
+  const record = {
+    ...previous,
+    folderHash: hashResult.hash,
+    entryPath,
+    name: String(body.name || path.basename(entryPath)),
+    mainTag: requestedMainTag === "自动" ? "" : (requestedMainTag || previous.mainTag || ""),
+    tags: Array.from(new Set(tags)),
+    usageCount,
+    updatedAt: now
+  };
+  ledger.entries = { ...(ledger.entries || {}), [hashResult.hash]: record };
+  ledger.events = [...(ledger.events || []), {
+    folderHash: hashResult.hash,
+    entryPath,
+    action: body.incrementUsage === true ? "increment-usage" : "update-tags",
+    mainTag: record.mainTag,
+    usageCount,
+    recordedAt: now
+  }].slice(-3000);
+  ledger.updatedAt = now;
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  writeJson(ledgerFile, ledger);
+  return record;
+}
+
 function getMaterialUsageLedger(ledgerFile = MATERIAL_USAGE_LEDGER_FILE) {
   return readJson(ledgerFile, {
     version: 1,
@@ -151,6 +266,10 @@ function getMaterialUsageLedger(ledgerFile = MATERIAL_USAGE_LEDGER_FILE) {
 
 function recordMaterialUsage(body = {}, options = {}) {
   const ledgerFile = options.ledgerFile || MATERIAL_USAGE_LEDGER_FILE;
+  const metadataLedgerFile = options.metadataLedgerFile
+    || (options.ledgerFile ? path.join(path.dirname(ledgerFile), "material-metadata-ledger.json") : MATERIAL_METADATA_LEDGER_FILE);
+  const hashCacheFile = options.hashCacheFile
+    || (options.ledgerFile ? path.join(path.dirname(ledgerFile), "material-hash-cache.json") : MATERIAL_HASH_CACHE_FILE);
   const materialRoot = path.resolve(options.materialRoot || getWorkspaceSettings().materialRoot);
   const entryPath = path.resolve(String(body.entryPath || "").trim());
   if (!String(body.entryPath || "").trim() || !isPathInside(materialRoot, entryPath) || !exists(entryPath)) {
@@ -160,8 +279,11 @@ function recordMaterialUsage(body = {}, options = {}) {
   const now = new Date().toISOString();
   const ledger = getMaterialUsageLedger(ledgerFile);
   const key = materialUsageKey(entryPath);
-  const previous = ledger.entries?.[key] || {};
   const fingerprint = materialUsageFingerprint(entryPath);
+  const fingerprintMatch = fingerprint
+    ? Object.values(ledger.entries || {}).find((entry) => entry.fingerprint === fingerprint) || null
+    : null;
+  const previous = ledger.entries?.[key] || fingerprintMatch || {};
   const record = {
     ...previous,
     entryPath,
@@ -183,6 +305,17 @@ function recordMaterialUsage(body = {}, options = {}) {
   ledger.updatedAt = now;
   fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
   writeJson(ledgerFile, ledger);
+  if (status === "used") {
+    updateMaterialMetadata({
+      entryPath,
+      name: record.name,
+      incrementUsage: true
+    }, {
+      materialRoot,
+      ledgerFile: metadataLedgerFile,
+      cacheFile: hashCacheFile
+    });
+  }
   return record;
 }
 
@@ -928,7 +1061,14 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "") {
   return library;
 }
 
-function compactMaterialItem(item, usageByPath = {}) {
+function compactMaterialItem(item, categoryName, usageByPath = {}, options = {}) {
+  const profile = materialMetadataProfile(item, categoryName, options);
+  if (profile.hashCacheChanged) options.onHashCacheChanged?.();
+  const directUsage = usageByPath[materialUsageKey(item.path)] || null;
+  const contentFingerprint = directUsage || !Object.keys(usageByPath).length ? "" : materialUsageFingerprint(item.path);
+  const usage = directUsage
+    || Object.values(usageByPath).find((entry) => entry.fingerprint && entry.fingerprint === contentFingerprint)
+    || null;
   return {
     id: item.id,
     name: item.name,
@@ -936,12 +1076,20 @@ function compactMaterialItem(item, usageByPath = {}) {
     imageCount: item.imageCount,
     textCount: item.textCount,
     attachments: item.attachments || [],
-    usage: usageByPath[materialUsageKey(item.path)] || null
+    folderHash: profile.folderHash,
+    mainTag: profile.mainTag,
+    mainTagSource: profile.mainTagSource,
+    tags: profile.tags,
+    usageCount: Math.max(profile.usageCount, Number(usage?.usageCount || 0)),
+    usage
   };
 }
 
 function compactMaterialIndex(library, categoryId = "") {
   const usageByPath = getMaterialUsageLedger().entries || {};
+  const metadata = getMaterialMetadataLedger();
+  const hashCache = getMaterialHashCache();
+  let hashCacheChanged = false;
   const categories = (library.categories || []).map((category) => ({
     id: category.id,
     name: category.name,
@@ -949,9 +1097,16 @@ function compactMaterialIndex(library, categoryId = "") {
     count: category.count,
     loaded: category.id === categoryId,
     items: category.id === categoryId
-      ? (category.items || []).map((item) => compactMaterialItem(item, usageByPath))
+      ? (category.items || []).map((item) => {
+        return compactMaterialItem(item, category.name, usageByPath, {
+          metadata,
+          cache: hashCache,
+          onHashCacheChanged: () => { hashCacheChanged = true; }
+        });
+      })
       : []
   }));
+  if (hashCacheChanged) writeJson(MATERIAL_HASH_CACHE_FILE, hashCache);
   return {
     root: library.root,
     recursive: library.recursive,
@@ -1331,8 +1486,8 @@ function extensionCorsHeaders(req) {
   };
 }
 
-function sendExtensionJson(req, res, body) {
-  res.writeHead(200, {
+function sendExtensionJson(req, res, body, status = 200) {
+  res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     ...extensionCorsHeaders(req)
   });
@@ -1970,6 +2125,15 @@ async function route(req, res) {
     }
   }
 
+  if (pathname === "/api/extension/material-metadata" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    try {
+      return sendExtensionJson(req, res, { ok: true, record: updateMaterialMetadata(body) });
+    } catch (error) {
+      return sendExtensionJson(req, res, { error: error.message }, 400);
+    }
+  }
+
   if (pathname === "/api/extension/move-entry" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     try {
@@ -2309,10 +2473,14 @@ module.exports = {
   isPathInside,
   materialTreeSignature,
   getMaterialUsageLedger,
+  getMaterialMetadataLedger,
   checkMaterialUsage,
   moveWorkspaceEntry,
   materialUsageFingerprint,
+  materialFolderHash,
+  inferMaterialMainTag,
   recordMaterialUsage,
+  updateMaterialMetadata,
   resolvePublicFile,
   parseOnlineDeviceStatus,
   publicDedupStatus,

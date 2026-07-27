@@ -96,6 +96,66 @@ test('material usage ledger records prepared and used without moving source file
   }
 });
 
+test('material main tags collapse similar game keywords into one parent tag', () => {
+  assert.equal(server.inferMaterialMainTag('素材', '聚会游戏合集', '公司破冰小游戏'), '团建游戏');
+  assert.equal(server.inferMaterialMainTag('素材', '七月爬山大合集', '周边游攻略'), '合集攻略');
+  assert.equal(server.inferMaterialMainTag('素材', '安吉两天一夜', '公司团建路线'), '团建转化');
+});
+
+test('manual material tags and usage count stay bound to folder hash after a move', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'material-metadata-hash-'));
+  const root = path.join(parent, 'materials');
+  const original = path.join(root, '待分类', '聚会游戏01');
+  const movedParent = path.join(root, '已整理');
+  const ledgerFile = path.join(parent, 'material-metadata-ledger.json');
+  const cacheFile = path.join(parent, 'material-hash-cache.json');
+  fs.mkdirSync(original, { recursive: true });
+  fs.mkdirSync(movedParent, { recursive: true });
+  fs.writeFileSync(path.join(original, '文案.txt'), '这是一个破冰游戏');
+  fs.writeFileSync(path.join(original, '图片.png'), Buffer.from([1, 2, 3, 4]));
+  try {
+    const first = server.updateMaterialMetadata({
+      entryPath: original,
+      mainTag: '团建游戏',
+      tags: ['夏季'],
+      incrementUsage: true
+    }, { materialRoot: root, ledgerFile, cacheFile });
+    const moved = path.join(movedParent, path.basename(original));
+    fs.renameSync(original, moved);
+    const second = server.updateMaterialMetadata({
+      entryPath: moved,
+      incrementUsage: true
+    }, { materialRoot: root, ledgerFile, cacheFile });
+    assert.equal(second.folderHash, first.folderHash);
+    assert.equal(second.mainTag, '团建游戏');
+    assert.deepEqual(second.tags, ['夏季']);
+    assert.equal(second.usageCount, 2);
+    assert.equal(Object.keys(server.getMaterialMetadataLedger(ledgerFile).entries).length, 1);
+  } finally {
+    cleanup(parent);
+  }
+});
+
+test('identical material contents still receive distinct folder identity hashes', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'material-folder-identity-'));
+  const first = path.join(parent, '帖子一');
+  const second = path.join(parent, '帖子二');
+  fs.mkdirSync(first, { recursive: true });
+  fs.mkdirSync(second, { recursive: true });
+  for (const folder of [first, second]) {
+    fs.writeFileSync(path.join(folder, '文案.txt'), '完全相同的内容');
+    fs.writeFileSync(path.join(folder, '图片.png'), Buffer.from([9, 8, 7]));
+  }
+  try {
+    const firstHash = server.materialFolderHash(first, { cache: { entries: {} } }).hash;
+    const secondHash = server.materialFolderHash(second, { cache: { entries: {} } }).hash;
+    assert.notEqual(firstHash, secondHash);
+    assert.equal(server.materialUsageFingerprint(first), server.materialUsageFingerprint(second));
+  } finally {
+    cleanup(parent);
+  }
+});
+
 test('workspace folder move renames a real folder inside the same authorized root', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-move-folder-'));
   const root = path.join(parent, 'materials');
