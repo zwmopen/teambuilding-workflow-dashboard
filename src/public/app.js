@@ -1401,7 +1401,9 @@ function renderCollections() {
     const stageLabel = collection.workflowStage === "mobile" ? "待发送到手机"
       : collection.workflowStage === "official" ? "待公众号使用" : "流程已完成";
     const primaryAction = collection.workflowStage === "mobile"
-      ? `<button class="collection-primary-action" type="button" data-send-package="${escapeHtml(collection.name)}">发到手机</button>`
+      ? collection.dualPlatformEligible
+        ? `<button class="collection-primary-action" type="button" data-send-package="${escapeHtml(collection.name)}">发到手机</button>`
+        : `<button type="button" disabled title="先补充 [泛] 或 [转] 分类和双平台入口">待补分类</button>`
       : collection.workflowStage === "official"
         ? `<button class="collection-primary-action" type="button" data-mark-used="${escapeHtml(collection.name)}">标记已使用</button>`
         : "";

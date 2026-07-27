@@ -396,7 +396,7 @@ function getDistributionSnapshot(options = {}) {
         ? "official"
         : (entries.used.valid || officialLogState === "confirmed_published" || previouslySentToDevice)
           ? "used"
-          : "unassigned";
+          : "mobile";
 
     return {
       name,

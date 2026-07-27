@@ -76,6 +76,7 @@ test("snapshot reads labelled and unclassified collections directly from the sel
     assert.equal(snapshot.collections[1].type, "conversion");
     assert.equal(snapshot.collections[2].type, "unclassified");
     assert.equal(snapshot.collections[2].itemCount, 14);
+    assert.equal(snapshot.collections[2].workflowStage, "mobile");
   } finally {
     cleanup(fixture.root);
   }
