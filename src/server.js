@@ -43,6 +43,7 @@ const EXTENSION_DOWNLOAD_LOG_FILE = path.join(DATA_ROOT, "防重复账本", "ext
 const MATERIAL_USAGE_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "material-usage-ledger.json");
 const MATERIAL_METADATA_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "material-metadata-ledger.json");
 const MATERIAL_HASH_CACHE_FILE = path.join(DATA_ROOT, "material-hash-cache.json");
+const MATERIAL_GLOBAL_INDEX_FILE = path.join(DATA_ROOT, "material-global-index.json");
 const WORKPKG_CONFIG_FILE = "D:\\Download\\workpkg_config.json";
 const DOWNLOAD_ROOT = process.env.TEAMBUILDING_DOWNLOAD_ROOT || "D:\\Download";
 const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
@@ -62,6 +63,16 @@ const PREVIEW_LIMITS = {
   productImagesPerWork: 12
 };
 const materialCategoryCache = new Map();
+let materialGlobalIndexJob = {
+  status: "idle",
+  startedAt: "",
+  completedAt: "",
+  currentCategory: "",
+  processedCategories: 0,
+  totalCategories: 0,
+  indexedItems: 0,
+  error: ""
+};
 let deviceStatusCache = { checkedAt: 0, output: "", onlineDevices: [] };
 let deviceStatusPromise = null;
 const genericTransferTasks = new Map();
@@ -202,6 +213,8 @@ function materialMetadataProfile(item, categoryName, options = {}) {
 function updateMaterialMetadata(body = {}, options = {}) {
   const ledgerFile = options.ledgerFile || MATERIAL_METADATA_LEDGER_FILE;
   const cacheFile = options.cacheFile || MATERIAL_HASH_CACHE_FILE;
+  const indexFile = options.indexFile
+    || (options.ledgerFile ? path.join(path.dirname(ledgerFile), "material-global-index.json") : MATERIAL_GLOBAL_INDEX_FILE);
   const materialRoot = path.resolve(options.materialRoot || getWorkspaceSettings().materialRoot);
   const entryPath = path.resolve(String(body.entryPath || "").trim());
   if (!String(body.entryPath || "").trim() || !isPathInside(materialRoot, entryPath) || !exists(entryPath)) {
@@ -252,7 +265,26 @@ function updateMaterialMetadata(body = {}, options = {}) {
   ledger.updatedAt = now;
   fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
   writeJson(ledgerFile, ledger);
+  patchMaterialGlobalIndexMetadata(entryPath, record, indexFile);
   return record;
+}
+
+function patchMaterialGlobalIndexMetadata(entryPath, record, indexFile = MATERIAL_GLOBAL_INDEX_FILE) {
+  const snapshot = readJson(indexFile, null);
+  if (!snapshot?.items?.length) return false;
+  const item = snapshot.items.find((candidate) => materialUsageKey(candidate.path) === materialUsageKey(entryPath));
+  if (!item) return false;
+  item.mainTag = MATERIAL_MAIN_TAGS.includes(record.mainTag)
+    ? record.mainTag
+    : inferMaterialMainTag(item.categoryName, item.name, "");
+  item.mainTagSource = MATERIAL_MAIN_TAGS.includes(record.mainTag) ? "manual" : "automatic";
+  item.tags = Array.from(new Set([...(item.tags || []), ...(record.tags || [])]));
+  item.usageCount = Math.max(0, Number(record.usageCount || 0));
+  item.usageSource = record.usageSource || (item.usageCount ? "扩展实时记录" : "暂无使用证据");
+  snapshot.stats = materialIndexStats(snapshot.items, snapshot.review || []);
+  snapshot.metadataUpdatedAt = new Date().toISOString();
+  writeJson(indexFile, snapshot);
+  return true;
 }
 
 function getMaterialUsageLedger(ledgerFile = MATERIAL_USAGE_LEDGER_FILE) {
@@ -387,6 +419,7 @@ function moveWorkspaceEntry(body = {}, options = {}) {
   materialCategoryCache.clear();
   materialPostCache = null;
   materialLibraryCache = null;
+  if (!options.roots) setImmediate(() => startMaterialGlobalIndexRefresh({ force: true }));
   return { from: sourcePath, to: destination };
 }
 
@@ -1103,6 +1136,307 @@ function compactMaterialIndex(library, categoryId = "") {
     detectionRule: library.detectionRule,
     categories
   };
+}
+
+function getLegacyMaterialEvidence(projectRoot = PROJECT_ROOT) {
+  const linkFile = path.join(projectRoot, "01-素材库", "素材链接记录.csv");
+  const productionFile = path.join(projectRoot, "04-技能库", "运行记录", "制作日志.csv");
+  const evidenceByKey = new Map();
+
+  function addEvidence(row, source) {
+    const status = String(row["状态"] || "").trim();
+    const successful = source === "素材链接记录"
+      ? /已生成|完成/.test(status)
+      : /完成|结构校准/.test(status) && !/失败|作废|移除/.test(status);
+    if (!successful) return;
+    const materialId = String(row["素材ID"] || "").trim();
+    const folderName = String(row["素材文件夹"] || "").trim();
+    const title = String(row["素材标题"] || row["作品标题"] || "").trim();
+    const sourcePath = String(row["原始素材路径"] || "").trim();
+    const eventKey = [
+      materialId || normalizeMatchKey(folderName || title),
+      String(row["时间"] || row["添加时间"] || "").trim(),
+      String(row["模板ID"] || "").trim()
+    ].join("|");
+    const previous = evidenceByKey.get(eventKey);
+    evidenceByKey.set(eventKey, {
+      eventKey,
+      materialId,
+      folderName: folderName || previous?.folderName || "",
+      title: title || previous?.title || "",
+      sourcePath: sourcePath || previous?.sourcePath || "",
+      status,
+      sources: Array.from(new Set([...(previous?.sources || []), source]))
+    });
+  }
+
+  if (exists(linkFile)) {
+    parseCsv(fs.readFileSync(linkFile, "utf8")).forEach((row) => addEvidence(row, "素材链接记录"));
+  }
+  if (exists(productionFile)) {
+    parseCsv(fs.readFileSync(productionFile, "utf8")).forEach((row) => addEvidence(row, "制作日志"));
+  }
+  return Array.from(evidenceByKey.values());
+}
+
+function matchLegacyMaterialEvidence(items, evidenceRows) {
+  const byPath = new Map();
+  const byName = new Map();
+  items.forEach((item) => {
+    byPath.set(materialUsageKey(item.path), item);
+    const key = normalizeMatchKey(item.name);
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(item);
+  });
+  const matched = new Map();
+  const review = [];
+
+  evidenceRows.forEach((evidence) => {
+    const pathCandidates = [];
+    if (evidence.sourcePath) {
+      pathCandidates.push(evidence.sourcePath);
+      if (evidence.folderName) pathCandidates.push(path.join(evidence.sourcePath, evidence.folderName));
+    }
+    let candidates = pathCandidates
+      .map((candidate) => byPath.get(materialUsageKey(candidate)))
+      .filter(Boolean);
+    if (!candidates.length) {
+      const nameKeys = Array.from(new Set([
+        normalizeMatchKey(evidence.folderName),
+        normalizeMatchKey(path.basename(evidence.sourcePath || "")),
+        normalizeMatchKey(evidence.title)
+      ].filter(Boolean)));
+      candidates = Array.from(new Set(nameKeys.flatMap((key) => byName.get(key) || [])));
+    }
+    if (candidates.length === 1) {
+      const item = candidates[0];
+      if (!matched.has(item.folderHash)) matched.set(item.folderHash, []);
+      matched.get(item.folderHash).push(evidence);
+      return;
+    }
+    review.push({
+      eventKey: evidence.eventKey,
+      materialId: evidence.materialId,
+      name: evidence.folderName || evidence.title || evidence.materialId,
+      reason: candidates.length ? "发现多个同名素材文件夹" : "历史路径已变化且未找到唯一同名文件夹",
+      candidates: candidates.slice(0, 10).map((item) => ({ name: item.name, path: item.path }))
+    });
+  });
+
+  return { matched, review };
+}
+
+function applyLegacyMaterialEvidence(items, evidenceRows, options = {}) {
+  const ledgerFile = options.ledgerFile || MATERIAL_METADATA_LEDGER_FILE;
+  const ledger = options.ledger || getMaterialMetadataLedger(ledgerFile);
+  const result = matchLegacyMaterialEvidence(items, evidenceRows);
+  const now = new Date().toISOString();
+  let importedEvents = 0;
+
+  result.matched.forEach((evidence, folderHash) => {
+    const item = items.find((candidate) => candidate.folderHash === folderHash);
+    const previous = ledger.entries?.[folderHash] || {};
+    const previousKeys = new Set(previous.importedEvidenceKeys || []);
+    const newEvidence = evidence.filter((entry) => !previousKeys.has(entry.eventKey));
+    if (!newEvidence.length) return;
+    newEvidence.forEach((entry) => previousKeys.add(entry.eventKey));
+    importedEvents += newEvidence.length;
+    const record = {
+      ...previous,
+      folderHash,
+      entryPath: item.path,
+      name: item.name,
+      usageCount: Math.max(0, Number(previous.usageCount || 0)) + newEvidence.length,
+      importedEvidenceKeys: Array.from(previousKeys),
+      usageSource: "历史日志 + 扩展实时记录",
+      updatedAt: now
+    };
+    ledger.entries = { ...(ledger.entries || {}), [folderHash]: record };
+    ledger.events = [...(ledger.events || []), ...newEvidence.map((entry) => ({
+      folderHash,
+      entryPath: item.path,
+      action: "import-legacy-usage",
+      evidenceKey: entry.eventKey,
+      sources: entry.sources,
+      recordedAt: now
+    }))].slice(-3000);
+  });
+
+  if (importedEvents) {
+    ledger.updatedAt = now;
+    fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+    writeJson(ledgerFile, ledger);
+  }
+  return { ...result, ledger, importedEvents };
+}
+
+function materialIndexStats(items, review = []) {
+  const byMainTag = Object.fromEntries(MATERIAL_MAIN_TAGS.map((tag) => [tag, 0]));
+  const byUsage = { unused: 0, once: 0, twice: 0, threePlus: 0, used: 0 };
+  items.forEach((item) => {
+    if (Object.prototype.hasOwnProperty.call(byMainTag, item.mainTag)) byMainTag[item.mainTag] += 1;
+    const count = Math.max(0, Number(item.usageCount || 0));
+    if (count === 0) byUsage.unused += 1;
+    if (count === 1) byUsage.once += 1;
+    if (count === 2) byUsage.twice += 1;
+    if (count >= 3) byUsage.threePlus += 1;
+    if (count > 0) byUsage.used += 1;
+  });
+  return { total: items.length, byMainTag, byUsage, review: review.length };
+}
+
+function materialGlobalIndexPublic(snapshot = null) {
+  const saved = snapshot || readJson(MATERIAL_GLOBAL_INDEX_FILE, null);
+  return {
+    status: materialGlobalIndexJob.status,
+    startedAt: materialGlobalIndexJob.startedAt,
+    completedAt: materialGlobalIndexJob.completedAt || saved?.generatedAt || "",
+    currentCategory: materialGlobalIndexJob.currentCategory,
+    processedCategories: materialGlobalIndexJob.processedCategories,
+    totalCategories: materialGlobalIndexJob.totalCategories || Number(saved?.categories?.length || 0),
+    indexedItems: materialGlobalIndexJob.status === "running"
+      ? materialGlobalIndexJob.indexedItems
+      : Number(saved?.stats?.total || 0),
+    error: materialGlobalIndexJob.error,
+    generatedAt: saved?.generatedAt || "",
+    root: saved?.root || getWorkspaceSettings().materialRoot,
+    stats: saved?.stats || materialIndexStats([]),
+    evidence: saved?.evidence || { total: 0, matchedFolders: 0, importedEvents: 0, pendingReview: 0 },
+    categories: saved?.categories || [],
+    items: saved?.items || [],
+    review: saved?.review || []
+  };
+}
+
+function startMaterialGlobalIndexRefresh(options = {}) {
+  if (materialGlobalIndexJob.status === "running") return materialGlobalIndexPublic();
+  const root = path.resolve(options.materialRoot || getWorkspaceSettings().materialRoot);
+  const descriptors = materialCategoryIndex(root);
+  const metadata = getMaterialMetadataLedger(options.ledgerFile);
+  const hashCache = getMaterialHashCache(options.cacheFile);
+  const items = [];
+  const categorySummaries = [];
+  let cursor = 0;
+  materialGlobalIndexJob = {
+    status: "running",
+    startedAt: new Date().toISOString(),
+    completedAt: "",
+    currentCategory: "",
+    processedCategories: 0,
+    totalCategories: descriptors.length,
+    indexedItems: 0,
+    error: ""
+  };
+
+  function finish() {
+    try {
+      const evidence = getLegacyMaterialEvidence(options.projectRoot || PROJECT_ROOT);
+      const reconciled = applyLegacyMaterialEvidence(items, evidence, {
+        ledger: metadata,
+        ledgerFile: options.ledgerFile
+      });
+      items.forEach((item) => {
+        const saved = reconciled.ledger.entries?.[item.folderHash] || {};
+        item.usageCount = Math.max(Number(item.usageCount || 0), Number(saved.usageCount || 0));
+        item.usageSource = saved.usageSource || (item.usageCount ? "扩展实时记录" : "暂无使用证据");
+      });
+      const snapshot = {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        root,
+        categories: categorySummaries,
+        items,
+        review: reconciled.review,
+        evidence: {
+          total: evidence.length,
+          matchedFolders: reconciled.matched.size,
+          importedEvents: reconciled.importedEvents,
+          pendingReview: reconciled.review.length
+        },
+        stats: materialIndexStats(items, reconciled.review)
+      };
+      writeJson(options.indexFile || MATERIAL_GLOBAL_INDEX_FILE, snapshot);
+      writeJson(options.cacheFile || MATERIAL_HASH_CACHE_FILE, hashCache);
+      materialGlobalIndexJob = {
+        ...materialGlobalIndexJob,
+        status: "complete",
+        completedAt: snapshot.generatedAt,
+        currentCategory: "",
+        processedCategories: descriptors.length,
+        indexedItems: items.length
+      };
+    } catch (error) {
+      materialGlobalIndexJob = {
+        ...materialGlobalIndexJob,
+        status: "failed",
+        error: error.message || String(error),
+        currentCategory: ""
+      };
+    }
+  }
+
+  function scanNextCategory() {
+    if (cursor >= descriptors.length) return finish();
+    const category = descriptors[cursor];
+    materialGlobalIndexJob.currentCategory = category.name;
+    try {
+      const posts = getDetectedMaterialPosts(category.path, Boolean(options.force));
+      posts.forEach((post) => {
+        const preview = readTextPreview(post.path);
+        const profile = materialMetadataProfile({
+          path: post.path,
+          name: post.name,
+          preview
+        }, category.name, { metadata, cache: hashCache });
+        items.push({
+          id: post.path,
+          categoryId: category.id,
+          categoryName: category.name,
+          name: post.name,
+          path: post.path,
+          imageCount: post.imageCount,
+          textCount: post.textCount,
+          folderHash: profile.folderHash,
+          mainTag: profile.mainTag,
+          mainTagSource: profile.mainTagSource,
+          tags: profile.tags,
+          usageCount: profile.usageCount,
+          usageSource: profile.usageCount ? "扩展实时记录" : "暂无使用证据"
+        });
+      });
+      categorySummaries.push({
+        id: category.id,
+        name: category.name,
+        path: category.path,
+        count: posts.length
+      });
+      cursor += 1;
+      materialGlobalIndexJob.processedCategories = cursor;
+      materialGlobalIndexJob.indexedItems = items.length;
+      setImmediate(scanNextCategory);
+    } catch (error) {
+      materialGlobalIndexJob = {
+        ...materialGlobalIndexJob,
+        status: "failed",
+        error: `${category.name}：${error.message || error}`,
+        currentCategory: ""
+      };
+    }
+  }
+
+  setImmediate(scanNextCategory);
+  return materialGlobalIndexPublic();
+}
+
+function getMaterialGlobalIndex(options = {}) {
+  const indexFile = options.indexFile || MATERIAL_GLOBAL_INDEX_FILE;
+  const saved = readJson(indexFile, null);
+  const currentRoot = path.resolve(options.materialRoot || getWorkspaceSettings().materialRoot);
+  const stale = !saved || path.resolve(saved.root || "") !== currentRoot;
+  if ((options.refresh || stale) && materialGlobalIndexJob.status !== "running") {
+    startMaterialGlobalIndexRefresh({ ...options, materialRoot: currentRoot, indexFile });
+  }
+  return materialGlobalIndexPublic(stale ? null : saved);
 }
 
 function getTemplateLibrary() {
@@ -2124,6 +2458,13 @@ async function route(req, res) {
     }
   }
 
+  if (pathname === "/api/extension/material-index" && req.method === "GET") {
+    return sendExtensionJson(req, res, {
+      ok: true,
+      index: getMaterialGlobalIndex({ refresh: parsed.query.refresh === "true" })
+    });
+  }
+
   if (pathname === "/api/extension/move-entry" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     try {
@@ -2471,6 +2812,12 @@ module.exports = {
   materialUsageFingerprint,
   materialFolderHash,
   inferMaterialMainTag,
+  getLegacyMaterialEvidence,
+  matchLegacyMaterialEvidence,
+  applyLegacyMaterialEvidence,
+  materialIndexStats,
+  startMaterialGlobalIndexRefresh,
+  getMaterialGlobalIndex,
   recordMaterialUsage,
   updateMaterialMetadata,
   resolvePublicFile,

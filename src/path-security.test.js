@@ -156,6 +156,56 @@ test('identical material contents still receive distinct folder identity hashes'
   }
 });
 
+test('legacy production evidence backfills usage once and leaves uncertain records for review', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'material-legacy-evidence-'));
+  const itemPath = path.join(parent, '聚会游戏素材01');
+  const ledgerFile = path.join(parent, 'material-metadata-ledger.json');
+  fs.mkdirSync(itemPath, { recursive: true });
+  try {
+    const folderHash = server.materialFolderHash(itemPath, { cache: { entries: {} } }).hash;
+    const items = [{
+      id: itemPath,
+      name: '聚会游戏素材01',
+      path: itemPath,
+      folderHash,
+      mainTag: '团建游戏',
+      usageCount: 0
+    }];
+    const evidence = [{
+      eventKey: 'TB-001|2026-06-28 18:55:50|T01',
+      materialId: 'TB-001',
+      folderName: '聚会游戏素材01',
+      title: '聚会游戏素材01',
+      sourcePath: 'D:\\旧素材库\\聚会游戏素材01',
+      sources: ['制作日志']
+    }, {
+      eventKey: 'TB-404|2026-06-28 19:00:00|T01',
+      materialId: 'TB-404',
+      folderName: '已经改名且无法确认',
+      title: '无法确认',
+      sourcePath: 'D:\\旧素材库\\已经改名且无法确认',
+      sources: ['素材链接记录']
+    }];
+    const first = server.applyLegacyMaterialEvidence(items, evidence, { ledgerFile });
+    const second = server.applyLegacyMaterialEvidence(items, evidence, { ledgerFile });
+    assert.equal(first.importedEvents, 1);
+    assert.equal(first.review.length, 1);
+    assert.equal(second.importedEvents, 0);
+    assert.equal(server.getMaterialMetadataLedger(ledgerFile).entries[folderHash].usageCount, 1);
+    assert.deepEqual(server.materialIndexStats([
+      { mainTag: '团建游戏', usageCount: 1 },
+      { mainTag: '团建转化', usageCount: 0 }
+    ], first.review), {
+      total: 2,
+      byMainTag: { 团建游戏: 1, 团建转化: 1, 合集攻略: 0 },
+      byUsage: { unused: 1, once: 1, twice: 0, threePlus: 0, used: 1 },
+      review: 1
+    });
+  } finally {
+    cleanup(parent);
+  }
+});
+
 test('workspace folder move renames a real folder inside the same authorized root', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-move-folder-'));
   const root = path.join(parent, 'materials');
