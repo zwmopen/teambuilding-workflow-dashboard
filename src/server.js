@@ -306,15 +306,22 @@ function recordMaterialUsage(body = {}, options = {}) {
   fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
   writeJson(ledgerFile, ledger);
   if (status === "used") {
-    updateMaterialMetadata({
-      entryPath,
-      name: record.name,
-      incrementUsage: true
-    }, {
-      materialRoot,
-      ledgerFile: metadataLedgerFile,
-      cacheFile: hashCacheFile
-    });
+    try {
+      updateMaterialMetadata({
+        entryPath,
+        name: record.name,
+        incrementUsage: true
+      }, {
+        materialRoot,
+        ledgerFile: metadataLedgerFile,
+        cacheFile: hashCacheFile
+      });
+    } catch (error) {
+      // Historical ledgers may contain image-only folders. Keep their usage
+      // history valid while reserving the richer metadata ledger for real
+      // image + copy material folders.
+      if (!/同时包含图片和文案/.test(String(error?.message || ""))) throw error;
+    }
   }
   return record;
 }
@@ -948,58 +955,46 @@ function materialTreeSignature(root) {
   return rows.join("\u0001");
 }
 
+function materialCategoryIndex(root) {
+  if (!exists(root)) return [];
+  return safeList(root)
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+    .map((entry, index) => ({
+      id: path.join(root, entry.name),
+      order: index + 1,
+      name: entry.name,
+      path: path.join(root, entry.name)
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN", { numeric: true }));
+}
+
 function getDetectedMaterialPosts(root, force = false) {
-  const sourceSignature = materialTreeSignature(root);
-  if (
-    !force
-    && materialPostCache?.root === root
-    && materialPostCache?.sourceSignature === sourceSignature
-    && Array.isArray(materialPostCache.posts)
-  ) {
-    return materialPostCache.posts;
+  const categoryRoot = path.resolve(root);
+  const sourceSignature = materialTreeSignature(categoryRoot);
+  const cached = materialCategoryCache.get(categoryRoot);
+  if (!force && cached?.sourceSignature === sourceSignature && Array.isArray(cached.posts)) {
+    return cached.posts;
   }
-  if (!force) {
-    const saved = readJson(MATERIAL_SCAN_CACHE_FILE, null);
-    if (
-      saved?.root === root
-      && saved?.sourceSignature === sourceSignature
-      && Array.isArray(saved.posts)
-      && exists(root)
-    ) {
-      materialPostCache = saved;
-      return saved.posts;
-    }
-  }
-  const posts = scanPostFolders(root);
-  materialPostCache = { root, sourceSignature, scannedAt: new Date().toISOString(), posts };
-  writeJson(MATERIAL_SCAN_CACHE_FILE, materialPostCache);
+  const posts = scanPostFolders(categoryRoot);
+  const record = {
+    root: categoryRoot,
+    sourceSignature,
+    scannedAt: new Date().toISOString(),
+    posts
+  };
+  materialCategoryCache.set(categoryRoot, record);
+  materialPostCache = record;
   return posts;
 }
 
-function getMaterialLibrary(force = false, selectedLibraryPath = "") {
+function getMaterialLibrary(force = false, selectedLibraryPath = "", options = {}) {
   const root = getWorkspaceSettings().materialRoot;
   const sourceSignature = materialTreeSignature(root);
-  if (
-    !force
-    && materialLibraryCache?.root === root
-    && materialLibraryCache?.sourceSignature === sourceSignature
-    && materialLibraryCache.library
-  ) {
-    return materialLibraryCache.library;
-  }
-  if (!force) {
-    const saved = readJson(MATERIAL_LIBRARY_CACHE_FILE, null);
-    if (
-      saved?.root === root
-      && saved?.sourceSignature === sourceSignature
-      && saved.library?.categories
-      && exists(root)
-    ) {
-      materialLibraryCache = saved;
-      return saved.library;
-    }
-  }
-  const detectedPosts = getDetectedMaterialPosts(root, force);
+  const descriptors = materialCategoryIndex(root);
+  const requestedPath = selectedLibraryPath ? path.resolve(selectedLibraryPath) : "";
+  const requestedCategory = descriptors.find((category) => category.path === requestedPath);
+  const selectedCategory = requestedCategory
+    || (options.loadDefault === false ? null : descriptors[0] || null);
 
   function materialItem(post, categoryName, itemIndex) {
     const itemPath = post.path;
@@ -1025,39 +1020,33 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "") {
     };
   }
 
-  function categoryFromPosts(name, categoryPath, posts, order) {
+  function categoryFromPosts(descriptor, posts, loaded) {
     const items = posts
       .slice(0, PREVIEW_LIMITS.materialItemsPerCategory)
-      .map((post, itemIndex) => materialItem(post, name, itemIndex));
+      .map((post, itemIndex) => materialItem(post, descriptor.name, itemIndex));
     return {
-      id: categoryPath,
-      order,
-      name,
-      path: categoryPath,
-      count: posts.length,
+      ...descriptor,
+      count: loaded ? posts.length : Number(materialCategoryCache.get(descriptor.path)?.posts?.length || 0),
       visibleCount: items.length,
-      items
+      loaded,
+      items: loaded ? items : []
     };
   }
 
-  const grouped = new Map();
-  detectedPosts.forEach((post) => {
-    const parts = post.relativePath.split(path.sep).filter(Boolean);
-    const groupName = parts.length > 1 ? parts[0] : "当前素材";
-    if (!grouped.has(groupName)) grouped.set(groupName, []);
-    grouped.get(groupName).push(post);
+  const categories = descriptors.map((descriptor) => {
+    const loaded = descriptor.path === selectedCategory?.path;
+    const posts = loaded ? getDetectedMaterialPosts(descriptor.path, force) : [];
+    return categoryFromPosts(descriptor, posts, loaded);
   });
-  const categories = Array.from(grouped.entries()).map(([name, posts], index) =>
-    categoryFromPosts(
-      name,
-      name === "当前素材" ? root : path.join(root, name),
-      posts,
-      index + 1
-    )
-  );
-  const library = { root, recursive: true, detectionRule: "图片 + 文案", categories };
+  const library = {
+    root,
+    recursive: true,
+    lazy: true,
+    selectedCategoryPath: selectedCategory?.path || "",
+    detectionRule: "图片 + 文案",
+    categories
+  };
   materialLibraryCache = { root, sourceSignature, scannedAt: new Date().toISOString(), library };
-  writeJson(MATERIAL_LIBRARY_CACHE_FILE, materialLibraryCache);
   return library;
 }
 
@@ -1095,8 +1084,8 @@ function compactMaterialIndex(library, categoryId = "") {
     name: category.name,
     path: category.path,
     count: category.count,
-    loaded: category.id === categoryId,
-    items: category.id === categoryId
+    loaded: category.id === categoryId && category.loaded !== false,
+    items: category.id === categoryId && category.loaded !== false
       ? (category.items || []).map((item) => {
         return compactMaterialItem(item, category.name, usageByPath, {
           metadata,
@@ -1110,6 +1099,7 @@ function compactMaterialIndex(library, categoryId = "") {
   return {
     root: library.root,
     recursive: library.recursive,
+    lazy: true,
     detectionRule: library.detectionRule,
     categories
   };
@@ -2145,13 +2135,14 @@ async function route(req, res) {
 
   if (pathname === "/api/materials" && req.method === "GET") {
     ensureDataFiles();
-    const state = readJson(STATE_FILE, {});
     const libraryPath = parsed.query.library ? decodeURIComponent(parsed.query.library) : "";
+    const categoryId = parsed.query.category ? decodeURIComponent(parsed.query.category) : "";
+    const selectedPath = categoryId || libraryPath;
     const materials = getMaterialLibrary(
       parsed.query.refresh === "true",
-      libraryPath || state.selectedMaterialCategoryPath || ""
+      selectedPath,
+      { loadDefault: Boolean(selectedPath) }
     );
-    const categoryId = parsed.query.category ? decodeURIComponent(parsed.query.category) : "";
     return sendExtensionJson(req, res, {
       generatedAt: new Date().toISOString(),
       materials: compactMaterialIndex(materials, categoryId)
@@ -2471,6 +2462,7 @@ module.exports = {
   isAllowedFile,
   isAllowedExternalTarget,
   isPathInside,
+  materialCategoryIndex,
   materialTreeSignature,
   getMaterialUsageLedger,
   getMaterialMetadataLedger,

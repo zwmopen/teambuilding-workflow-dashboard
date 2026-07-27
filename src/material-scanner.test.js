@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { materialTreeSignature, scanPostFolders } = require("./server");
+const { materialCategoryIndex, materialTreeSignature, scanPostFolders } = require("./server");
 
 test("scanPostFolders recursively finds folders containing images and text", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "material-scan-"));
@@ -38,6 +38,26 @@ test("materialTreeSignature changes when a top-level material category is rename
     const after = materialTreeSignature(root);
     assert.notEqual(after, before);
     assert.match(after, /转化素材-信息流素材/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("material category index stays shallow so opening the workbench does not scan every post", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "material-lazy-index-"));
+  try {
+    const first = path.join(root, "素材甲", "帖子一");
+    const second = path.join(root, "素材乙", "帖子二");
+    fs.mkdirSync(first, { recursive: true });
+    fs.mkdirSync(second, { recursive: true });
+    fs.writeFileSync(path.join(first, "封面.png"), "image");
+    fs.writeFileSync(path.join(first, "文案.txt"), "copy");
+    fs.writeFileSync(path.join(second, "封面.png"), "image");
+    fs.writeFileSync(path.join(second, "文案.txt"), "copy");
+
+    const categories = materialCategoryIndex(root);
+    assert.deepEqual(categories.map((item) => item.name), ["素材甲", "素材乙"]);
+    assert.deepEqual(scanPostFolders(categories[0].path).map((item) => item.name), ["帖子一"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -239,18 +239,15 @@
       <section class="view" id="settingsView">
         <section class="settings-layout">
           <header class="page-heading"><div><p class="label">外观与本地数据</p><h2>设置</h2><p>主题偏好会保存在本机浏览器，不修改项目素材。</p></div></header>
-          <section class="settings-card">
-            <h3>视觉风格</h3>
+          <section class="settings-card appearance-card">
+            <div class="settings-card-heading"><div><p class="label">显示偏好</p><h3>界面风格</h3></div><span class="version-status">即时切换</span></div>
             <div class="theme-options">
-              <button class="theme-option" data-theme="solid"><b>雾绿实体</b><span>稳定耐看</span></button>
-              <button class="theme-option" data-theme="glass"><b>克制玻璃</b><span>原项目名称：半透明但仍有实体感</span></button>
-              <button class="theme-option" data-theme="neumorphic"><b>柔和拟态</b><span>更强的悬浮实体感</span></button>
-              <button class="theme-option theme-preview-jianghu active" data-theme="jianghu"><b>拟态悬浮</b><span>默认风格：冷灰蓝底与双向柔光</span></button>
-              <button class="theme-option theme-preview-editorial" data-theme="editorial"><b>纸墨编辑部</b><span>暖纸、黑墨与紧凑信息排版</span></button>
-              <button class="theme-option theme-preview-midnight" data-theme="midnight"><b>深海夜航</b><span>深蓝夜色与克制青色信号</span></button>
+              <button class="theme-option theme-preview-jianghu active" data-theme="jianghu"><i aria-hidden="true"></i><span><b>清晰工作台</b><small>默认 · 明亮、紧凑、适合长时间操作</small></span></button>
+              <button class="theme-option theme-preview-editorial" data-theme="editorial"><i aria-hidden="true"></i><span><b>纸墨编辑部</b><small>暖色、扁平、强调内容层级</small></span></button>
+              <button class="theme-option theme-preview-midnight" data-theme="midnight"><i aria-hidden="true"></i><span><b>深色模式</b><small>低亮度环境使用</small></span></button>
             </div>
           </section>
-          <section class="settings-card">
+          <section class="settings-card workspace-settings-card">
             <h3>目录与一键工作包</h3>
             <p class="path-line">这里直接读写现有 VBS / PowerShell 工作包配置；旧工具继续可用，新界面与它并行。</p>
             <div class="path-settings-grid">
@@ -310,7 +307,7 @@
             </div>
             <p class="path-line" id="settingsDiagnosticsSummary">版本、数据目录和桌面运行状态会在这里核对。</p>
           </section>
-          <section class="settings-card"><h3>高级入口</h3><div class="settings-actions"><button data-jump="prompts">提示词版本</button><button data-jump="juguang">聚光运营</button><button data-jump="workflow">生产日志</button></div></section>
+          <section class="settings-card advanced-card"><h3>更多工具</h3><div class="settings-actions"><button data-jump="prompts">提示词版本</button><button data-jump="juguang">聚光运营</button><button data-jump="workflow">生产日志</button></div></section>
         </section>
       </section>
 

@@ -2193,7 +2193,7 @@ function buildTemplateCommand(target) {
 function bindEvents() {
   $("#dashboardView .work-canvas")?.addEventListener("scroll", maybeLoadMoreMaterials, { passive: true });
   $("#productsView .product-preview-pane")?.addEventListener("scroll", maybeLoadMoreProducts, { passive: true });
-  document.addEventListener("click", (event) => {
+  document.addEventListener("click", async (event) => {
     if (!event.target.closest(".custom-select")) closeCustomSelects();
     if (!event.target.closest(".context-menu")) hideContextMenu();
     const jump = event.target.closest("[data-jump]");
@@ -2201,8 +2201,16 @@ function bindEvents() {
     const treeToggle = event.target.closest("[data-tree-toggle]");
     if (treeToggle) {
       const categoryPath = treeToggle.dataset.treeToggle;
-      if (expandedMaterialPaths.has(categoryPath)) expandedMaterialPaths.delete(categoryPath);
-      else expandedMaterialPaths.add(categoryPath);
+      const category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
+      if (expandedMaterialPaths.has(categoryPath)) {
+        expandedMaterialPaths.delete(categoryPath);
+      } else {
+        expandedMaterialPaths.add(categoryPath);
+        if (category && category.loaded === false) {
+          saveLocalState({ selectedMaterialCategoryPath: categoryPath, selectedMaterial: "" });
+          await loadDashboard(false, categoryPath);
+        }
+      }
       renderMaterials();
     }
     const treeView = event.target.closest("[data-material-tree-view]");
