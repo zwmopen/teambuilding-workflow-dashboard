@@ -208,6 +208,48 @@ function checkMaterialUsage(body = {}, options = {}) {
   };
 }
 
+function moveWorkspaceEntry(body = {}, options = {}) {
+  const sourceInput = String(body.sourcePath || "").trim();
+  const targetInput = String(body.targetPath || "").trim();
+  if (!sourceInput || !targetInput) throw new Error("需要提供要移动的文件夹和目标文件夹");
+  const roots = (options.roots || (() => {
+    const settings = getWorkspaceSettings();
+    return [settings.materialRoot, settings.workPackage?.libraryPath];
+  })()).filter(Boolean).map((root) => path.resolve(root));
+  const sourcePath = path.resolve(sourceInput);
+  const targetPath = path.resolve(targetInput);
+  const samePath = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+  const sourceRoot = roots.find((item) => isPathInside(item, sourcePath));
+  const targetRoot = roots.find((item) => isPathInside(item, targetPath));
+  if (sourceRoot && samePath(sourcePath, sourceRoot)) throw new Error("不能移动素材库或成品库根目录");
+  if (!sourceRoot || !targetRoot || !samePath(sourceRoot, targetRoot)) {
+    throw new Error("只能在同一个素材库或成品库内部移动");
+  }
+  if (!exists(sourcePath)) throw new Error("要移动的文件夹不存在");
+  const sourceStat = fs.lstatSync(sourcePath);
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) throw new Error("只能移动真实文件夹，不能移动文件或软链接");
+  if (!exists(targetPath)) throw new Error("目标必须是已存在的文件夹");
+  const targetStat = fs.lstatSync(targetPath);
+  if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) throw new Error("目标必须是已存在的真实文件夹");
+  const realRoot = fs.realpathSync.native(sourceRoot);
+  const realSource = fs.realpathSync.native(sourcePath);
+  const realTarget = fs.realpathSync.native(targetPath);
+  if (!isPathInside(realRoot, realSource) || !isPathInside(realRoot, realTarget)) {
+    throw new Error("文件夹真实位置超出当前素材库或成品库");
+  }
+  if (samePath(sourcePath, targetPath) || isPathInside(sourcePath, targetPath)) {
+    throw new Error("不能把文件夹移动到它自己或它的子文件夹里");
+  }
+  if (samePath(path.dirname(sourcePath), targetPath)) throw new Error("已经在这个文件夹里了");
+  const destination = path.join(targetPath, path.basename(sourcePath));
+  if (exists(destination)) throw new Error(`目标文件夹里已存在同名项：${path.basename(sourcePath)}`);
+  fs.renameSync(sourcePath, destination);
+  materialCategoryCache.clear();
+  materialPostCache = null;
+  materialLibraryCache = null;
+  return { from: sourcePath, to: destination };
+}
+
 function extensionProductSnapshot(collectionName = "") {
   const settings = getWorkspaceSettings();
   const distribution = getDistributionSnapshot({
@@ -1928,6 +1970,15 @@ async function route(req, res) {
     }
   }
 
+  if (pathname === "/api/extension/move-entry" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    try {
+      return sendExtensionJson(req, res, { ok: true, ...moveWorkspaceEntry(body) });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
+  }
+
   if (pathname === "/api/materials" && req.method === "GET") {
     ensureDataFiles();
     const state = readJson(STATE_FILE, {});
@@ -2259,6 +2310,7 @@ module.exports = {
   materialTreeSignature,
   getMaterialUsageLedger,
   checkMaterialUsage,
+  moveWorkspaceEntry,
   materialUsageFingerprint,
   recordMaterialUsage,
   resolvePublicFile,
@@ -2269,5 +2321,3 @@ module.exports = {
   syncHistoricalDedupLedger,
   safeName
 };
-
-

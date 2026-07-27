@@ -96,6 +96,61 @@ test('material usage ledger records prepared and used without moving source file
   }
 });
 
+test('workspace folder move renames a real folder inside the same authorized root', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-move-folder-'));
+  const root = path.join(parent, 'materials');
+  const source = path.join(root, '待加工');
+  const target = path.join(root, '已使用');
+  fs.mkdirSync(source, { recursive: true });
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(path.join(source, '文案.txt'), 'copy');
+  try {
+    const result = server.moveWorkspaceEntry(
+      { sourcePath: source, targetPath: target },
+      { roots: [root] }
+    );
+    assert.equal(result.to, path.join(target, '待加工'));
+    assert.equal(fs.existsSync(source), false);
+    assert.equal(fs.readFileSync(path.join(result.to, '文案.txt'), 'utf8'), 'copy');
+  } finally {
+    cleanup(parent);
+  }
+});
+
+test('workspace folder move rejects files, roots, links and cross-root targets', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-move-safety-'));
+  const rootA = path.join(parent, 'materials');
+  const rootB = path.join(parent, 'products');
+  const source = path.join(rootA, '帖子');
+  const child = path.join(source, '子目录');
+  const target = path.join(rootA, '目标');
+  const file = path.join(rootA, '文案.txt');
+  fs.mkdirSync(child, { recursive: true });
+  fs.mkdirSync(target, { recursive: true });
+  fs.mkdirSync(rootB, { recursive: true });
+  fs.writeFileSync(file, 'copy');
+  try {
+    assert.throws(
+      () => server.moveWorkspaceEntry({ sourcePath: file, targetPath: target }, { roots: [rootA, rootB] }),
+      /只能移动真实文件夹/
+    );
+    assert.throws(
+      () => server.moveWorkspaceEntry({ sourcePath: rootA, targetPath: rootB }, { roots: [rootA, rootB] }),
+      /不能移动素材库或成品库根目录/
+    );
+    assert.throws(
+      () => server.moveWorkspaceEntry({ sourcePath: source, targetPath: child }, { roots: [rootA, rootB] }),
+      /不能把文件夹移动到它自己或它的子文件夹里/
+    );
+    assert.throws(
+      () => server.moveWorkspaceEntry({ sourcePath: source, targetPath: rootB }, { roots: [rootA, rootB] }),
+      /只能在同一个素材库或成品库内部移动/
+    );
+  } finally {
+    cleanup(parent);
+  }
+});
+
 test('safeName removes unsafe and Windows-reserved names', () => {
   assert.equal(server.safeName('../客户:素材*'), '.._客户_素材_');
   assert.equal(server.safeName('CON'), '_CON');
