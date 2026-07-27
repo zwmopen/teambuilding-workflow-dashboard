@@ -15,6 +15,21 @@ function cleanup(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+test('device discovery keeps recently seen phones without treating an old record as current', () => {
+  const now = Date.parse('2026-07-27T16:00:00Z');
+  const previous = [
+    { name: '苹果12', model: 'iPhone13,2', online: true, current: true, lastSeenAt: now - 60_000 },
+    { name: '过期设备', model: 'old-model', online: true, current: true, lastSeenAt: now - 11 * 60_000 }
+  ];
+  const current = [
+    { name: 'VIVO（作品数 7）', model: 'vivo V2327A', online: true, workCount: 7 }
+  ];
+  const merged = server.mergeDevicePresence(current, previous, now);
+  assert.deepEqual(merged.map((item) => item.model).sort(), ['iPhone13,2', 'vivo V2327A']);
+  assert.equal(merged.find((item) => item.model === 'iPhone13,2').recentlySeen, true);
+  assert.equal(merged.find((item) => item.model === 'vivo V2327A').current, true);
+});
+
 test('isPathInside rejects sibling paths that share a prefix', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-boundary-'));
   const root = path.join(parent, 'materials');

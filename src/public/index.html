@@ -56,7 +56,7 @@
           </header>
           <div class="overview-stats" id="overviewStats"></div>
           <section class="overview-grid">
-            <article class="overview-card" data-jump="dashboard"><span class="overview-index">01</span><h3>素材生产</h3><p>读取本地素材树，选择帖子并进入 GPT 母版会话。</p><button type="button">进入素材生产</button></article>
+            <article class="overview-card" data-jump="dashboard"><span class="overview-index">01</span><h3>素材生产</h3><p>工作台整理本地素材与指令，真实对话由 Chrome / Edge 扩展接管。</p><button type="button">进入素材生产</button></article>
             <article class="overview-card" data-jump="products"><span class="overview-index">02</span><h3>作品集</h3><p>按内容类型与平台资格筛选当前可用合集。</p><button type="button">查看作品集</button></article>
             <article class="overview-card" data-jump="distribution"><span class="overview-index">03</span><h3>分发功能</h3><p>手机补笔记、公众号领取、使用记录与归档恢复。</p><button type="button">进入分发</button></article>
           </section>
@@ -64,6 +64,19 @@
       </section>
 
       <section class="view" id="dashboardView">
+        <section class="production-api-flow" aria-label="API 内容生产流程">
+          <div class="production-api-intro">
+            <span class="api-mode-badge">生图 API 模式</span>
+            <strong>模板定样，素材换内容</strong>
+            <small>先锁定视觉模板，再选择素材，生成同风格作品与配套文案。</small>
+          </div>
+          <div class="production-api-steps">
+            <label class="production-api-step"><b>01</b><span><strong>选择模板</strong><select id="templateQuickSelect" class="search-input compact-select"></select></span></label>
+            <div class="production-api-step"><b>02</b><span><strong>选择素材</strong><small id="pipelineMaterialName">从下方素材库选择</small></span></div>
+            <div class="production-api-step"><b>03</b><span><strong>生图迁移</strong><small id="imageApiStatus">API 待接入</small></span></div>
+            <div class="production-api-step"><b>04</b><span><strong>作品 + 文案</strong><small>落盘后进入作品集</small></span></div>
+          </div>
+        </section>
         <div class="three-pane" id="threePane">
           <aside class="filter-pane">
             <div class="stats">
@@ -111,7 +124,6 @@
             <label>搜索素材</label>
             <input id="materialSearch" class="search-input" placeholder="地区 / 玩法 / 标题" />
             <div class="filter-note"><b>本地库：</b>顶部刷新会重新扫描素材库、模板库和成品库。当前队列先跑信息流素材，再跑夏季团建和团建合集。</div>
-            <select id="templateQuickSelect" class="search-input hidden-control"></select>
             <button id="collectFilteredBtn" class="side-action" type="button">整合当前筛选素材</button>
           </aside>
           <div class="pane-resizer" data-resizer="left" title="拖动调整左侧宽度"></div>
@@ -262,6 +274,16 @@
               <button id="runExistingWorkPackageBtn" type="button">运行现有一键工作包</button>
             </div>
           </section>
+          <section class="settings-card image-api-card">
+            <div class="settings-card-heading"><div><p class="label">下一阶段生产内核</p><h3>生图 API</h3></div><span class="version-status" id="settingsImageApiStatus">待接入</span></div>
+            <p class="path-line">这里只保存服务地址、模型名和输出规则；访问密钥从本机环境读取，不写入项目、日志或导出文件。</p>
+            <div class="path-settings-grid image-api-settings-grid">
+              <label><span>接口类型</span><select id="settingsImageApiProvider" class="search-input"><option value="openai-compatible">OpenAI 兼容接口</option><option value="custom">自定义接口</option></select></label>
+              <label><span>接口地址</span><input id="settingsImageApiBaseUrl" class="search-input" type="url" placeholder="例如：https://…/v1" /></label>
+              <label><span>生图模型</span><input id="settingsImageApiModel" class="search-input" type="text" placeholder="配置后显示真实模型" /></label>
+            </div>
+            <div class="settings-actions"><button id="saveImageApiSettingsBtn" class="primary-button" type="button">保存 API 设置</button></div>
+          </section>
           <section class="settings-card dedup-card">
             <div class="settings-card-heading">
               <div><p class="label">本地历史沉淀</p><h3>数据与防重复</h3></div>
@@ -285,9 +307,9 @@
           <section class="settings-card extension-card">
             <div class="settings-card-heading">
               <div><p class="label">真实 ChatGPT 页面</p><h3>GPT 助手扩展</h3></div>
-              <span class="version-status">并行测试</span>
+              <span class="version-status">浏览器端</span>
             </div>
-            <p class="path-line">左侧使用最新版对话树，中间保留真实 ChatGPT，右侧生产舱分为成品区和素材区；本地中控负责路径、文件和去重数据。</p>
+            <p class="path-line">Google 与 ChatGPT 登录保留在受信任的 Chrome / Edge；扩展负责真实网页里的对话树、成品区和素材区，本地中控只提供路径、文件和去重数据。</p>
             <div class="settings-actions">
               <button id="openExtensionRootBtn" class="primary-button" type="button">打开扩展目录</button>
               <button id="copyExtensionAddressBtn" type="button">复制安装地址</button>

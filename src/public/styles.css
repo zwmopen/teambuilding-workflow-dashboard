@@ -274,8 +274,98 @@ h2 {
 }
 
 #dashboardView.active {
-  display: block;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
+}
+
+.production-api-flow {
+  display: grid;
+  grid-template-columns: minmax(220px, .72fr) minmax(620px, 1.8fr);
+  gap: 14px;
+  align-items: center;
+  margin: 14px 16px 0;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel-light) 88%, transparent);
+  box-shadow: var(--soft-shadow);
+}
+
+.production-api-intro {
+  display: grid;
+  gap: 3px;
+}
+
+.production-api-intro > strong {
+  font-size: 15px;
+}
+
+.production-api-intro > small,
+.production-api-step small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-mode-badge {
+  width: fit-content;
+  color: var(--accent-dark);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.production-api-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.production-api-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 25px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+  min-height: 49px;
+  margin: 0;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--selection) 48%, var(--panel-light));
+}
+
+.production-api-step > b {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--accent-dark);
+  background: color-mix(in srgb, var(--selection) 76%, white);
+  font-size: 9px;
+}
+
+.production-api-step > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.production-api-step strong {
+  font-size: 11px;
+}
+
+.production-api-step select {
+  height: 24px;
+  min-height: 24px;
+  padding: 2px 24px 2px 5px;
+  border-radius: 7px;
+  font-size: 10px;
 }
 
 .subtitle,
@@ -297,7 +387,7 @@ h2 {
 .three-pane {
   display: grid;
   grid-template-columns: var(--left-pane-width, 286px) 10px minmax(320px, 1fr) 10px var(--right-pane-width, 390px);
-  height: calc(100vh - 70px);
+  height: auto;
   min-height: 0;
   gap: 0;
   padding: 16px;
@@ -2706,6 +2796,79 @@ label {
   opacity: .72;
 }
 
+.device-status-badges {
+  align-items: center;
+}
+
+.transport-tags,
+.transport-guide {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.transport-tag {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  min-height: 23px;
+  padding: 3px 7px;
+  color: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-light) 78%, transparent);
+  font-size: 10px;
+  font-weight: 760;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.transport-tag svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.transport-tag.is-active {
+  color: #196343;
+  border-color: rgba(42, 133, 91, .26);
+  background: rgba(220, 244, 232, .74);
+}
+
+.transport-tag-usb.is-active {
+  color: #235d85;
+  border-color: rgba(46, 117, 164, .26);
+  background: rgba(224, 240, 250, .78);
+}
+
+.transport-tag.is-standby {
+  color: #786228;
+  border-color: rgba(151, 122, 47, .25);
+  background: rgba(249, 241, 213, .72);
+}
+
+.transport-tag.is-pending {
+  border-style: dashed;
+}
+
+.transport-tag.is-offline {
+  opacity: .62;
+}
+
+.transport-tags.is-compact {
+  justify-content: flex-end;
+}
+
+.transport-tags.is-compact .transport-tag {
+  min-height: 21px;
+  padding: 3px 6px;
+}
+
 .device-actions button:disabled {
   cursor: not-allowed;
   opacity: .42;
@@ -3149,6 +3312,14 @@ label {
   font-size: 22px;
 }
 
+.transport-guide {
+  margin-top: 13px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--selection) 42%, transparent);
+}
+
 .device-picker-list {
   display: grid;
   gap: 8px;
@@ -3207,6 +3378,19 @@ label {
   font-size: 15px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.device-picker-list > button > strong:first-child {
+  grid-column: 1 / 3;
+}
+
+.device-picker-list > button .transport-tags {
+  grid-column: 3;
+}
+
+.device-picker-list > button .transport-tag.is-offline,
+.device-picker-list > button .transport-tag.is-pending {
+  display: none;
 }
 
 .device-picker-list > button small {
@@ -3449,8 +3633,19 @@ label {
 .settings-layout > .page-heading,
 .settings-layout > .appearance-card,
 .settings-layout > .workspace-settings-card,
+.settings-layout > .image-api-card,
 .settings-layout > .dedup-card {
   grid-column: 1 / -1;
+}
+
+.image-api-settings-grid {
+  grid-template-columns: minmax(170px, .65fr) minmax(260px, 1.35fr) minmax(200px, 1fr);
+}
+
+@media (max-width: 1180px) {
+  .production-api-flow {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-card {

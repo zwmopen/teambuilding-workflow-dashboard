@@ -40,6 +40,7 @@ const PROMPTS_FILE = path.join(DATA_ROOT, "prompt-versions.json");
 const TASK_INDEX_FILE = path.join(DATA_ROOT, "production-task-index.json");
 const APP_SETTINGS_FILE = path.join(DATA_ROOT, "app-settings.json");
 const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
+const DEVICE_PRESENCE_FILE = path.join(DATA_ROOT, "device-presence.json");
 const DEVICE_NOTES_FILE = path.join(DATA_ROOT, "device-notes.json");
 const MATERIAL_SCAN_CACHE_FILE = path.join(DATA_ROOT, "material-scan-cache.json");
 const MATERIAL_LIBRARY_CACHE_FILE = path.join(DATA_ROOT, "material-library-cache.json");
@@ -78,7 +79,11 @@ let materialGlobalIndexJob = {
   indexedItems: 0,
   error: ""
 };
-let deviceStatusCache = { checkedAt: 0, output: "", onlineDevices: [] };
+let deviceStatusCache = {
+  checkedAt: 0,
+  output: "",
+  onlineDevices: readJson(DEVICE_PRESENCE_FILE, { onlineDevices: [] }).onlineDevices || []
+};
 let deviceStatusPromise = null;
 const genericTransferTasks = new Map();
 const distributionTasks = new Map();
@@ -597,6 +602,12 @@ function getWorkspaceSettings() {
   const defaultMaterialRoot = path.join(PROJECT_ROOT, "01-素材库");
   return {
     materialRoot: path.resolve(local.materialRoot || defaultMaterialRoot),
+    imageApi: {
+      provider: String(local.imageApi?.provider || "openai-compatible"),
+      baseUrl: String(local.imageApi?.baseUrl || ""),
+      model: String(local.imageApi?.model || ""),
+      credentialConfigured: Boolean(process.env.TEAMBUILDING_IMAGE_API_KEY)
+    },
     workPackage: {
       configFile: WORKPKG_CONFIG_FILE,
       scriptDirectory: path.dirname(WORKPKG_CONFIG_FILE),
@@ -2213,17 +2224,55 @@ function getDeviceStatus(force = false) {
   if (deviceStatusPromise) return deviceStatusPromise;
   deviceStatusPromise = runDeviceStatus()
     .then((result) => {
+      const checkedAt = Date.now();
+      const onlineDevices = mergeDevicePresence(
+        parseOnlineDeviceStatus(result.output),
+        deviceStatusCache.onlineDevices,
+        checkedAt
+      );
       deviceStatusCache = {
-        checkedAt: Date.now(),
+        checkedAt,
         output: result.output || "",
-        onlineDevices: parseOnlineDeviceStatus(result.output)
+        onlineDevices
       };
+      writeJson(DEVICE_PRESENCE_FILE, { version: 1, checkedAt, onlineDevices });
       return deviceStatusCache;
     })
     .finally(() => {
       deviceStatusPromise = null;
     });
   return deviceStatusPromise;
+}
+
+function devicePresenceKey(device = {}) {
+  const model = String(device.model || "").trim().toLowerCase();
+  if (model) return `model:${model}`;
+  return `name:${String(device.name || "")
+    .toLowerCase()
+    .replace(/[（(][^）)]*作品数[^）)]*[）)]/g, "")
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "")}`;
+}
+
+function mergeDevicePresence(currentRecords, previousRecords, now = Date.now(), ttlMs = 10 * 60_000) {
+  const current = Array.isArray(currentRecords) ? currentRecords : [];
+  const previous = Array.isArray(previousRecords) ? previousRecords : [];
+  const merged = new Map();
+  previous.forEach((record) => {
+    const lastSeenAt = Number(record.lastSeenAt || 0);
+    if (lastSeenAt && now - lastSeenAt <= ttlMs) {
+      merged.set(devicePresenceKey(record), { ...record, current: false, recentlySeen: true });
+    }
+  });
+  current.forEach((record) => {
+    merged.set(devicePresenceKey(record), {
+      ...record,
+      transport: record.transport || "wifi",
+      current: true,
+      recentlySeen: false,
+      lastSeenAt: now
+    });
+  });
+  return Array.from(merged.values());
 }
 
 function parseOnlineDeviceStatus(output) {
@@ -2239,6 +2288,7 @@ function parseOnlineDeviceStatus(output) {
         name: parts[0],
         model: parts[1],
         online: true,
+        transport: "wifi",
         workCount: match ? Number(match[1]) : null
       };
     })
@@ -2314,7 +2364,21 @@ function saveWorkspaceSettings(body) {
   if (!exists(materialRoot) || !fs.statSync(materialRoot).isDirectory()) {
     throw new Error("素材目录不存在或不是文件夹");
   }
-  writeJson(APP_SETTINGS_FILE, { materialRoot });
+  const localPrevious = readJson(APP_SETTINGS_FILE, {});
+  const imageApi = body.imageApi ? {
+    provider: ["openai-compatible", "custom"].includes(String(body.imageApi.provider))
+      ? String(body.imageApi.provider) : "openai-compatible",
+    baseUrl: String(body.imageApi.baseUrl || "").trim().slice(0, 500),
+    model: String(body.imageApi.model || "").trim().slice(0, 200)
+  } : localPrevious.imageApi;
+  if (imageApi?.baseUrl) {
+    let parsed;
+    try { parsed = new URL(imageApi.baseUrl); } catch { throw new Error("生图 API 地址格式不正确"); }
+    if (parsed.protocol !== "https:" && !["127.0.0.1", "localhost"].includes(parsed.hostname)) {
+      throw new Error("生图 API 必须使用 HTTPS；本机接口可使用 localhost");
+    }
+  }
+  writeJson(APP_SETTINGS_FILE, { ...localPrevious, materialRoot, imageApi });
 
   if (body.workPackage) {
     const previous = readJson(WORKPKG_CONFIG_FILE, {});
@@ -2848,6 +2912,7 @@ module.exports = {
   updateMaterialMetadata,
   resolvePublicFile,
   parseOnlineDeviceStatus,
+  mergeDevicePresence,
   publicDedupStatus,
   runExtensionWorkPackage,
   scanPostFolders,

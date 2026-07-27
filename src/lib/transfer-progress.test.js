@@ -25,9 +25,10 @@ test("distribution output becomes human-readable progress stages", () => {
   assert.equal(record.progress, 97);
   assert.equal(record.stageLabel, "设备已接收，正在确认");
 
-  updateTransferProgress(record, "补货完成：{}\n");
+  updateTransferProgress(record, '补货完成：{"transport":"Wi-Fi"}\n');
   assert.equal(record.progress, 99);
   assert.equal(record.stageLabel, "正在写入使用记录");
+  assert.equal(record.transport, "Wi-Fi");
 });
 
 test("public task never exposes the child process", () => {

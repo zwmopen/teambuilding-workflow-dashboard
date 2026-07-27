@@ -33,8 +33,8 @@ async function evaluateTarget(target, expression) {
 
 async function connectLocalWorkspace() {
   const targets = await fetch(DEBUG_URL).then((response) => response.json());
-  const target = targets.find((item) => item.type === "webview" && item.url.startsWith("http://127.0.0.1:4327/"));
-  assert(target, "未找到桌面版中的本地工作区 webview");
+  const target = targets.find((item) => ["page", "webview"].includes(item.type) && item.url.startsWith("http://127.0.0.1:4327/"));
+  assert(target, "未找到桌面版中的本地工作区页面");
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });
@@ -76,10 +76,10 @@ async function main() {
   try {
     await check("应用外壳已载入", `Boolean(document.querySelector('.app-shell') && document.querySelector('[data-tab]'))`);
     for (let attempt = 0; attempt < 120; attempt += 1) {
-      if (await evaluate(`Boolean(document.querySelector('#materialFeed .tree-category') && document.querySelector('#collectionList'))`)) break;
+      if (await evaluate(`Number(document.querySelector('#statMaterialCategories')?.textContent) > 0 && Boolean(document.querySelector('#collectionList'))`)) break;
       await wait(500);
     }
-    await check("主数据已载入", `Boolean(document.querySelector('#materialFeed .tree-category') && document.querySelector('#collectionList'))`);
+    await check("主数据已载入", `Number(document.querySelector('#statMaterialCategories')?.textContent) > 0 && Boolean(document.querySelector('#collectionList'))`);
     const tabs = await evaluate(`[...document.querySelectorAll('.tab[data-tab]')].map((el) => el.dataset.tab)`);
     assert.deepEqual(tabs, ["dashboard", "products", "distribution", "settings"]);
     checks.push({ name: "左侧工作流入口", value: tabs.join(", ") });
@@ -106,23 +106,20 @@ async function main() {
 
     await evaluate(`document.querySelector('.tab[data-tab="dashboard"]').click(); true`);
     await wait(250);
-    await check("素材目录地址可编辑", `Boolean(document.querySelector('#materialRootInput')?.value)`);
-    await check("素材文件树有内容", `document.querySelectorAll('#materialFeed .tree-category').length > 0`);
-    await check("素材支持列表/小图标切换", `document.querySelectorAll('[data-material-tree-view]').length >= 2`);
+    await check("素材生产四步 API 流程存在", `(() => { const text = document.querySelector('.production-api-flow')?.textContent || ''; return ['选择模板','选择素材','生图迁移','作品 + 文案'].every((label) => text.includes(label)); })()`);
+    await check("素材库与模板库已载入", `Number(document.querySelector('#statMaterialCategories')?.textContent) > 0 && document.querySelector('#materialLibraryFilter')?.options.length > 0 && document.querySelector('#templateQuickSelect')?.options.length > 0`);
     const materialInteraction = await evaluate(`(() => {
-      const category = document.querySelector('#materialFeed .tree-category');
-      const canToggle = Boolean(category?.querySelector('.tree-category-head,button'));
-      document.querySelector('[data-material-tree-view="icons"]')?.click();
-      const grid = document.querySelector('#materialFeed')?.dataset.view === 'icons';
-      document.querySelector('[data-material-tree-view="list"]')?.click();
-      return { canToggle, switched: Boolean(grid) };
+      const library = document.querySelector('#materialLibraryFilter');
+      const template = document.querySelector('#templateQuickSelect');
+      const before = library?.value;
+      if (library?.options.length > 1) {
+        library.selectedIndex = 1;
+        library.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      return { libraries: library?.options.length || 0, templates: template?.options.length || 0, switched: !library || library.options.length < 2 || library.value !== before };
     })()`);
-    assert(materialInteraction.canToggle, "素材分类没有展开入口");
-    assert(materialInteraction.switched, "素材视图不能切换");
-    checks.push({ name: "素材树入口与视图切换", value: materialInteraction });
-    const materialCategoryCount = await evaluate(`document.querySelectorAll('#materialFeed .tree-category').length`);
-    assert(materialCategoryCount > 0, "懒加载后没有当前素材分类");
-    checks.push({ name: "当前素材分类按需载入", value: materialCategoryCount });
+    assert(materialInteraction.switched, "素材库不能切换");
+    checks.push({ name: "素材库与模板选择", value: materialInteraction });
 
     await evaluate(`document.querySelector('.tab[data-tab="products"]').click(); true`);
     await wait(300);
@@ -187,6 +184,7 @@ async function main() {
     await evaluate(`document.querySelector('[data-distribution-filter="devices"]')?.click(); true`);
     await wait(100);
     await check("设备在线数量直接显示", `(() => { const text = document.querySelector('.distribution-stats')?.textContent || ''; return text.includes('/') && [...text].some((char) => char >= '0' && char <= '9'); })()`);
+    await check("设备显示真实连接方式标签", `(() => { const tags = [...document.querySelectorAll('.device-row .transport-tag')]; return tags.length >= 3 && tags.some((tag) => tag.textContent.includes('Wi-Fi')); })()`);
     const distributionInteraction = await evaluate(`(() => {
       const tabs = [...document.querySelectorAll('#distributionTabs [data-panel]')];
       const results = [];
@@ -262,20 +260,10 @@ async function main() {
     assert(apiChecks.every((item) => item.status === 200), "有 API 入口不可用");
     checks.push({ name: "核心 API", value: apiChecks });
 
-    const chatTargets = await fetch(DEBUG_URL).then((response) => response.json());
-    const chat = chatTargets.find((item) => item.type === "webview" && item.url.startsWith("https://chatgpt.com/"));
-    assert(chat, "右侧真实 ChatGPT 网页未加载");
-    const chatState = await evaluateTarget(chat, `({
-      url: location.href,
-      title: document.title,
-      userscriptLoaded: window.__TB_CHATGPT_USERSCRIPT_LOADED__ === true,
-      hasLogin: Boolean(document.querySelector('a[href*="auth"], button[data-testid*="login"]')),
-      hasPrompt: Boolean(document.querySelector('#prompt-textarea, [contenteditable="true"][data-lexical-editor="true"], textarea')),
-      historyStatePresent: Boolean(localStorage.getItem('cgpt-conversation-tree:state:v3') || localStorage.getItem('cgpt-conversation-tree:state:v1'))
-    })`);
-    assert(chatState.userscriptLoaded, "ChatGPT 用户脚本未注入");
-    assert(chatState.hasLogin || chatState.hasPrompt, "ChatGPT 页面没有登录入口或对话输入框");
-    checks.push({ name: "ChatGPT 真实网页、登录入口与用户脚本", value: chatState });
+    const desktopTargets = await fetch(DEBUG_URL).then((response) => response.json());
+    const embeddedChat = desktopTargets.find((item) => item.url.startsWith("https://chatgpt.com/"));
+    assert.equal(embeddedChat, undefined, "桌面版仍加载了不受信任的内嵌 ChatGPT");
+    checks.push({ name: "桌面版已移除内嵌 ChatGPT", value: "external-browser-only" });
 
     process.stdout.write(`${JSON.stringify({ ok: true, checkedAt: new Date().toISOString(), checks }, null, 2)}\n`);
   } finally {

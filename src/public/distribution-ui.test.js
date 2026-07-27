@@ -133,8 +133,8 @@ test("parseDeviceStatusOutput identifies concrete online devices and work counts
       "红米13（微信） 1号（作品数 20）\tXiaomi 23124RN87C\tonline"
     ].join("\n")),
     [
-      { name: "Rmi 9A（A10）（作品数 22）", model: "Xiaomi M2006C3LC", online: true, workCount: 22 },
-      { name: "红米13（微信） 1号（作品数 20）", model: "Xiaomi 23124RN87C", online: true, workCount: 20 }
+      { name: "Rmi 9A（A10）（作品数 22）", model: "Xiaomi M2006C3LC", online: true, transport: "wifi", workCount: 22 },
+      { name: "红米13（微信） 1号（作品数 20）", model: "Xiaomi 23124RN87C", online: true, transport: "wifi", workCount: 20 }
     ]
   );
 });
@@ -152,6 +152,19 @@ test("decorateDevices puts online devices first and disables offline actions", (
   const result = decorateDevices(devices, online);
   assert.deepEqual(result.map((item) => item.number), [1, 8, 2]);
   assert.equal(result[0].online, true);
+  assert.deepEqual(result[0].transports, { wifi: true, usb: false, remote: false });
   assert.equal(result[0].workCount, 20);
   assert.equal(result[2].online, false);
+});
+
+test("decorateDevices only marks USB and remote active from truthful capability fields", () => {
+  const [device] = decorateDevices([{
+    id: "iphone-6",
+    displayName: "苹果6",
+    models: ["iPhone8,1"],
+    usbOnline: true,
+    remoteOnline: false
+  }], []);
+  assert.equal(device.usbCapable, true);
+  assert.deepEqual(device.transports, { wifi: false, usb: true, remote: false });
 });

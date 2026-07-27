@@ -116,6 +116,7 @@
           name,
           model: parts[1],
           online: true,
+          transport: "wifi",
           workCount: workMatch ? Number(workMatch[1]) : null
         };
       })
@@ -146,6 +147,18 @@
         return {
           ...device,
           online: Boolean(live),
+          recentlySeen: Boolean(live?.recentlySeen || live?.current === false),
+          transport: live?.transport || "",
+          transports: {
+            wifi: Boolean(live),
+            usb: device.usbOnline === true,
+            remote: device.remoteOnline === true
+          },
+          usbCapable: /iphone\s*6|苹果\s*6|iphone8,[12]/i.test([
+            device.id,
+            device.displayName,
+            ...models
+          ].join(" ")),
           liveName: live ? live.name : "",
           workCount: live ? live.workCount : null,
           _sourceIndex: sourceIndex

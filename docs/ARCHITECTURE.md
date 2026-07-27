@@ -1,5 +1,14 @@
 # 架构
 
+## 0.9.4 连接状态与可审计分发
+
+- Electron 主窗口直接加载本地工作台，不再启用 `webviewTag`、ChatGPT guest 会话、网页脚本注入或多账号内嵌登录；外部网页仍由本地白名单接口交给系统浏览器。
+- `device-presence.json` 仅在运行数据目录保存最近发现的设备摘要；本轮未回包的设备最多保留 10 分钟并标为“最近在线”，实际发送仍由共享 Skill 重新发现和连接。
+- `app-settings.json` 可保存生图 API 类型、HTTPS 地址和模型名；密钥只读取 `TEAMBUILDING_IMAGE_API_KEY`，不写入设置文件或前端响应。当前版本只完成可接入界面与安全配置层，不包含未经验证的供应商调用。
+- 局域网设备发现记录被标准化为 `transport=wifi`，前台从真实发现状态生成连接标签；USB、远程保留独立状态位，未获得底层事实时不得显示为在线。
+- `transfer-progress.js` 从底层完成 JSON 中提取实际 `transport`，完成任务可显示本次传输使用的协议。
+- 发送闭环顺序保持为：原子 claim → 设备接收确认 → 追加 `device-usage-log.csv`（含传输协议）→ 完成 claim → 原作品集移动到公众号目录。历史记录即使遇到入口误建，也会阻止再次进入手机待发送库存。
+
 ## 0.9.3 文件夹即状态
 
 - `distribution-data.js` 同时识别发布空间中的 Junction 和真实目录，并输出 `workflowStage`。

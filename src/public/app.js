@@ -436,6 +436,12 @@ function renderWorkspaceSettings() {
   if ($("#settingsBatchSize")) $("#settingsBatchSize").value = settings.workPackage?.batchSize || 14;
   if ($("#settingsAutoGroup")) $("#settingsAutoGroup").checked = settings.workPackage?.autoGroup !== false;
   if ($("#settingsAutoZip")) $("#settingsAutoZip").checked = settings.workPackage?.autoZip !== false;
+  if ($("#settingsImageApiProvider")) $("#settingsImageApiProvider").value = settings.imageApi?.provider || "openai-compatible";
+  if ($("#settingsImageApiBaseUrl")) $("#settingsImageApiBaseUrl").value = settings.imageApi?.baseUrl || "";
+  if ($("#settingsImageApiModel")) $("#settingsImageApiModel").value = settings.imageApi?.model || "";
+  const imageApiReady = Boolean(settings.imageApi?.baseUrl && settings.imageApi?.model && settings.imageApi?.credentialConfigured);
+  if ($("#settingsImageApiStatus")) $("#settingsImageApiStatus").textContent = imageApiReady ? "凭据已连接" : settings.imageApi?.baseUrl ? "等待本机密钥" : "待接入";
+  if ($("#imageApiStatus")) $("#imageApiStatus").textContent = imageApiReady ? `${settings.imageApi.model} · 已连接` : settings.imageApi?.baseUrl ? "接口已保存，等待密钥" : "API 待接入";
   const appInfo = dashboard?.appInfo || {};
   if ($("#settingsVersion")) $("#settingsVersion").textContent = `v${appInfo.version || "未知"}`;
   if ($("#settingsVersionChannel")) $("#settingsVersionChannel").textContent = appInfo.channel || "本地便携版";
@@ -510,6 +516,13 @@ async function saveWorkspacePaths(options = {}) {
       batchSize: Number($("#settingsBatchSize")?.value || 14),
       autoGroup: $("#settingsAutoGroup")?.checked !== false,
       autoZip: $("#settingsAutoZip")?.checked !== false
+    };
+  }
+  if (options.includeImageApi === true) {
+    payload.imageApi = {
+      provider: $("#settingsImageApiProvider")?.value || "openai-compatible",
+      baseUrl: $("#settingsImageApiBaseUrl")?.value || "",
+      model: $("#settingsImageApiModel")?.value || ""
     };
   }
   await api("/api/settings/paths", {
@@ -923,6 +936,7 @@ function selectTemplate(template) {
 function updateMission() {
   const templateLabel = selectedTemplate ? `${selectedTemplate.id} · ${selectedTemplate.name}` : "T01";
   const materialLabel = selectedMaterial ? selectedMaterial.name : "当前素材";
+  if ($("#pipelineMaterialName")) $("#pipelineMaterialName").textContent = selectedMaterial ? selectedMaterial.name : "从下方素材库选择";
   const libraryLabel = selectedMaterialCategory ? selectedMaterialCategory.name : "素材库1";
   const pages = Number.parseInt(selectedTemplate?.defaultPages, 10) || 5;
   const task = getCurrentProductionTask();
@@ -1380,6 +1394,33 @@ function getFilteredCollections() {
     .filter((item) => item.workflowStage === collectionFilters.stage);
 }
 
+function transportIcon(type) {
+  if (type === "usb") return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0-12-3 3m3-3 3 3M8 10H5v4a3 3 0 0 0 3 3h4m-6-7v-2m10 5h3v4a3 3 0 0 1-3 3h-4m6-7v-2"/></svg>';
+  if (type === "remote") return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 18H6a4 4 0 0 1-.5-8 6.5 6.5 0 0 1 12.6-1.5A4.8 4.8 0 0 1 18 18h-1.5M9 15l3-3 3 3m-3-3v9"/></svg>';
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9.5a11 11 0 0 1 15 0M7.5 13a6.6 6.6 0 0 1 9 0M10.5 16.5a2.3 2.3 0 0 1 3 0"/><circle cx="12" cy="19" r="1"/></svg>';
+}
+
+function renderTransportTag(type, label, state = "pending") {
+  return `<span class="transport-tag transport-tag-${type} is-${state}">${transportIcon(type)}<span>${escapeHtml(label)}</span></span>`;
+}
+
+function renderDeviceTransportTags(device, compact = false) {
+  const tags = [
+    renderTransportTag("wifi", device.transports?.wifi ? device.recentlySeen ? "Wi-Fi 最近在线" : "Wi-Fi 在线" : "Wi-Fi 离线", device.transports?.wifi ? device.recentlySeen ? "standby" : "active" : "offline"),
+    renderTransportTag("usb", device.transports?.usb ? "USB 已连接" : device.usbCapable ? "USB 大文件备用" : "USB 未连接", device.transports?.usb ? "active" : device.usbCapable ? "standby" : "offline"),
+    renderTransportTag("remote", device.transports?.remote ? "远程在线" : device.remoteConfigured ? "远程离线" : "远程待接入", device.transports?.remote ? "active" : "pending")
+  ];
+  return `<span class="transport-tags ${compact ? "is-compact" : ""}">${tags.join("")}</span>`;
+}
+
+function renderTransportGuide() {
+  return `<div class="transport-guide" aria-label="可用传送方式">
+    ${renderTransportTag("wifi", "Wi-Fi 自动发现", "active")}
+    ${renderTransportTag("usb", "USB 大文件备用", "standby")}
+    ${renderTransportTag("remote", "远程待接入", "pending")}
+  </div>`;
+}
+
 function renderCollections() {
   const data = dashboard?.distribution;
   if (!data) return;
@@ -1439,8 +1480,9 @@ function renderCollections() {
     list.insertAdjacentHTML("beforeend", `<div class="device-picker-backdrop" data-close-device-picker>
       <section class="device-picker-dialog" role="dialog" aria-modal="true" aria-label="选择当前在线设备">
         <header><div><strong>发到哪台手机？</strong><span>${escapeHtml(packageDevicePickerCollectionName)}</span></div><button type="button" data-close-device-picker aria-label="关闭">×</button></header>
+        ${renderTransportGuide()}
         <div class="device-picker-list">
-          ${onlineDevices.length ? onlineDevices.map((device) => `<button type="button" data-confirm-package-device="${escapeHtml(device.id)}"><strong>${escapeHtml(device.note || device.displayName)}</strong><small>当前在线</small></button>`).join("") : `<div class="empty-state"><strong>当前没有在线设备</strong><p>设备上线后刷新即可发送。</p></div>`}
+          ${onlineDevices.length ? onlineDevices.map((device) => `<button type="button" data-confirm-package-device="${escapeHtml(device.id)}"><strong>${escapeHtml(device.note || device.displayName)}</strong>${renderDeviceTransportTags(device, true)}</button>`).join("") : `<div class="empty-state"><strong>当前没有在线设备</strong><p>设备上线后刷新即可发送。</p></div>`}
         </div>
       </section>
     </div>`);
@@ -1513,8 +1555,8 @@ function renderDistribution() {
         <button class="editable-device-name" type="button" data-edit-device-note="${escapeHtml(device.id)}" title="点击编辑设备备注">${escapeHtml(device.note || device.displayName)}</button>
         <p>${escapeHtml(device.displayName)} · ${escapeHtml(device.ownerGroup)} · ${escapeHtml((device.platforms || []).join(" + "))}${device.workCount == null ? "" : ` · 当前 ${device.workCount} 个作品`}</p>
       </div>
-      <div class="badge-line">
-        <span class="state-badge ${device.online ? "good" : "muted"}">${device.online ? "当前在线" : "不在线"}</span>
+      <div class="badge-line device-status-badges">
+        ${renderDeviceTransportTags(device)}
         <span class="state-badge">${device.platforms?.length === 1 ? "单平台设备" : "双平台设备"}</span>
       </div>
       <div class="device-actions">
@@ -1550,7 +1592,7 @@ function renderDistribution() {
     ${packageDevicePickerCollectionName ? `<div class="device-picker-backdrop" data-close-device-picker>
       <section class="device-picker-dialog" role="dialog" aria-modal="true" aria-label="选择当前在线设备">
         <header><div><strong>发送作品包</strong><span>${escapeHtml(packageDevicePickerCollectionName)}</span></div><button type="button" data-close-device-picker aria-label="关闭">×</button></header>
-        <p>当前在线设备可选择</p>
+        ${renderTransportGuide()}
         <div class="device-picker-list">
           ${onlineDevices.length ? onlineDevices.map((device) => `<button type="button" data-confirm-package-device="${escapeHtml(device.id)}">
             <span class="picker-platform-icon" aria-hidden="true">
@@ -1559,7 +1601,7 @@ function renderDistribution() {
                 : `<svg class="android-icon" viewBox="0 0 24 24"><path d="m7.4 5.8-1.3-2.2M16.6 5.8l1.3-2.2"/><path d="M6.2 10a5.8 5.8 0 0 1 11.6 0H6.2Z"/><circle cx="9.1" cy="7.8" r=".65"/><circle cx="14.9" cy="7.8" r=".65"/><path d="M6.2 11h11.6v6.1a2.1 2.1 0 0 1-2.1 2.1H8.3a2.1 2.1 0 0 1-2.1-2.1V11Z"/><path d="M4.3 11.5v5M19.7 11.5v5M9 19.2v2.4M15 19.2v2.4"/></svg>`}
             </span>
             <strong>${escapeHtml(device.note || device.displayName)}</strong>
-            <small>当前在线</small>
+            ${renderDeviceTransportTags(device, true)}
           </button>`).join("") : `<div class="empty-state"><strong>当前没有在线设备</strong><p>后台会继续自动刷新设备状态。</p></div>`}
         </div>
       </section>
@@ -1601,6 +1643,7 @@ function renderTransferTasks() {
         <span class="transfer-kind">${task.taskKind === "distribution" ? "作品包分发" : "文件传送"}</span>
         <strong>${escapeHtml(task.collection || task.source?.split(/[\\/]/).at(-1) || "传送任务")}</strong>
         <small>${escapeHtml(task.stageLabel || task.message || "")}${task.device ? ` · ${escapeHtml(task.device)}` : ""}</small>
+        ${task.transport ? renderTransportTag(String(task.transport).toLowerCase().includes("usb") ? "usb" : "wifi", task.transport, "active") : ""}
       </div>
       <div class="transfer-meter">
         <div class="transfer-progress"><i style="width:${Math.max(0, Math.min(100, Number(task.progress) || 0))}%"></i></div>
@@ -2476,6 +2519,11 @@ function bindEvents() {
   $("#savePathSettingsBtn")?.addEventListener("click", () => {
     saveWorkspacePaths({ returnTab: "settings" })
       .catch((error) => showSystemNotice("设置没有保存", error.message, { tone: "danger" }));
+  });
+  $("#saveImageApiSettingsBtn")?.addEventListener("click", () => {
+    saveWorkspacePaths({ returnTab: "settings", includeImageApi: true })
+      .then(() => showSystemNotice("生图 API 设置已保存", "密钥只从本机环境读取；接口未连通前不会显示为可生产。", { tone: "success" }))
+      .catch((error) => showSystemNotice("API 设置没有保存", error.message, { tone: "danger" }));
   });
   $("#checkAppUpdateBtn")?.addEventListener("click", async () => {
     const previousVersion = dashboard?.appInfo?.version || "未知";
