@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.8.8",
-  "source_commit": "v0.8.8",
+  "version": "0.8.9",
+  "source_commit": "26f6da70a861eb077e6c79368fc6cdeb58cfea0c",
   "artifacts": [
+    {
+      "file": "0.8.9/团建内容工作台-0.8.9-便携版.exe",
+      "sha256": "5D418A268B852A2FE5A09AC6688CD8862CADA00DF1D8F7DA3F41109B1D083570",
+      "size": 89568336,
+      "platform": "Windows x64",
+      "built_at": "2026-07-27",
+      "known_limits": "新增扩展受控文件夹移动接口；平台发布自动点击、网络隔离与账号调度仍不在本版本范围；真实文件夹移动需由用户在扩展内确认。"
+    },
     {
       "file": "0.8.8/团建内容工作台-0.8.8-便携版.exe",
       "sha256": "EC002C15C8341327DA62FD76B94DC9ACEB6A768940F7DF3FBE134E9B1D6A6CE6",
