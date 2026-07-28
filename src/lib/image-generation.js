@@ -3,6 +3,7 @@ const path = require("node:path");
 
 const PROVIDER_DEFAULTS = {
   "local-openai": { baseUrl: "http://localhost:62104/v1", model: "gpt-image-2" },
+  bytecat: { baseUrl: "https://codecdn.bytecatcode.org/v1", model: "gemini-3-pro-image-preview" },
   minimax: { baseUrl: "https://api.minimaxi.com/v1", model: "image-01" }
 };
 
@@ -134,7 +135,7 @@ async function generateMinimax({ config, apiKey, prompt, fetchImpl = fetch }) {
 
 async function generateText({ config, apiKey, prompt, model = "gpt-5.6-terra", fetchImpl = fetch }) {
   if (!apiKey) throw new Error("没有找到本机 API 密钥");
-  if (config.provider !== "local-openai") throw new Error("当前文案生成只支持本地 GPT 兼容接口");
+  if (!["local-openai", "bytecat"].includes(config.provider)) throw new Error("当前文案生成只支持 OpenAI 兼容接口");
   const endpoint = `${config.baseUrl}/chat/completions`;
   assertSafeUrl(endpoint);
   const response = await fetchImpl(endpoint, {

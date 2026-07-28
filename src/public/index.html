@@ -68,6 +68,120 @@
       </section>
 
       <section class="view" id="dashboardView">
+        <section class="production-workbench-shell">
+          <header class="production-workbench-heading">
+            <div>
+              <p class="label">团建内容生产</p>
+              <h2>选素材 → 选模板 → 生产 → 打包待发</h2>
+              <p>一个页面完成一次作品生产。素材和模板是输入，中间对话负责调整，右侧只看真实成品文件夹。</p>
+            </div>
+            <div class="detail-button-row">
+              <span class="workbench-engine-state" id="workbenchEngineState">正在读取本地生产引擎…</span>
+              <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明">?</button>
+            </div>
+          </header>
+
+          <div class="production-workbench-grid">
+            <aside class="production-library-column">
+              <section class="workbench-card material-picker-card">
+                <header class="workbench-card-head">
+                  <div><span class="workbench-step">01</span><strong>选择素材</strong><small id="workbenchMaterialCount">0 个已选</small></div>
+                  <button id="workbenchSelectAllBtn" type="button">全选当前</button>
+                </header>
+                <div class="workbench-path-row">
+                  <input id="workbenchMaterialRoot" type="text" placeholder="素材库根目录" />
+                  <button id="workbenchChooseMaterialRootBtn" type="button" title="选择素材库">选择</button>
+                  <button id="workbenchApplyMaterialRootBtn" type="button">读取</button>
+                </div>
+                <label class="workbench-category-field">
+                  <span>当前分类</span>
+                  <select id="workbenchMaterialCategory" aria-label="切换素材分类"></select>
+                </label>
+                <div class="workbench-filter-row" id="workbenchMaterialFilters">
+                  <button class="active" type="button" data-workbench-material-filter="all">全部</button>
+                  <button type="button" data-workbench-material-filter="conversion">团建转化</button>
+                  <button type="button" data-workbench-material-filter="game">团建游戏</button>
+                  <button type="button" data-workbench-material-filter="guide">合集攻略</button>
+                  <button type="button" data-workbench-material-filter="unused">已使用0次</button>
+                </div>
+                <input id="workbenchMaterialSearch" class="workbench-search" type="search" placeholder="搜索地点、玩法或文件夹名称" />
+                <div class="workbench-material-list" id="workbenchMaterialList"></div>
+              </section>
+
+              <section class="workbench-card template-picker-card">
+                <header class="workbench-card-head">
+                  <div><span class="workbench-step">02</span><strong>选择模板</strong><small id="workbenchTemplateTypeLabel">转化模板</small></div>
+                  <button id="workbenchOpenTemplateBtn" type="button">打开模板</button>
+                </header>
+                <div class="template-type-switch" role="tablist">
+                  <button class="active" type="button" data-template-type="conversion">转化模板</button>
+                  <button type="button" data-template-type="game">游戏模板</button>
+                </div>
+                <div class="workbench-template-list" id="workbenchTemplateList"></div>
+                <div class="workbench-template-summary" id="workbenchTemplateSummary">请选择一个模板查看用途和版式。</div>
+              </section>
+            </aside>
+
+            <main class="production-dialog-column">
+              <section class="workbench-card production-dialog-card">
+                <header class="workbench-card-head production-dialog-head">
+                  <div><span class="workbench-step">03</span><strong id="workbenchDialogTitle">模板生产对话</strong><small id="workbenchDialogMeta">一个模板保留一套生产记录</small></div>
+                  <div class="production-mode-pills">
+                    <button type="button" data-workbench-mode="one">做一张</button>
+                    <button class="active" type="button" data-workbench-mode="set">做一套</button>
+                    <button type="button" data-workbench-mode="batch">批量做</button>
+                  </div>
+                </header>
+                <div class="workbench-template-preview" id="workbenchTemplatePreview">
+                  <div class="empty-state"><strong>先选择模板</strong><p>这里会显示封面和内页参考图。</p></div>
+                </div>
+                <div class="prompt-version-bar">
+                  <div><strong>当前生产规则</strong><span id="workbenchPromptVersion">模板默认规则</span></div>
+                  <button id="workbenchSavePromptBtn" type="button">保存规则</button>
+                </div>
+                <textarea id="workbenchPromptEditor" class="workbench-prompt-editor" rows="7" placeholder="这里保存当前模板的长期规则。系统会自动叠加母版锁定、事实校验、独立3:4图片、文案和自检规则。"></textarea>
+                <div class="production-conversation" id="workbenchConversation"></div>
+                <div class="production-conversation-input">
+                  <textarea id="workbenchConversationInput" rows="3" placeholder="直接说本次要求，例如：图上文字少一点；只做前10套；保留真实场景；失败项重做。"></textarea>
+                  <button id="workbenchSendRequirementBtn" type="button">加入本次要求</button>
+                </div>
+                <div class="workbench-run-settings">
+                  <label>页数<select id="workbenchPageCount"><option value="">按素材自动</option><option>3</option><option>5</option><option>7</option><option>9</option><option>10</option></select></label>
+                  <label>质量<select id="workbenchQuality"><option value="严格母版">严格母版</option><option value="高质量">高质量</option><option value="标准">标准</option></select></label>
+                  <label>批量数量<select id="workbenchBatchCount"><option>2</option><option>3</option><option>5</option><option>10</option></select></label>
+                </div>
+                <button id="workbenchStartProductionBtn" class="primary-button workbench-start-button" type="button">开始生产整套作品</button>
+                <div id="workbenchProductionStatus" class="workbench-production-status">请选择素材和模板。</div>
+                <section id="workbenchPlanPanel" class="production-plan-panel" hidden></section>
+                <div id="workbenchLatestOutputs" class="production-output-grid"></div>
+              </section>
+            </main>
+
+            <aside class="production-output-column">
+              <section class="workbench-card output-library-card">
+                <header class="workbench-card-head">
+                  <div><span class="workbench-step">04</span><strong>成品与待发</strong><small id="workbenchProductCount">0 个成品</small></div>
+                  <button id="workbenchRefreshProductsBtn" type="button">刷新</button>
+                </header>
+                <div class="workbench-output-tabs">
+                  <button class="active" type="button" data-workbench-output-filter="all">全部成品</button>
+                  <button type="button" data-workbench-output-filter="review">今日/待审</button>
+                  <button type="button" data-workbench-output-filter="unpacked">待打包</button>
+                  <button type="button" data-workbench-output-filter="packed">已打包</button>
+                </div>
+                <div class="workbench-output-path" id="workbenchOutputPath"></div>
+                <div class="workbench-product-list" id="workbenchProductList"></div>
+                <div class="workbench-pack-bar">
+                  <div><strong id="workbenchSelectedProductCount">已选 0 个</strong><small>每个作品保持独立文件夹，图片和文案一起复制。</small></div>
+                  <button id="workbenchPackBtn" class="primary-button" type="button">打包到抖音小红书待发</button>
+                </div>
+              </section>
+            </aside>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="dashboardLegacyView" hidden>
         <section class="production-api-flow" aria-label="API 内容生产流程">
           <div class="production-api-intro">
             <span class="api-mode-badge">本地作品生产</span>
@@ -102,7 +216,7 @@
           <details class="production-advanced">
             <summary>接口设置（平时不用动）</summary>
             <div class="production-controls">
-              <label><span>生图平台</span><select id="productionApiProvider" class="search-input"><option value="local-openai">本地 GPT 生图</option><option value="minimax">MiniMax 生图</option></select></label>
+              <label><span>生图平台</span><select id="productionApiProvider" class="search-input"><option value="local-openai">本地 GPT 生图</option><option value="bytecat">ByteCat Image 2.0</option><option value="minimax">MiniMax 生图</option></select></label>
               <label><span>接口地址</span><input id="productionApiBaseUrl" class="search-input" type="url" /></label>
               <label><span>生图模型</span><input id="productionApiModel" class="search-input" type="text" /></label>
               <label><span>文案模型</span><input id="productionTextModel" class="search-input" type="text" value="gpt-5.6-terra" /></label>

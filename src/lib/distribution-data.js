@@ -823,6 +823,7 @@ function getDistributionSnapshot(options = {}) {
 }
 
 module.exports = {
+  appendWorkflowOperation,
   classifyCollectionName,
   confirmOfficialUpload,
   ensureWorkflowCompatibilityLinks,

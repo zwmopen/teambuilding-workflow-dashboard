@@ -108,14 +108,21 @@ async function main() {
 
     await evaluate(`document.querySelector('.tab[data-tab="dashboard"]').click(); true`);
     await wait(250);
-    await check("素材生产四步结果流程存在", `(() => { const text = document.querySelector('.production-api-flow')?.textContent || ''; return ['选择模板','选择素材','按模板制作','作品 + 文案'].every((label) => text.includes(label)); })()`);
+    await check("素材生产三栏工作台存在", `(() => {
+      const view = document.querySelector('#dashboardView');
+      return Boolean(view.querySelector('.production-library-column')
+        && view.querySelector('.production-dialog-column')
+        && view.querySelector('.production-output-column'));
+    })()`);
     await check("普通用户三种生产入口存在", `(() => {
-      const modes = [...document.querySelectorAll('[data-production-mode]')].map((button) => button.textContent.trim());
+      const modes = [...document.querySelectorAll('[data-workbench-mode]')].map((button) => button.textContent.trim());
       return modes.length === 3 && ['做一张','做一套','批量做'].every((label) => modes.some((text) => text.includes(label)));
     })()`);
-    await check("接口设置默认收起", `Boolean(document.querySelector('.production-advanced:not([open])'))`);
-    await check("生产主按钮真实可见", `Boolean(document.querySelector('#createProductionPlanBtn') && document.querySelector('#createProductionPlanBtn').offsetParent)`);
-    await check("素材库与模板库已载入", `Number(document.querySelector('#statMaterialCategories')?.textContent) > 0 && document.querySelector('#materialLibraryFilter')?.options.length > 0 && document.querySelector('#templateQuickSelect')?.options.length > 0`);
+    await check("生产主按钮真实可见", `Boolean(document.querySelector('#workbenchStartProductionBtn')?.offsetParent)`);
+    await check("素材库与模板库已载入", `Boolean(document.querySelector('.workbench-material-item') && document.querySelector('.workbench-template-item'))`);
+    await check("素材分类可直接切换", `document.querySelectorAll('#workbenchMaterialCategory option').length > 0`);
+    await check("游戏与转化模板分级存在", `document.querySelectorAll('[data-template-type]').length === 2`);
+    await check("右侧成品与打包入口存在", `Boolean(document.querySelector('.workbench-product-item') && document.querySelector('#workbenchPackBtn')?.offsetParent)`);
     const materialInteraction = await evaluate(`(() => {
       const library = document.querySelector('#materialLibraryFilter');
       const template = document.querySelector('#templateQuickSelect');

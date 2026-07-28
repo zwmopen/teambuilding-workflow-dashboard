@@ -37,6 +37,12 @@ let selectedProductionMode = "one";
 let activeProductionPlan = null;
 let activeProductionJobId = "";
 let productionJobPollTimer = null;
+const workbenchSelectedMaterials = new Set();
+const workbenchSelectedProducts = new Set();
+let workbenchTemplateType = "conversion";
+let workbenchMaterialFilter = "all";
+let workbenchOutputFilter = "all";
+let productionWorkspace = null;
 const expandedMaterialPaths = new Set();
 const expandedCollectionNames = new Set();
 let materialTreeInitialized = false;
@@ -346,6 +352,7 @@ async function loadDashboard(force = false, libraryPath = "") {
   renderTemplateQuickSelect();
   renderMaterialQuickSelect();
   renderMaterials();
+  await renderProductionWorkbench();
   renderPrompts();
   renderWorkspaceSettings();
   loadCloudBackupStatus();
@@ -457,6 +464,210 @@ function renderWorkspaceSettings() {
   }
 }
 
+function workbenchStorageKey(kind, templateId = selectedTemplate?.id || "default") {
+  return `tb-production-${kind}-${templateId}`;
+}
+
+function defaultTemplatePrompt(template) {
+  if (!template) return "";
+  const isGame = template.type === "game";
+  return isGame
+    ? `你正在使用「${template.name}」生产团建游戏内容。\n保留母版封面、内页、字体、配色和信息层级；图上必须完整表达游戏名称、适合人数、所需道具、玩法步骤和注意事项。新素材只提供游戏内容，不得覆盖模板视觉。每页文字可以多，但必须分组清楚、手机端可读。输出独立 3:4 图片和一份可直接发布的小红书文案，生成后检查规则是否完整、是否漏项、是否出现事实编造。`
+    : `你正在使用「${template.name}」生产团建转化内容。\n永久锁定母版的封面结构、内页结构、字体气质、配色、标题位置和拼图比例；新素材只提供地点、项目、路线和文案事实。图上文字少而准，优先地点词、项目词和路线词；不得虚构价格、场地、车程或项目。所有页面输出为独立 3:4 图片，人物与道具按规则去重，保留真实场景，避免广告感和 AI 味。每套作品同时生成小红书文案、出图计划和生产记录。`;
+}
+
+function readTemplateConversation(templateId = selectedTemplate?.id || "default") {
+  try {
+    return JSON.parse(localStorage.getItem(workbenchStorageKey("conversation", templateId)) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function writeTemplateConversation(messages, templateId = selectedTemplate?.id || "default") {
+  localStorage.setItem(workbenchStorageKey("conversation", templateId), JSON.stringify(messages.slice(-80)));
+}
+
+function currentWorkbenchMaterials() {
+  const query = ($("#workbenchMaterialSearch")?.value || "").trim().toLowerCase();
+  return (dashboard?.materials?.categories || [])
+    .flatMap((category) => (category.items || []).map((item) => ({ item, category })))
+    .filter(({ item }) => {
+      const text = `${item.name} ${item.preview || ""} ${(item.tags || []).join(" ")}`.toLowerCase();
+      const mainTag = item.mainTag || item.metadata?.mainTag || "";
+      if (query && !text.includes(query)) return false;
+      if (workbenchMaterialFilter === "conversion" && mainTag && mainTag !== "团建转化") return false;
+      if (workbenchMaterialFilter === "game" && mainTag && mainTag !== "团建游戏") return false;
+      if (workbenchMaterialFilter === "guide" && mainTag && mainTag !== "合集攻略") return false;
+      if (workbenchMaterialFilter === "unused" && Number(item.usageCount || item.metadata?.usageCount || 0) !== 0) return false;
+      return true;
+    })
+    .slice(0, 120);
+}
+
+function templateTypeOf(template) {
+  return template?.type || (/游戏|破冰|真心话|大冒险/.test(`${template?.name || ""} ${template?.usage || ""}`) ? "game" : "conversion");
+}
+
+function renderWorkbenchMaterials() {
+  const list = $("#workbenchMaterialList");
+  if (!list) return;
+  const categorySelect = $("#workbenchMaterialCategory");
+  const categories = dashboard?.materials?.categories || [];
+  if (categorySelect) {
+    const savedPath = getSavedState().selectedMaterialCategoryPath || selectedMaterialCategory?.path || "";
+    categorySelect.innerHTML = categories
+      .map((category) => `<option value="${escapeHtml(category.path)}">${escapeHtml(category.name)}（${category.count || 0}）</option>`)
+      .join("");
+    if (categories.some((category) => category.path === savedPath)) categorySelect.value = savedPath;
+  }
+  const entries = currentWorkbenchMaterials();
+  list.innerHTML = entries.length ? entries.map(({ item, category }) => {
+    const selected = workbenchSelectedMaterials.has(item.path);
+    const image = item.images?.[0]?.url || "";
+    const usage = Number(item.usageCount || item.metadata?.usageCount || 0);
+    const mainTag = item.mainTag || item.metadata?.mainTag || "未分类";
+    return `<label class="workbench-material-item${selected ? " active" : ""}" data-workbench-material="${escapeHtml(item.id)}">
+      <input class="material-check" type="checkbox" ${selected ? "checked" : ""} />
+      ${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy" />` : `<span class="work-placeholder">${item.imageCount || 0}图</span>`}
+      <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(category.name)} · ${item.imageCount || 0} 张图 · ${item.textCount ? "有文案" : "无文案"} · ${escapeHtml(mainTag)} · 已使用 ${usage} 次</small></span>
+    </label>`;
+  }).join("") : `<div class="empty-state"><strong>当前没有可选帖子</strong><p>切换分类目录或取消筛选后再试。</p></div>`;
+  $("#workbenchMaterialCount").textContent = `${workbenchSelectedMaterials.size} 个已选`;
+}
+
+function renderWorkbenchTemplates() {
+  const list = $("#workbenchTemplateList");
+  if (!list) return;
+  const templates = (dashboard?.templates?.templates || []).filter((item) => templateTypeOf(item) === workbenchTemplateType);
+  if (selectedTemplate && templateTypeOf(selectedTemplate) !== workbenchTemplateType) {
+    selectedTemplate = templates[0] || null;
+  }
+  list.innerHTML = templates.length ? templates.map((template) => {
+    const image = template.images?.[0]?.url || "";
+    return `<article class="workbench-template-item${selectedTemplate?.id === template.id ? " active" : ""}" data-workbench-template="${escapeHtml(template.id)}">
+      ${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy" />` : `<span class="work-placeholder">模板</span>`}
+      <span><strong>${escapeHtml(template.id)} · ${escapeHtml(template.name)}</strong><small>${escapeHtml(template.usage || "模板参考")} · ${template.imageCount || 0} 张母版图</small></span>
+    </article>`;
+  }).join("") : `<div class="empty-state"><strong>这类模板还没有登记</strong><p>可继续从本地模板资产加入。</p></div>`;
+  $("#workbenchTemplateTypeLabel").textContent = workbenchTemplateType === "game" ? "游戏模板" : "转化模板";
+  if (selectedTemplate) renderWorkbenchTemplateDetail();
+}
+
+function renderWorkbenchTemplateDetail() {
+  if (!selectedTemplate) return;
+  const preview = $("#workbenchTemplatePreview");
+  if (preview) {
+    preview.innerHTML = (selectedTemplate.images || []).slice(0, 5).map((image, index) =>
+      `<figure><img src="${escapeHtml(image.url)}" alt="${escapeHtml(index ? "内页参考" : "封面参考")}" loading="lazy" /></figure>`
+    ).join("") || `<div class="empty-state"><strong>没有模板预览图</strong></div>`;
+  }
+  $("#workbenchDialogTitle").textContent = `${selectedTemplate.id} · ${selectedTemplate.name}`;
+  $("#workbenchDialogMeta").textContent = `${templateTypeOf(selectedTemplate) === "game" ? "游戏模板" : "转化模板"} · 一个模板一套对话与规则`;
+  $("#workbenchTemplateSummary").innerHTML = `<b>类型：</b>${templateTypeOf(selectedTemplate) === "game" ? "游戏模板，文字较多" : "转化模板，文字较少"}<br><b>适合：</b>${escapeHtml(selectedTemplate.usage || "团建内容")}<br><b>默认：</b>${selectedTemplate.defaultPages || 5} 页 · 严格母版迁移`;
+  const savedPrompt = localStorage.getItem(workbenchStorageKey("prompt"));
+  $("#workbenchPromptEditor").value = savedPrompt || defaultTemplatePrompt(selectedTemplate);
+  $("#workbenchPromptVersion").textContent = savedPrompt ? "已保存的模板规则" : "模板默认规则";
+  renderWorkbenchConversation();
+}
+
+function renderWorkbenchConversation() {
+  const container = $("#workbenchConversation");
+  if (!container) return;
+  const messages = readTemplateConversation();
+  if (!messages.length) {
+    container.innerHTML = `<div class="conversation-message">已经加载「${escapeHtml(selectedTemplate?.name || "当前模板")}」的生产规则。你可以直接补充本批要求，然后开始生产。<time>系统</time></div>`;
+    return;
+  }
+  container.innerHTML = messages.map((message) => `<div class="conversation-message ${message.role === "user" ? "user" : ""}">${escapeHtml(message.text)}<time>${escapeHtml(message.time || "")}</time></div>`).join("");
+  container.scrollTop = container.scrollHeight;
+}
+
+async function loadProductionWorkspace() {
+  const result = await api("/api/production/workspace");
+  productionWorkspace = result.workspace;
+  renderWorkbenchProducts();
+}
+
+function filteredWorkbenchProducts() {
+  return (productionWorkspace?.works || []).filter((work) => {
+    if (workbenchOutputFilter === "review") return work.source === "待审区";
+    if (workbenchOutputFilter === "unpacked") return !work.packed;
+    if (workbenchOutputFilter === "packed") return work.packed;
+    return true;
+  });
+}
+
+function renderWorkbenchProducts() {
+  const list = $("#workbenchProductList");
+  if (!list) return;
+  const works = filteredWorkbenchProducts();
+  list.innerHTML = works.length ? works.map((work) => {
+    const selected = workbenchSelectedProducts.has(work.path);
+    const image = work.images?.[0]?.url || "";
+    return `<label class="workbench-product-item${selected ? " active" : ""}" data-workbench-product="${escapeHtml(work.path)}">
+      <input class="product-check" type="checkbox" ${selected ? "checked" : ""} />
+      ${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy" />` : `<span class="work-placeholder">${work.imageCount || 0}图</span>`}
+      <span><strong>${escapeHtml(work.name)}</strong><small>${escapeHtml(work.templateName || "未识别模板")} · ${work.imageCount} 张图 · ${work.hasCopy ? "有文案" : "无文案"}</small><span class="status-line"><span>${escapeHtml(work.source)}</span><span class="${work.packed ? "packed" : ""}">${work.packed ? "已在待发" : "待打包"}</span></span></span>
+    </label>`;
+  }).join("") : `<div class="empty-state"><strong>这里暂时没有成品</strong><p>生产完成后会自动出现在待审区。</p></div>`;
+  $("#workbenchProductCount").textContent = `${productionWorkspace?.works?.length || 0} 个成品`;
+  $("#workbenchSelectedProductCount").textContent = `已选 ${workbenchSelectedProducts.size} 个`;
+  $("#workbenchOutputPath").textContent = productionWorkspace?.pendingRoot ? `待发目录：${productionWorkspace.pendingRoot}` : "正在读取待发目录…";
+}
+
+async function renderProductionWorkbench() {
+  if (!$("#workbenchMaterialList")) return;
+  const settings = dashboard?.workspaceSettings || {};
+  $("#workbenchMaterialRoot").value = settings.materialRoot || "";
+  $("#workbenchEngineState").textContent = settings.imageApi?.credentialConfigured ? `${settings.imageApi.model} 已连接` : "生图引擎待配置";
+  if (!workbenchSelectedMaterials.size && selectedMaterial?.path) workbenchSelectedMaterials.add(selectedMaterial.path);
+  renderWorkbenchMaterials();
+  if (!selectedTemplate) selectedTemplate = dashboard?.templates?.templates?.find((item) => templateTypeOf(item) === workbenchTemplateType) || null;
+  renderWorkbenchTemplates();
+  try {
+    await loadProductionWorkspace();
+  } catch (error) {
+    $("#workbenchOutputPath").textContent = `成品库读取失败：${error.message}`;
+  }
+}
+
+function syncWorkbenchProductionSettings() {
+  if ($("#productionPageCount")) $("#productionPageCount").value = $("#workbenchPageCount")?.value || "";
+  if ($("#productionQuality")) $("#productionQuality").value = $("#workbenchQuality")?.value || "严格母版";
+  if ($("#batchWorksCount")) $("#batchWorksCount").value = $("#workbenchBatchCount")?.value || "2";
+  const conversation = readTemplateConversation().filter((item) => item.role === "user").map((item) => item.text);
+  const prompt = [
+    $("#workbenchPromptEditor")?.value || "",
+    conversation.length ? `本次对话补充要求：\n${conversation.map((item) => `- ${item}`).join("\n")}` : ""
+  ].filter(Boolean).join("\n\n");
+  if ($("#productionPrompt")) $("#productionPrompt").value = prompt;
+}
+
+async function packSelectedProductionWorks() {
+  if (!workbenchSelectedProducts.size) {
+    showSystemNotice("还没有选择成品", "请先勾选右侧一个或多个作品文件夹。");
+    return;
+  }
+  const result = await api("/api/production/pack", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths: [...workbenchSelectedProducts] })
+  });
+  await loadProductionWorkspace();
+  showSystemNotice(
+    "已整理到抖音小红书待发",
+    `成功复制 ${result.packed} 个作品，${result.skipped} 个同名作品已存在并跳过。`,
+    {
+      details: [
+        { label: "待发目录", value: result.pendingRoot },
+        { label: "包含内容", value: "独立图片、文案和生产记录" }
+      ],
+      confirmLabel: "知道了"
+    }
+  );
+}
+
 function currentImageApiPayload() {
   return {
     provider: $("#productionApiProvider")?.value || "local-openai",
@@ -468,9 +679,15 @@ function currentImageApiPayload() {
 
 function setProductionLiveStatus(message, tone = "") {
   const status = $("#productionLiveStatus");
-  if (!status) return;
-  status.textContent = message;
-  status.className = `production-live-status${tone ? ` ${tone}` : ""}`;
+  if (status) {
+    status.textContent = message;
+    status.className = `production-live-status${tone ? ` ${tone}` : ""}`;
+  }
+  const workbenchStatus = $("#workbenchProductionStatus");
+  if (workbenchStatus) {
+    workbenchStatus.textContent = message;
+    workbenchStatus.className = `workbench-production-status${tone ? ` ${tone}` : ""}`;
+  }
 }
 
 async function saveProductionApi() {
@@ -501,9 +718,7 @@ async function testProductionApi() {
 }
 
 function renderProductionOutputs(result) {
-  const grid = $("#productionOutputGrid");
-  if (!grid) return;
-  grid.innerHTML = (result.results || []).map((item, index) => `
+  const markup = (result.results || []).map((item, index) => `
     <button class="production-output-card${item.type === "copy" ? " copy-output-card" : ""}" type="button" data-output-path="${escapeHtml(item.outputFile)}">
       ${item.type === "copy"
         ? `<div class="copy-output-icon">文案</div>`
@@ -511,7 +726,12 @@ function renderProductionOutputs(result) {
       <span>${escapeHtml(item.page || item.work || "结果")} · ${item.type === "copy" ? "小红书文案" : `${item.width || "?"}×${item.height || "?"}`}</span>
     </button>
   `).join("");
-  grid.querySelectorAll("[data-output-path]").forEach((button) => button.addEventListener("click", () => openPath(button.dataset.outputPath)));
+  ["#productionOutputGrid", "#workbenchLatestOutputs"].forEach((selector) => {
+    const grid = $(selector);
+    if (!grid) return;
+    grid.innerHTML = markup;
+    grid.querySelectorAll("[data-output-path]").forEach((button) => button.addEventListener("click", () => openPath(button.dataset.outputPath)));
+  });
 }
 
 function productionModeLabel(mode = selectedProductionMode) {
@@ -538,10 +758,15 @@ function invalidateProductionPlan() {
     $("#productionPlanPanel").hidden = true;
     $("#productionPlanPanel").innerHTML = "";
   }
+  if ($("#workbenchPlanPanel")) {
+    $("#workbenchPlanPanel").hidden = true;
+    $("#workbenchPlanPanel").innerHTML = "";
+  }
   if ($("#cancelProductionPlanBtn")) $("#cancelProductionPlanBtn").hidden = true;
 }
 
 function currentBatchMaterialPaths() {
+  if (workbenchSelectedMaterials.size) return [...workbenchSelectedMaterials];
   const count = Number($("#batchWorksCount")?.value || 2);
   const entries = getVisibleMaterialEntries().map(({ item }) => item);
   const selectedIndex = entries.findIndex((item) => item.id === selectedMaterial?.id);
@@ -550,8 +775,6 @@ function currentBatchMaterialPaths() {
 }
 
 function renderProductionPlan(planBundle) {
-  const panel = $("#productionPlanPanel");
-  if (!panel) return;
   const workSections = planBundle.plans.map((plan) => `
     <article class="production-plan-work">
       <header><strong>${escapeHtml(plan.materialName)}</strong><span>${plan.pageCount} 张独立图片${planBundle.mode === "one" ? "" : " + 文案"}</span></header>
@@ -559,8 +782,7 @@ function renderProductionPlan(planBundle) {
       <div class="production-plan-pages">${plan.pages.map((page) => `<span><b>${escapeHtml(page.code)}</b>${escapeHtml(page.title)} · ${escapeHtml(page.roleLabel)}</span>`).join("")}</div>
     </article>
   `).join("");
-  panel.hidden = false;
-  panel.innerHTML = `
+  const markup = `
     <div class="production-plan-title">
       <div><small>系统已经按聊天记录中的规则拆好</small><h3>确认这次生产计划</h3></div>
       <strong>${planBundle.totals.works} 套 · ${planBundle.totals.images} 张图 · ${planBundle.totals.copyFiles} 份文案</strong>
@@ -570,14 +792,20 @@ function renderProductionPlan(planBundle) {
       ${(planBundle.plans[0]?.safeguards || []).map((item) => `<span>✓ ${escapeHtml(item)}</span>`).join("")}
     </div>
     <div class="production-actions">
-      <button id="confirmProductionPlanBtn" class="primary-button production-main-button" type="button">确认，开始生产</button>
-      <button id="editProductionPlanBtn" type="button">返回修改</button>
+      <button class="primary-button production-main-button" type="button" data-confirm-production-plan>确认，开始生产</button>
+      <button type="button" data-edit-production-plan>返回修改</button>
     </div>
   `;
-  $("#confirmProductionPlanBtn")?.addEventListener("click", confirmProductionPlan);
-  $("#editProductionPlanBtn")?.addEventListener("click", () => {
-    invalidateProductionPlan();
-    setProductionLiveStatus("已返回选择。修改生产方式、页数或额外要求后，再点击开始。");
+  ["#productionPlanPanel", "#workbenchPlanPanel"].forEach((selector) => {
+    const panel = $(selector);
+    if (!panel) return;
+    panel.hidden = false;
+    panel.innerHTML = markup;
+    panel.querySelector("[data-confirm-production-plan]")?.addEventListener("click", confirmProductionPlan);
+    panel.querySelector("[data-edit-production-plan]")?.addEventListener("click", () => {
+      invalidateProductionPlan();
+      setProductionLiveStatus("已返回选择。修改生产方式、页数或额外要求后，再点击开始。");
+    });
   });
 }
 
@@ -586,14 +814,19 @@ async function createProductionPlan() {
     setProductionLiveStatus("请先从素材库和模板库各选择一项。", "error");
     return;
   }
-  const materialPaths = selectedProductionMode === "batch" ? currentBatchMaterialPaths() : [selectedMaterial.path];
-  const expectedBatch = Number($("#batchWorksCount")?.value || 2);
+  const materialPaths = selectedProductionMode === "batch" || workbenchSelectedMaterials.size > 1
+    ? currentBatchMaterialPaths()
+    : [selectedMaterial.path];
+  const expectedBatch = workbenchSelectedMaterials.size > 1
+    ? workbenchSelectedMaterials.size
+    : Number($("#batchWorksCount")?.value || 2);
   if (selectedProductionMode === "batch" && materialPaths.length < expectedBatch) {
     setProductionLiveStatus(`当前筛选从这条开始只剩 ${materialPaths.length} 套素材，请调小批量数量或换一条起点。`, "error");
     return;
   }
   setProductionLiveStatus("正在读取素材、模板和事实，生成可确认的出图计划……", "running");
-  $("#createProductionPlanBtn").disabled = true;
+  if ($("#createProductionPlanBtn")) $("#createProductionPlanBtn").disabled = true;
+  if ($("#workbenchStartProductionBtn")) $("#workbenchStartProductionBtn").disabled = true;
   try {
     const result = await api("/api/production/plan", {
       method: "POST",
@@ -615,7 +848,8 @@ async function createProductionPlan() {
   } catch (error) {
     setProductionLiveStatus(error.message, "error");
   } finally {
-    $("#createProductionPlanBtn").disabled = false;
+    if ($("#createProductionPlanBtn")) $("#createProductionPlanBtn").disabled = false;
+    if ($("#workbenchStartProductionBtn")) $("#workbenchStartProductionBtn").disabled = false;
   }
 }
 
@@ -624,7 +858,7 @@ async function confirmProductionPlan() {
     setProductionLiveStatus("计划已经失效，请重新生成。", "error");
     return;
   }
-  $("#confirmProductionPlanBtn").disabled = true;
+  $$("[data-confirm-production-plan]").forEach((button) => { button.disabled = true; });
   setProductionLiveStatus("已确认计划，正在启动生产任务……", "running");
   try {
     const result = await api("/api/production/run", {
@@ -643,7 +877,7 @@ async function confirmProductionPlan() {
     renderProductionJob(result.job);
     startProductionJobPolling();
   } catch (error) {
-    $("#confirmProductionPlanBtn").disabled = false;
+    $$("[data-confirm-production-plan]").forEach((button) => { button.disabled = false; });
     setProductionLiveStatus(error.message, "error");
   }
 }
@@ -663,6 +897,7 @@ function renderProductionJob(job) {
     openButton.textContent = "打开待审作品文件夹";
     openButton.addEventListener("click", () => openPath(job.outputRoots?.[0]));
     $("#productionLiveStatus")?.append(" ", openButton);
+    loadProductionWorkspace().catch(() => {});
   }
   if (job.status === "failed") {
     activeProductionJobId = "";
@@ -2566,13 +2801,14 @@ const PAGE_HELP = {
   },
   dashboardView: {
     title: "素材生产说明",
-    description: "这个页面把你在 ChatGPT 网页里的口述生产过程做成本地产品：选择模板、选择素材、确定数量和质量，然后产出独立图片、文案与生产记录。",
+    description: "这是围绕团建内容生产设计的三栏工作台：左边选择帖子素材与模板，中间用模板专属对话生产，右边查看真实成品并打包到抖音小红书待发。",
     details: [
-      ["开发背景", "网页对话能理解复杂规则，但每次都要重新口述。工作台把稳定规则固化，把素材、模板和成品分开管理。"],
-      ["核心方法", "A 类母版只决定视觉；B 类素材只决定内容；历史生成结果不能反过来覆盖母版。版式合成与生成式图片处理分开执行。"],
-      ["怎么使用", "选择一个模板和一个素材文件夹，选择做一张、做一套或批量做，设置页数与质量；额外要求只写本次变化，不必重写整套规则。"],
-      ["合格结果", "一个作品文件夹里应有多张独立成品图、一份文案和生产记录；风格能一眼认出母版，事实与业务口径经过检查。"],
-      ["安全边界", "没有明确价格就不生成价格；不虚构场地和项目；结果先进入待审区，确认后才进入正式成品库。"]
+      ["开发背景", "网页对话的优势是能根据口述调整，但素材、模板、结果和历史容易分散。这里把稳定生产规则固化，同时保留本批次的对话调整能力。"],
+      ["左侧怎么用", "选择素材库后递归读取帖子文件夹；可跨分类多选，卡片直接显示图片数、文案、母标签和使用次数。下面先选游戏/转化类型，再看缩略图选择具体模板。"],
+      ["中间怎么用", "每个模板保存自己的长期规则和对话历史。只需补充本次变化，例如“图上文字少一点”或“只做前10套”，再选择做一张、做一套或批量做。"],
+      ["右侧怎么用", "生产完成后会显示待审作品及正式成品。勾选合格作品，点击“打包到抖音小红书待发”，系统会复制完整作品文件夹并写入操作记录。"],
+      ["合格结果", "每个作品文件夹至少包含多张独立3:4成品图和一份小红书文案，并保留出图计划、模板来源和生产记录。"],
+      ["安全边界", "素材和成品文件夹是真实依据；打包不覆盖同名作品、不删除唯一成品；没有明确价格就不生成价格，不虚构场地、项目和车程。"]
     ]
   },
   productsView: {
@@ -2782,7 +3018,7 @@ function installPageHelpButtons() {
     <span>说明</span>`;
   Object.entries(PAGE_HELP).forEach(([viewId, help]) => {
     const view = document.getElementById(viewId);
-    const heading = view?.querySelector(".page-heading, .production-api-flow");
+    const heading = view?.querySelector(".page-heading, .production-workbench-heading, .production-api-flow");
     if (!heading) return;
     let button = heading.querySelector("[data-page-help]");
     if (!button) {
@@ -2794,9 +3030,11 @@ function installPageHelpButtons() {
       if (actionRow) actionRow.appendChild(button);
       else heading.appendChild(button);
     }
-    button.innerHTML = buttonContent;
-    button.title = `${help.title}：${help.description}`;
-    button.setAttribute("aria-label", `${help.title}，点击查看说明`);
+    document.querySelectorAll(`[data-page-help="${viewId}"]`).forEach((helpButton) => {
+      helpButton.innerHTML = buttonContent;
+      helpButton.title = `${help.title}：${help.description}`;
+      helpButton.setAttribute("aria-label", `${help.title}，点击查看说明`);
+    });
   });
 }
 
@@ -2815,6 +3053,10 @@ function restoreSelection() {
 
   if (template) selectTemplate(template);
   else if (dashboard.templates.templates[0]) selectTemplate(dashboard.templates.templates[0]);
+
+  if (selectedMaterial?.path && !workbenchSelectedMaterials.size) workbenchSelectedMaterials.add(selectedMaterial.path);
+  renderWorkbenchMaterials();
+  renderWorkbenchTemplates();
 
   activateTab(window.MaterialWorkspace.resolveInitialTab(state.activeTab));
 }
@@ -3082,6 +3324,62 @@ function bindEvents() {
     if (!event.target.closest(".context-menu")) hideContextMenu();
     const jump = event.target.closest("[data-jump]");
     if (jump) activateTab(jump.dataset.jump);
+    const materialFilter = event.target.closest("[data-workbench-material-filter]");
+    if (materialFilter) {
+      workbenchMaterialFilter = materialFilter.dataset.workbenchMaterialFilter || "all";
+      $$("[data-workbench-material-filter]").forEach((button) => button.classList.toggle("active", button === materialFilter));
+      renderWorkbenchMaterials();
+    }
+    const workbenchMaterial = event.target.closest("[data-workbench-material]");
+    if (workbenchMaterial) {
+      const entry = findMaterialEntry(workbenchMaterial.dataset.workbenchMaterial);
+      if (entry) {
+        const checked = workbenchMaterial.querySelector("input")?.checked;
+        if (checked) workbenchSelectedMaterials.add(entry.item.path);
+        else workbenchSelectedMaterials.delete(entry.item.path);
+        selectMaterial(entry.item, entry.category, { keepFeed: true });
+        renderWorkbenchMaterials();
+      }
+    }
+    const templateType = event.target.closest("[data-template-type]");
+    if (templateType) {
+      workbenchTemplateType = templateType.dataset.templateType;
+      $$("[data-template-type]").forEach((button) => button.classList.toggle("active", button === templateType));
+      renderWorkbenchTemplates();
+    }
+    const workbenchTemplate = event.target.closest("[data-workbench-template]");
+    if (workbenchTemplate) {
+      const template = dashboard.templates.templates.find((item) => item.id === workbenchTemplate.dataset.workbenchTemplate);
+      if (template) {
+        selectTemplate(template);
+        renderWorkbenchTemplates();
+      }
+    }
+    const workbenchMode = event.target.closest("[data-workbench-mode]");
+    if (workbenchMode) {
+      selectedProductionMode = workbenchMode.dataset.workbenchMode;
+      $$("[data-workbench-mode]").forEach((button) => button.classList.toggle("active", button === workbenchMode));
+      $("#workbenchStartProductionBtn").textContent = selectedProductionMode === "one"
+        ? "开始生产这一张"
+        : selectedProductionMode === "batch"
+          ? "开始批量生产"
+          : "开始生产整套作品";
+      invalidateProductionPlan();
+    }
+    const outputFilter = event.target.closest("[data-workbench-output-filter]");
+    if (outputFilter) {
+      workbenchOutputFilter = outputFilter.dataset.workbenchOutputFilter;
+      $$("[data-workbench-output-filter]").forEach((button) => button.classList.toggle("active", button === outputFilter));
+      renderWorkbenchProducts();
+    }
+    const productItem = event.target.closest("[data-workbench-product]");
+    if (productItem) {
+      const productPath = productItem.dataset.workbenchProduct;
+      const checked = productItem.querySelector("input")?.checked;
+      if (checked) workbenchSelectedProducts.add(productPath);
+      else workbenchSelectedProducts.delete(productPath);
+      renderWorkbenchProducts();
+    }
     const treeToggle = event.target.closest("[data-tree-toggle]");
     if (treeToggle) {
       const categoryPath = treeToggle.dataset.treeToggle;
@@ -3384,12 +3682,92 @@ function bindEvents() {
     setProductionLiveStatus("已取消当前计划，可以重新选择。");
   });
   $("#productionApiProvider")?.addEventListener("change", () => {
-    const minimax = $("#productionApiProvider").value === "minimax";
-    $("#productionApiBaseUrl").value = minimax ? "https://api.minimaxi.com/v1" : "http://localhost:62104/v1";
-    $("#productionApiModel").value = minimax ? "image-01" : "gpt-image-2";
-    setProductionLiveStatus(minimax ? "已切换 MiniMax；请测试当前密钥是否有效。" : "已切换本地 GPT 生图。");
+    const provider = $("#productionApiProvider").value;
+    const defaults = {
+      "local-openai": {
+        baseUrl: "http://localhost:62104/v1",
+        model: "gpt-image-2",
+        textModel: "gpt-5.6-terra",
+        message: "已切换本地 GPT 生图。"
+      },
+      bytecat: {
+        baseUrl: "https://codecdn.bytecatcode.org/v1",
+        model: "gemini-3-pro-image-preview",
+        textModel: "gemini-3-flash-preview",
+        message: "已切换 ByteCat Image 2.0；密钥仅保存在本机。"
+      },
+      minimax: {
+        baseUrl: "https://api.minimaxi.com/v1",
+        model: "image-01",
+        textModel: "gpt-5.6-terra",
+        message: "已切换 MiniMax；请测试当前密钥是否有效。"
+      }
+    };
+    const selected = defaults[provider] || defaults["local-openai"];
+    $("#productionApiBaseUrl").value = selected.baseUrl;
+    $("#productionApiModel").value = selected.model;
+    if ($("#productionTextModel")) $("#productionTextModel").value = selected.textModel;
+    setProductionLiveStatus(selected.message);
   });
   renderProductionMode();
+  $("#workbenchMaterialSearch")?.addEventListener("input", renderWorkbenchMaterials);
+  $("#workbenchSelectAllBtn")?.addEventListener("click", () => {
+    const entries = currentWorkbenchMaterials();
+    const allSelected = entries.length && entries.every(({ item }) => workbenchSelectedMaterials.has(item.path));
+    entries.forEach(({ item }) => allSelected ? workbenchSelectedMaterials.delete(item.path) : workbenchSelectedMaterials.add(item.path));
+    renderWorkbenchMaterials();
+  });
+  $("#workbenchChooseMaterialRootBtn")?.addEventListener("click", async () => {
+    try {
+      const selectedPath = await chooseFolder("选择需要递归扫描的素材库");
+      if (selectedPath) $("#workbenchMaterialRoot").value = selectedPath;
+    } catch (error) {
+      showSystemNotice("目录选择失败", error.message, { tone: "danger" });
+    }
+  });
+  $("#workbenchApplyMaterialRootBtn")?.addEventListener("click", () => {
+    saveWorkspacePaths({
+      materialRoot: $("#workbenchMaterialRoot").value,
+      materialOnly: true,
+      returnTab: "dashboard"
+    }).catch((error) => showSystemNotice("素材库没有读取成功", error.message, { tone: "danger" }));
+  });
+  $("#workbenchMaterialCategory")?.addEventListener("change", async (event) => {
+    const categoryPath = event.target.value;
+    saveLocalState({ selectedMaterialCategoryPath: categoryPath, selectedMaterial: "" });
+    await loadDashboard(false, categoryPath);
+    renderWorkbenchMaterials();
+    toast("已切换素材分类");
+  });
+  $("#workbenchOpenTemplateBtn")?.addEventListener("click", () => selectedTemplate && openPath(selectedTemplate.path));
+  $("#workbenchSavePromptBtn")?.addEventListener("click", () => {
+    if (!selectedTemplate) return;
+    localStorage.setItem(workbenchStorageKey("prompt"), $("#workbenchPromptEditor").value);
+    $("#workbenchPromptVersion").textContent = `已保存 · ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+    toast("当前模板规则已保存");
+  });
+  $("#workbenchSendRequirementBtn")?.addEventListener("click", () => {
+    const input = $("#workbenchConversationInput");
+    const text = input?.value.trim();
+    if (!text || !selectedTemplate) return;
+    const messages = readTemplateConversation();
+    messages.push({ role: "user", text, time: new Date().toLocaleString("zh-CN", { hour12: false }) });
+    messages.push({ role: "system", text: "已加入本次生产要求；生成计划时会和模板规则一起执行。", time: "系统" });
+    writeTemplateConversation(messages);
+    input.value = "";
+    renderWorkbenchConversation();
+  });
+  $("#workbenchStartProductionBtn")?.addEventListener("click", () => {
+    const firstPath = [...workbenchSelectedMaterials][0];
+    const entry = dashboard.materials.categories
+      .flatMap((category) => (category.items || []).map((item) => ({ item, category })))
+      .find(({ item }) => item.path === firstPath);
+    if (entry) selectMaterial(entry.item, entry.category, { keepFeed: true });
+    syncWorkbenchProductionSettings();
+    createProductionPlan();
+  });
+  $("#workbenchRefreshProductsBtn")?.addEventListener("click", () => loadProductionWorkspace().catch((error) => showSystemNotice("成品库刷新失败", error.message, { tone: "danger" })));
+  $("#workbenchPackBtn")?.addEventListener("click", () => packSelectedProductionWorks().catch((error) => showSystemNotice("没有完成打包", error.message, { tone: "danger" })));
   $("#checkAppUpdateBtn")?.addEventListener("click", async () => {
     const previousVersion = dashboard?.appInfo?.version || "未知";
     await loadDashboard(true);

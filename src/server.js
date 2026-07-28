@@ -14,8 +14,10 @@ const {
 } = require("./lib/production-recipes");
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
 const {
+  appendWorkflowOperation,
   confirmOfficialUpload,
   ensureWorkflowCompatibilityLinks,
+  getWorkflowStageRoots,
   getDistributionSnapshot,
   markOfficialUsed,
   moveCollectionSourceToStage,
@@ -696,6 +698,9 @@ function imageApiCredential(provider, suppliedKey = "") {
     return saved.MINIMAX_IMAGE_API_KEY || process.env.TEAMBUILDING_MINIMAX_IMAGE_API_KEY
       || process.env.MINIMAXI_API_KEY || process.env.MINIMAX_API_KEY || "";
   }
+  if (provider === "bytecat") {
+    return saved.BYTECAT_IMAGE_API_KEY || process.env.TEAMBUILDING_BYTECAT_IMAGE_API_KEY || "";
+  }
   return saved.LOCAL_IMAGE_API_KEY || process.env.TEAMBUILDING_IMAGE_API_KEY || "";
 }
 
@@ -718,6 +723,7 @@ function saveImageApiSecret({ provider, baseUrl, model, apiKey }) {
   next.LOCAL_IMAGE_API_MODEL = config.model;
   if (String(apiKey || "").trim()) {
     if (config.provider === "minimax") next.MINIMAX_IMAGE_API_KEY = String(apiKey).trim();
+    else if (config.provider === "bytecat") next.BYTECAT_IMAGE_API_KEY = String(apiKey).trim();
     else next.LOCAL_IMAGE_API_KEY = String(apiKey).trim();
   }
   fs.mkdirSync(path.dirname(IMAGE_API_SECRET_FILE), { recursive: true });
@@ -1831,9 +1837,15 @@ function getTemplateLibrary() {
     const full = path.isAbsolute(normalized) ? normalized : path.join(PROJECT_ROOT, normalized);
     const images = listImages(full, PREVIEW_LIMITS.templateImages);
     const imageCount = listImageEntries(full).length;
+    const descriptor = `${row["模板名称"] || ""} ${row["适用内容"] || ""} ${full}`;
+    const type = /团建小游戏|聚会游戏|破冰游戏|真心话|大冒险|游戏规则|玩法清单/.test(descriptor)
+      ? "game"
+      : "conversion";
     return {
       id: row["模板ID"] || path.basename(full),
       name: row["模板名称"] || path.basename(full),
+      type,
+      typeLabel: type === "game" ? "游戏模板" : "转化模板",
       usage: row["适用内容"] || "",
       defaultPages: row["默认页数"] || "",
       status: row["状态"] || "",
@@ -1843,6 +1855,27 @@ function getTemplateLibrary() {
       imageCount
     };
   });
+  const customGameRoot = path.join(PROJECT_ROOT, "02-模板库", "定制游模板");
+  safeList(customGameRoot)
+    .filter((entry) => entry.isDirectory() && /游戏|破冰|真心话|大冒险/.test(entry.name))
+    .forEach((entry, index) => {
+      const full = path.join(customGameRoot, entry.name);
+      const images = listImages(full, PREVIEW_LIMITS.templateImages);
+      if (!images.length) return;
+      templates.push({
+        id: `G${String(index + 1).padStart(2, "0")}`,
+        name: entry.name.replace(/^[^_]*_/, "").slice(0, 36),
+        type: "game",
+        typeLabel: "游戏模板",
+        usage: "团建小游戏/聚会游戏/破冰玩法",
+        defaultPages: "5",
+        status: "参考",
+        note: "多游戏条目和玩法说明模板",
+        path: full,
+        images,
+        imageCount: listImageEntries(full).length
+      });
+    });
   return { csv, sourceRoot, templates };
 }
 
@@ -1883,6 +1916,95 @@ function getProductLibrary() {
       };
     });
   return { root, groups };
+}
+
+function productionWorkbenchProducts() {
+  const settings = getWorkspaceSettings();
+  const libraryRoot = path.resolve(settings.workPackage.libraryPath);
+  const stageRoots = getWorkflowStageRoots(libraryRoot);
+  const reservedNames = new Set([
+    "_portfolio_move_logs", "_作品历史数据", "发布空间",
+    "抖音小红书", "微信公众号", "已发送"
+  ]);
+  const readWorks = (root, source) => safeList(root)
+    .filter((entry) => entry.isDirectory() && !reservedNames.has(entry.name))
+    .map((entry) => {
+      const workPath = path.join(root, entry.name);
+      const images = listImages(workPath, 8);
+      const imageCount = listImageEntries(workPath).length;
+      const copyPath = [
+        path.join(workPath, "小红书文案.txt"),
+        path.join(workPath, "文案.txt")
+      ].find(exists) || "";
+      const planPath = path.join(workPath, "出图计划.json");
+      const plan = exists(planPath) ? readJson(planPath, {}) : {};
+      const recipeName = plan.recipe?.name || plan.templateName || "";
+      return {
+        id: workPath,
+        name: entry.name,
+        path: workPath,
+        source,
+        templateName: recipeName,
+        images,
+        imageCount,
+        hasCopy: Boolean(copyPath),
+        copyPath,
+        updatedAt: safeMtime(workPath),
+        packed: exists(path.join(stageRoots.mobile, entry.name))
+      };
+    });
+  const works = [
+    ...readWorks(IMAGE_REVIEW_ROOT, "待审区"),
+    ...readWorks(libraryRoot, "成品库")
+  ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return {
+    reviewRoot: IMAGE_REVIEW_ROOT,
+    libraryRoot,
+    pendingRoot: stageRoots.mobile,
+    works
+  };
+}
+
+function packProductionWorks(paths = []) {
+  const settings = getWorkspaceSettings();
+  const libraryRoot = path.resolve(settings.workPackage.libraryPath);
+  const stageRoots = getWorkflowStageRoots(libraryRoot);
+  fs.mkdirSync(stageRoots.mobile, { recursive: true });
+  const allowedRoots = [path.resolve(IMAGE_REVIEW_ROOT), libraryRoot];
+  const selected = [...new Set((Array.isArray(paths) ? paths : []).map((item) => path.resolve(String(item || ""))))];
+  if (!selected.length) throw new Error("请先选择至少一个成品文件夹");
+  const results = [];
+  selected.forEach((sourcePath) => {
+    if (!allowedRoots.some((root) => isPathInside(root, sourcePath)) || !exists(sourcePath)) {
+      throw new Error(`成品路径不在允许范围：${sourcePath}`);
+    }
+    if (!fs.statSync(sourcePath).isDirectory()) throw new Error("只能打包作品文件夹");
+    const files = safeList(sourcePath);
+    if (!files.some((entry) => entry.isFile() && imageExts.has(path.extname(entry.name).toLowerCase()))) {
+      throw new Error(`作品中没有图片：${path.basename(sourcePath)}`);
+    }
+    const targetPath = path.join(stageRoots.mobile, path.basename(sourcePath));
+    if (exists(targetPath)) {
+      results.push({ name: path.basename(sourcePath), status: "exists", targetPath });
+      return;
+    }
+    fs.cpSync(sourcePath, targetPath, { recursive: true, errorOnExist: true });
+    appendWorkflowOperation(stageRoots, {
+      action: "production-pack",
+      collection: path.basename(sourcePath),
+      sourcePath,
+      targetPath,
+      detail: "从素材生产工作台复制到抖音小红书待发"
+    });
+    results.push({ name: path.basename(sourcePath), status: "packed", targetPath });
+  });
+  return {
+    ok: true,
+    pendingRoot: stageRoots.mobile,
+    packed: results.filter((item) => item.status === "packed").length,
+    skipped: results.filter((item) => item.status === "exists").length,
+    results
+  };
 }
 
 function safeMtime(filePath) {
@@ -2739,7 +2861,7 @@ function saveWorkspaceSettings(body) {
   }
   const localPrevious = readJson(APP_SETTINGS_FILE, {});
   const imageApi = body.imageApi ? {
-    provider: ["local-openai", "minimax"].includes(String(body.imageApi.provider))
+    provider: ["local-openai", "bytecat", "minimax"].includes(String(body.imageApi.provider))
       ? String(body.imageApi.provider) : "local-openai",
     baseUrl: String(body.imageApi.baseUrl || "").trim().slice(0, 500),
     model: String(body.imageApi.model || "").trim().slice(0, 200)
@@ -3008,6 +3130,19 @@ async function route(req, res) {
     try {
       const body = JSON.parse(await getBody(req, 256_000) || "{}");
       return sendJson(res, { ok: true, plan: await createProductionPlans(body) });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
+  }
+
+  if (pathname === "/api/production/workspace" && req.method === "GET") {
+    return sendJson(res, { ok: true, workspace: productionWorkbenchProducts() });
+  }
+
+  if (pathname === "/api/production/pack" && req.method === "POST") {
+    try {
+      const body = JSON.parse(await getBody(req, 256_000) || "{}");
+      return sendJson(res, packProductionWorks(body.paths));
     } catch (error) {
       return send(res, 400, JSON.stringify({ error: error.message }));
     }

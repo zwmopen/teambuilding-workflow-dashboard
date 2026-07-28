@@ -1,5 +1,14 @@
 # 架构
 
+## 0.10.0 生产工作台数据流
+
+- `/api/dashboard` 继续提供按分类懒加载的素材、模板元数据和使用次数。
+- 模板在服务端增加 `game / conversion` 类型；CSV 母版为主，已核对的本地游戏模板作为补充资产进入同一选择器。
+- 模板长期规则与对话历史按模板 ID 保存在本机界面状态；生产启动时合并到既有 `/api/production/plan` 与 `/api/production/run` 链路。
+- `GET /api/production/workspace` 汇总运行数据的 `API生产待审` 与正式成品库，返回图片、文案、模板、时间和待发状态。
+- `POST /api/production/pack` 只接受待审区或成品库内的真实作品文件夹，复制到 `抖音小红书`；同名拒绝覆盖，并写入 `operation-history.jsonl`。
+- ByteCat 使用 OpenAI 兼容适配层和独立 `BYTECAT_IMAGE_API_KEY` 本机凭据；接口连接成功不等于图片模型可用，`/api/image-api/test` 必须同时返回当前模型才允许界面显示为可用。
+
 ## 0.9.4 连接状态与可审计分发
 
 - Electron 主窗口直接加载本地工作台，不再启用 `webviewTag`、ChatGPT guest 会话、网页脚本注入或多账号内嵌登录；外部网页仍由本地白名单接口交给系统浏览器。

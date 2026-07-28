@@ -11,7 +11,9 @@ const DESKTOP_LOG_FILE = path.join(RUNTIME_ROOT, "desktop.log");
 let serverProcess = null;
 let mainWindow = null;
 
-if (!app.isPackaged) app.commandLine.appendSwitch("remote-debugging-port", "9333");
+if (!app.isPackaged || process.env.TB_DESKTOP_SMOKE === "1") {
+  app.commandLine.appendSwitch("remote-debugging-port", "9333");
+}
 
 function appendDesktopLog(event, detail = "") {
   try {

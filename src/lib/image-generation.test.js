@@ -10,6 +10,14 @@ test("image API defaults to the verified local image gateway", () => {
   });
 });
 
+test("ByteCat Image 2.0 uses the official OpenAI-compatible gateway", () => {
+  assert.deepEqual(normalizeImageApiConfig({ provider: "bytecat" }), {
+    provider: "bytecat",
+    baseUrl: "https://codecdn.bytecatcode.org/v1",
+    model: "gemini-3-pro-image-preview"
+  });
+});
+
 test("OpenAI-compatible generation accepts base64 images", async () => {
   const result = await generateOpenAiCompatible({
     config: normalizeImageApiConfig({}), apiKey: "secret", prompt: "团建封面",
