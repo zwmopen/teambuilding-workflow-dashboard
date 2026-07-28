@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const childProcess = require("node:child_process");
 
 const PLATFORM_DIRS = {
   xhs: "小红书",
@@ -8,6 +9,26 @@ const PLATFORM_DIRS = {
   used: "已使用",
   douyinArchive: path.join("归档", "抖音")
 };
+
+const WORKFLOW_STAGE_DIRS = {
+  mobile: "抖音小红书",
+  official: "微信公众号",
+  used: "已发送"
+};
+
+function getWorkflowStageRoots(libraryRoot) {
+  const resolvedLibraryRoot = path.resolve(libraryRoot || "");
+  const stageDirectoryNames = new Set(Object.values(WORKFLOW_STAGE_DIRS));
+  const workflowRoot = stageDirectoryNames.has(path.basename(resolvedLibraryRoot))
+    ? path.dirname(resolvedLibraryRoot)
+    : resolvedLibraryRoot;
+  return {
+    workflowRoot,
+    mobile: path.join(workflowRoot, WORKFLOW_STAGE_DIRS.mobile),
+    official: path.join(workflowRoot, WORKFLOW_STAGE_DIRS.official),
+    used: path.join(workflowRoot, WORKFLOW_STAGE_DIRS.used)
+  };
+}
 
 function classifyCollectionName(name) {
   const value = String(name || "");
@@ -72,6 +93,16 @@ function listDirectoryNames(directory) {
     return fs.readdirSync(directory, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
       .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+function listArchiveNames(directory) {
+  try {
+    return fs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.zip$/i.test(entry.name))
+      .map((entry) => entry.name.replace(/\.zip$/i, ""));
   } catch {
     return [];
   }
@@ -255,11 +286,88 @@ function removeMatchingLink(entryPath, sourcePath) {
   }
 }
 
+function replaceDirectoryLink(entryPath, sourcePath, shouldExist) {
+  try {
+    const stat = fs.lstatSync(entryPath);
+    if (!stat.isSymbolicLink()) {
+      if (shouldExist) throw new Error(`兼容入口被真实文件夹占用：${entryPath}`);
+      return false;
+    }
+    fs.unlinkSync(entryPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT" && !/lstat/.test(String(error?.message || ""))) throw error;
+  }
+  if (!shouldExist) return true;
+  fs.mkdirSync(path.dirname(entryPath), { recursive: true });
+  fs.symlinkSync(sourcePath, entryPath, process.platform === "win32" ? "junction" : "dir");
+  return true;
+}
+
+function syncLegacyLinksForStage(publishRoot, collection, sourcePath, stage) {
+  const desired = {
+    xhs: stage === "mobile",
+    douyin: stage === "mobile",
+    officialAccount: stage === "mobile" || stage === "official",
+    douyinArchive: false
+  };
+  Object.entries(desired).forEach(([key, shouldExist]) => {
+    replaceDirectoryLink(
+      path.join(publishRoot, PLATFORM_DIRS[key], collection),
+      sourcePath,
+      shouldExist
+    );
+  });
+}
+
+function archiveAndRemoveCollection(sourcePath, archiveRoot, collection) {
+  const targetPath = path.join(archiveRoot, `${collection}.zip`);
+  const temporaryPath = path.join(archiveRoot, `.${collection}.${Date.now()}.tmp.zip`);
+  fs.mkdirSync(archiveRoot, { recursive: true });
+  if (fs.existsSync(targetPath)) throw new Error("已发送文件夹已有同名压缩包，已停止归档");
+  const sourceStat = fs.lstatSync(sourcePath);
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
+    throw new Error("只能归档真实作品文件夹");
+  }
+  try {
+    childProcess.execFileSync(
+      "tar.exe",
+      ["-a", "-c", "-f", temporaryPath, "-C", path.dirname(sourcePath), path.basename(sourcePath)],
+      { windowsHide: true, stdio: "pipe" }
+    );
+    const archiveStat = fs.statSync(temporaryPath);
+    if (!archiveStat.isFile() || archiveStat.size <= 0) throw new Error("生成的压缩包为空");
+    fs.renameSync(temporaryPath, targetPath);
+    fs.rmSync(sourcePath, { recursive: true, force: false });
+    return targetPath;
+  } catch (error) {
+    try {
+      if (fs.existsSync(temporaryPath)) fs.rmSync(temporaryPath, { force: true });
+    } catch {
+      // Keep the original folder even if temporary-file cleanup fails.
+    }
+    throw new Error(`压缩归档失败，原文件夹已保留：${error.message}`);
+  }
+}
+
+function ensureWorkflowCompatibilityLinks(options = {}) {
+  const publishRoot = path.resolve(options.publishRoot || "");
+  const libraryRoot = path.resolve(options.libraryRoot || "");
+  const collection = String(options.collection || "").trim();
+  const snapshot = getDistributionSnapshot({ publishRoot, libraryRoot });
+  const item = snapshot.collections.find((entry) => entry.name === collection);
+  if (!item?.sourceValid || item.workflowStage !== "mobile") {
+    throw new Error("该作品当前不在抖音小红书文件夹");
+  }
+  const sourcePath = fs.realpathSync.native(item.sourcePath);
+  syncLegacyLinksForStage(publishRoot, collection, sourcePath, "mobile");
+  return { ok: true, collection, sourcePath };
+}
+
 function moveCollectionSourceToStage(options = {}) {
   const publishRoot = path.resolve(options.publishRoot || "");
   const libraryRoot = path.resolve(options.libraryRoot || "");
   const collection = String(options.collection || "").trim();
-  const stage = options.stage === "used" ? "used" : "officialAccount";
+  const stage = options.stage === "used" ? "used" : "official";
   if (!collection || path.basename(collection) !== collection || /[\\/\r\n\0]/.test(collection)) {
     throw new Error("作品集名称无效");
   }
@@ -267,11 +375,14 @@ function moveCollectionSourceToStage(options = {}) {
   const item = snapshot.collections.find((entry) => entry.name === collection);
   if (!item?.sourceValid || !item.sourcePath) throw new Error("没有找到可移动的原始作品文件夹");
   const sourcePath = fs.realpathSync.native(item.sourcePath);
-  const targetDirectory = path.join(publishRoot, PLATFORM_DIRS[stage]);
-  const targetPath = path.join(targetDirectory, collection);
+  const stageRoots = getWorkflowStageRoots(libraryRoot);
+  const targetDirectory = stageRoots[stage];
+  const targetPath = stage === "used"
+    ? path.join(targetDirectory, `${collection}.zip`)
+    : path.join(targetDirectory, collection);
   fs.mkdirSync(targetDirectory, { recursive: true });
-  if (normalizeRealPath(sourcePath) === normalizeRealPath(targetPath)) {
-    return { ok: true, collection, sourcePath, targetPath, stage: stage === "used" ? "used" : "official" };
+  if (stage !== "used" && normalizeRealPath(sourcePath) === normalizeRealPath(targetPath)) {
+    return { ok: true, collection, sourcePath, targetPath, stage };
   }
   if (fs.existsSync(targetPath)) {
     const targetReal = fs.realpathSync.native(targetPath);
@@ -284,8 +395,129 @@ function moveCollectionSourceToStage(options = {}) {
     removeMatchingLink(path.join(publishRoot, relativeDirectory, collection), sourcePath);
   });
   if (!fs.existsSync(sourcePath)) throw new Error("移动前原始作品已经不存在");
-  fs.renameSync(sourcePath, targetPath);
-  return { ok: true, collection, sourcePath, targetPath, stage: stage === "used" ? "used" : "official" };
+  if (stage === "used") {
+    archiveAndRemoveCollection(sourcePath, targetDirectory, collection);
+    syncLegacyLinksForStage(publishRoot, collection, targetPath, stage);
+  } else {
+    fs.renameSync(sourcePath, targetPath);
+    syncLegacyLinksForStage(publishRoot, collection, targetPath, stage);
+  }
+  return { ok: true, collection, sourcePath, targetPath, stage };
+}
+
+function reconcileWorkflowFolders(options = {}) {
+  const publishRoot = path.resolve(options.publishRoot || "");
+  const libraryRoot = path.resolve(options.libraryRoot || "");
+  const apply = options.apply === true;
+  const stageRoots = getWorkflowStageRoots(libraryRoot);
+  Object.values(WORKFLOW_STAGE_DIRS).forEach((name) => {
+    fs.mkdirSync(path.join(stageRoots.workflowRoot, name), { recursive: true });
+  });
+  const officialRows = readCsv(path.join(publishRoot, "official-account-usage-log.csv"));
+  const deviceRows = readCsv(path.join(publishRoot, "device-usage-log.csv"));
+  const latestOfficial = latestRowsByCollection(officialRows);
+  const deviceCollections = new Set(deviceRows.map((row) => row["源作品集"]).filter(Boolean));
+  const actions = [];
+  const archivedCollections = new Set(listArchiveNames(stageRoots.used));
+
+  archivedCollections.forEach((collection) => {
+    const archivePath = path.join(stageRoots.used, `${collection}.zip`);
+    let archiveValid = false;
+    try {
+      archiveValid = fs.statSync(archivePath).size > 0;
+    } catch {
+      archiveValid = false;
+    }
+    if (!archiveValid) return;
+    [
+      path.join(stageRoots.workflowRoot, collection),
+      path.join(stageRoots.mobile, collection),
+      path.join(stageRoots.official, collection),
+      path.join(stageRoots.used, collection)
+    ].forEach((sourcePath) => {
+      let sourceStat;
+      try {
+        sourceStat = fs.lstatSync(sourcePath);
+      } catch {
+        return;
+      }
+      if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) return;
+      const action = {
+        collection,
+        stage: "used",
+        sourcePath,
+        targetPath: archivePath,
+        status: apply ? "removed-after-verified-archive" : "planned-archive-cleanup"
+      };
+      if (apply) {
+        syncLegacyLinksForStage(publishRoot, collection, archivePath, "used");
+        fs.rmSync(sourcePath, { recursive: true, force: false });
+      }
+      actions.push(action);
+    });
+  });
+
+  listDirectoryNames(stageRoots.workflowRoot)
+    .filter((name) => /^\.?作品集[_-]?\d+/i.test(name))
+    .filter((name) => !archivedCollections.has(name))
+    .forEach((collection) => {
+      const sourcePath = path.join(stageRoots.workflowRoot, collection);
+      let sourceStat;
+      try {
+        sourceStat = fs.lstatSync(sourcePath);
+      } catch {
+        return;
+      }
+      if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) return;
+      const officialState = officialStateFromRow(latestOfficial.get(collection));
+      const stage = officialState === "confirmed_published"
+        ? "used"
+        : officialState === "reserved_pending_upload" || deviceCollections.has(collection)
+          ? "official"
+          : "mobile";
+      const targetPath = stage === "used"
+        ? path.join(stageRoots.used, `${collection}.zip`)
+        : path.join(stageRoots[stage], collection);
+      if (fs.existsSync(targetPath)) {
+        actions.push({ collection, stage, sourcePath, targetPath, status: "conflict" });
+        return;
+      }
+      const action = { collection, stage, sourcePath, targetPath, status: apply ? "moved" : "planned" };
+      if (apply) {
+        if (stage === "used") archiveAndRemoveCollection(sourcePath, stageRoots.used, collection);
+        else fs.renameSync(sourcePath, targetPath);
+        syncLegacyLinksForStage(publishRoot, collection, targetPath, stage);
+      }
+      actions.push(action);
+    });
+
+  if (apply && actions.some((action) => action.status === "moved")) {
+    const logRoot = path.join(stageRoots.workflowRoot, "_portfolio_move_logs");
+    fs.mkdirSync(logRoot, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    fs.writeFileSync(
+      path.join(logRoot, `workflow-stage-migration-${stamp}.json`),
+      JSON.stringify({ createdAt: new Date().toISOString(), stageRoots, actions }, null, 2),
+      "utf8"
+    );
+  }
+  return {
+    ok: !actions.some((action) => action.status === "conflict"),
+    applied: apply,
+    stageRoots: {
+      mobile: stageRoots.mobile,
+      official: stageRoots.official,
+      used: stageRoots.used
+    },
+    summary: {
+      total: actions.length,
+      mobile: actions.filter((action) => action.stage === "mobile").length,
+      official: actions.filter((action) => action.stage === "official").length,
+      used: actions.filter((action) => action.stage === "used").length,
+      conflicts: actions.filter((action) => action.status === "conflict").length
+    },
+    actions
+  };
 }
 
 function markOfficialUsed(options = {}) {
@@ -294,7 +526,7 @@ function markOfficialUsed(options = {}) {
   const collection = String(options.collection || "").trim();
   const snapshot = getDistributionSnapshot({ publishRoot, libraryRoot });
   const item = snapshot.collections.find((entry) => entry.name === collection);
-  if (!item || item.workflowStage !== "official") throw new Error("该作品当前不在公众号文件夹");
+  if (!item || item.workflowStage !== "official") throw new Error("该作品当前不在微信公众号文件夹");
   const moved = moveCollectionSourceToStage({ publishRoot, libraryRoot, collection, stage: "used" });
   const logFile = path.join(publishRoot, "official-account-usage-log.csv");
   const rows = readCsv(logFile);
@@ -311,7 +543,7 @@ function markOfficialUsed(options = {}) {
     item.bytes || 0,
     0,
     "公众号已使用",
-    "工作台标记并移动到已使用"
+    "工作台标记并移动到已发送"
   ];
   const existing = fs.readFileSync(logFile, "utf8");
   const prefix = existing.endsWith("\n") || existing.endsWith("\r") ? "" : "\n";
@@ -327,6 +559,7 @@ function stateForPlatform(entry, absentState = "used") {
 function getDistributionSnapshot(options = {}) {
   const publishRoot = path.resolve(options.publishRoot || "");
   const libraryRoot = path.resolve(options.libraryRoot || "");
+  const stageRoots = getWorkflowStageRoots(libraryRoot);
   const sourceCache = new Map();
   const officialRows = readCsv(path.join(publishRoot, "official-account-usage-log.csv"));
   const deviceRows = readCsv(path.join(publishRoot, "device-usage-log.csv"));
@@ -336,6 +569,10 @@ function getDistributionSnapshot(options = {}) {
   Object.values(PLATFORM_DIRS).forEach((relativeDirectory) => {
     listDirectoryNames(path.join(publishRoot, relativeDirectory)).forEach((name) => names.add(name));
   });
+  Object.values(WORKFLOW_STAGE_DIRS).forEach((relativeDirectory) => {
+    listDirectoryNames(path.join(stageRoots.workflowRoot, relativeDirectory)).forEach((name) => names.add(name));
+  });
+  listArchiveNames(stageRoots.used).forEach((name) => names.add(name));
   listDirectoryNames(libraryRoot)
     .filter((name) => /^\.?作品集[_-]?\d+/i.test(name))
     .forEach((name) => names.add(name));
@@ -352,7 +589,30 @@ function getDistributionSnapshot(options = {}) {
       used: inspectPlatformEntry(publishRoot, PLATFORM_DIRS.used, name, sourceCache),
       douyinArchive: inspectPlatformEntry(publishRoot, PLATFORM_DIRS.douyinArchive, name, sourceCache)
     };
-    const activeSources = [entries.xhs, entries.douyin, entries.officialAccount, entries.used, entries.douyinArchive]
+    const workflowEntries = {
+      mobile: inspectPlatformEntry(stageRoots.workflowRoot, WORKFLOW_STAGE_DIRS.mobile, name, sourceCache),
+      official: inspectPlatformEntry(stageRoots.workflowRoot, WORKFLOW_STAGE_DIRS.official, name, sourceCache),
+      used: inspectPlatformEntry(stageRoots.workflowRoot, WORKFLOW_STAGE_DIRS.used, name, sourceCache)
+    };
+    const usedArchivePath = path.join(stageRoots.used, `${name}.zip`);
+    const usedArchivePresent = (() => {
+      try {
+        const stat = fs.statSync(usedArchivePath);
+        return stat.isFile() && stat.size > 0;
+      } catch {
+        return false;
+      }
+    })();
+    const activeSources = [
+      workflowEntries.mobile,
+      workflowEntries.official,
+      workflowEntries.used,
+      entries.xhs,
+      entries.douyin,
+      entries.officialAccount,
+      entries.used,
+      entries.douyinArchive
+    ]
       .filter((entry) => entry.valid && entry.sourcePath);
     const recordedSourcePath = latestOfficial.get(name)?.["源路径"] || deviceRows
       .filter((row) => row["源作品集"] === name)
@@ -360,7 +620,10 @@ function getDistributionSnapshot(options = {}) {
     const recordedSource = inspectSource(recordedSourcePath, sourceCache);
     const directSourcePath = path.join(libraryRoot, name);
     const directSource = inspectSource(directSourcePath, sourceCache);
+    const presentWorkflowSource = Object.values(workflowEntries)
+      .find((entry) => entry.present && entry.sourcePath);
     const source = activeSources[0]
+      || presentWorkflowSource
       || (directSource.valid ? { sourcePath: directSourcePath, ...directSource } : null)
       || (recordedSource.valid ? { sourcePath: recordedSourcePath, ...recordedSource } : {});
     const sameDualTarget = entries.xhs.valid
@@ -373,6 +636,9 @@ function getDistributionSnapshot(options = {}) {
     const exclusionReasons = [];
     if (!classification.labelled) exclusionReasons.push("缺少[泛]/[转]标签");
     if (!source.valid) exclusionReasons.push("没有可用源目录");
+    const occupiedWorkflowStages = Object.values(workflowEntries).filter((entry) => entry.present).length
+      + (usedArchivePresent ? 1 : 0);
+    if (occupiedWorkflowStages > 1) exclusionReasons.push("三个阶段文件夹存在同名作品冲突");
     if (entries.xhs.valid && entries.douyin.valid && !sameDualTarget) exclusionReasons.push("小红书与抖音目标不一致");
     [entries.xhs, entries.douyin, entries.officialAccount, entries.used, entries.douyinArchive].forEach((entry) => {
       if (entry.present && !entry.valid && entry.reason && !exclusionReasons.includes(entry.reason)) {
@@ -380,23 +646,33 @@ function getDistributionSnapshot(options = {}) {
       }
     });
 
-    let officialAccount = stateForPlatform(entries.officialAccount);
+    let officialAccount = workflowEntries.official.valid
+      ? "available"
+      : stateForPlatform(entries.officialAccount);
     if (!entries.officialAccount.present && officialLogState) officialAccount = officialLogState;
     const douyin = entries.douyinArchive.present
       ? (entries.douyinArchive.valid ? "archived" : "invalid")
       : stateForPlatform(entries.douyin);
     const sourceValid = Boolean(source.valid);
     if (previouslySentToDevice) exclusionReasons.push("已有手机分发记录");
+    const workflowStage = usedArchivePresent || workflowEntries.used.present
+      ? "used"
+      : workflowEntries.official.present
+        ? "official"
+        : workflowEntries.mobile.present
+          ? "mobile"
+          : sameDualTarget && entries.xhs.valid && entries.douyin.valid
+            ? "mobile"
+            : (entries.officialAccount.valid || officialLogState === "reserved_pending_upload")
+              ? "official"
+              : (entries.used.valid || officialLogState === "confirmed_published" || previouslySentToDevice)
+                ? "used"
+                : "mobile";
     const automaticEligible = classification.labelled
       && !previouslySentToDevice
+      && occupiedWorkflowStages <= 1
+      && workflowStage === "mobile"
       && Boolean(activeSources.length);
-    const workflowStage = sameDualTarget && entries.xhs.valid && entries.douyin.valid
-      ? "mobile"
-      : (entries.officialAccount.valid || officialLogState === "reserved_pending_upload")
-        ? "official"
-        : (entries.used.valid || officialLogState === "confirmed_published" || previouslySentToDevice)
-          ? "used"
-          : "mobile";
 
     return {
       name,
@@ -407,17 +683,18 @@ function getDistributionSnapshot(options = {}) {
       fileCount: source.fileCount || 0,
       bytes: source.bytes || 0,
       items: source.items || [],
-      xhs: previouslySentToDevice ? "used" : stateForPlatform(entries.xhs),
-      douyin: previouslySentToDevice ? "used" : douyin,
+      xhs: previouslySentToDevice ? "used" : workflowEntries.mobile.valid ? "available" : stateForPlatform(entries.xhs),
+      douyin: previouslySentToDevice ? "used" : workflowEntries.mobile.valid ? "available" : douyin,
       officialAccount,
       workflowStage,
-      dualPlatformEligible: automaticEligible && sameDualTarget,
+      dualPlatformEligible: automaticEligible && (workflowEntries.mobile.valid || sameDualTarget),
       automaticEligible,
       exclusionReasons,
       deviceHistoryCount: deviceHistory.length,
       officialAccountHistoryCount: officialHistory.length,
       latestDeviceRecord: deviceHistory.at(-1) || null,
-      latestOfficialAccountRecord: latestOfficial.get(name) || null
+      latestOfficialAccountRecord: latestOfficial.get(name) || null,
+      archivePath: usedArchivePresent ? usedArchivePath : ""
     };
   }).sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
 
@@ -453,6 +730,12 @@ function getDistributionSnapshot(options = {}) {
   return {
     publishRoot,
     libraryRoot,
+    workflowRoot: stageRoots.workflowRoot,
+    stageRoots: {
+      mobile: stageRoots.mobile,
+      official: stageRoots.official,
+      used: stageRoots.used
+    },
     generatedAt: new Date().toISOString(),
     summary,
     collections,
@@ -464,8 +747,11 @@ function getDistributionSnapshot(options = {}) {
 module.exports = {
   classifyCollectionName,
   confirmOfficialUpload,
+  ensureWorkflowCompatibilityLinks,
+  getWorkflowStageRoots,
   getDistributionSnapshot,
   markOfficialUsed,
   moveCollectionSourceToStage,
-  parseCsv
+  parseCsv,
+  reconcileWorkflowFolders
 };

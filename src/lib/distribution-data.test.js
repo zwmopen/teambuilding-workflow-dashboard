@@ -9,7 +9,8 @@ const {
   confirmOfficialUpload,
   getDistributionSnapshot,
   markOfficialUsed,
-  moveCollectionSourceToStage
+  moveCollectionSourceToStage,
+  reconcileWorkflowFolders
 } = require("./distribution-data");
 
 function makeFixture() {
@@ -18,6 +19,9 @@ function makeFixture() {
   const publishRoot = path.join(root, "发布空间");
   ["小红书", "抖音", "公众号", "已使用", path.join("归档", "抖音")].forEach((name) => {
     fs.mkdirSync(path.join(publishRoot, name), { recursive: true });
+  });
+  ["抖音小红书", "微信公众号", "已发送"].forEach((name) => {
+    fs.mkdirSync(path.join(collectionsRoot, name), { recursive: true });
   });
   fs.mkdirSync(collectionsRoot, { recursive: true });
   return { root, collectionsRoot, publishRoot };
@@ -276,7 +280,7 @@ test("physical stage folders are the workflow source of truth in both directions
       now: "2026-07-27T20:00:00"
     });
     assert.equal(fs.existsSync(source), false);
-    assert.equal(fs.existsSync(path.join(fixture.publishRoot, "已使用", "作品集_050[泛]")), true);
+    assert.equal(fs.existsSync(path.join(fixture.collectionsRoot, "已发送", "作品集_050[泛].zip")), true);
     item = getDistributionSnapshot({ publishRoot: fixture.publishRoot, libraryRoot: fixture.collectionsRoot })
       .collections.find((entry) => entry.name === "作品集_050[泛]");
     assert.equal(item.workflowStage, "used");
@@ -297,8 +301,149 @@ test("successful phone stage move replaces the official link with the original f
       stage: "official"
     });
     assert.equal(fs.existsSync(source), false);
+    assert.equal(result.targetPath, path.join(fixture.collectionsRoot, "微信公众号", "作品集_051[转]"));
     assert.equal(fs.lstatSync(result.targetPath).isSymbolicLink(), false);
     assert.equal(fs.statSync(result.targetPath).isDirectory(), true);
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
+test("the three real workflow folders are the source of truth and reflect Explorer moves", () => {
+  const fixture = makeFixture();
+  try {
+    const mobileRoot = path.join(fixture.collectionsRoot, "抖音小红书");
+    const officialRoot = path.join(fixture.collectionsRoot, "微信公众号");
+    const usedRoot = path.join(fixture.collectionsRoot, "已发送");
+    const mobileSource = createCollection(mobileRoot, "作品集_060[泛]");
+    createCollection(officialRoot, "作品集_061[转]");
+    createCollection(usedRoot, "作品集_062[泛]");
+
+    let snapshot = getDistributionSnapshot({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot
+    });
+    assert.equal(snapshot.stageRoots.mobile, mobileRoot);
+    assert.equal(snapshot.collections.find((item) => item.name === "作品集_060[泛]").workflowStage, "mobile");
+    assert.equal(snapshot.collections.find((item) => item.name === "作品集_061[转]").workflowStage, "official");
+    assert.equal(snapshot.collections.find((item) => item.name === "作品集_062[泛]").workflowStage, "used");
+
+    fs.renameSync(mobileSource, path.join(officialRoot, "作品集_060[泛]"));
+    snapshot = getDistributionSnapshot({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot
+    });
+    assert.equal(snapshot.collections.find((item) => item.name === "作品集_060[泛]").workflowStage, "official");
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
+test("direct workflow moves refuse to overwrite a same-name folder", () => {
+  const fixture = makeFixture();
+  try {
+    createCollection(path.join(fixture.collectionsRoot, "抖音小红书"), "作品集_063[泛]");
+    createCollection(path.join(fixture.collectionsRoot, "微信公众号"), "作品集_063[泛]");
+    assert.throws(() => moveCollectionSourceToStage({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot,
+      collection: "作品集_063[泛]",
+      stage: "official"
+    }), /同名作品/);
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
+test("marking official use stores a zip in 已发送 and removes the original folder", () => {
+  const fixture = makeFixture();
+  try {
+    const officialRoot = path.join(fixture.collectionsRoot, "微信公众号");
+    const source = createCollection(officialRoot, "作品集_064[转]");
+    const result = markOfficialUsed({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot,
+      collection: "作品集_064[转]",
+      now: "2026-07-28T12:00:00"
+    });
+    assert.equal(fs.existsSync(source), false);
+    assert.equal(result.targetPath, path.join(fixture.collectionsRoot, "已发送", "作品集_064[转].zip"));
+    assert.ok(fs.statSync(result.targetPath).size > 0);
+    const item = getDistributionSnapshot({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot
+    }).collections.find((entry) => entry.name === "作品集_064[转]");
+    assert.equal(item.workflowStage, "used");
+    assert.equal(item.archivePath, result.targetPath);
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
+test("history-based reconciliation puts unsent, phone-sent and fully-published work in the right places", () => {
+  const fixture = makeFixture();
+  try {
+    createCollection(fixture.collectionsRoot, "作品集_065[泛]");
+    createCollection(fixture.collectionsRoot, "作品集_066[泛]");
+    createCollection(fixture.collectionsRoot, "作品集_067[转]");
+    fs.writeFileSync(
+      path.join(fixture.publishRoot, "device-usage-log.csv"),
+      [
+        "时间,设备名,设备型号,源作品集,源路径,文件数,字节数,传输协议,接收确认,操作",
+        "2026-07-28T10:00:00,测试手机,Android,作品集_066[泛],source,14,100,LAN,已接收,完成"
+      ].join("\n"),
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(fixture.publishRoot, "official-account-usage-log.csv"),
+      [
+        "时间,公众号账号,承载设备,作品集,源路径,文件数,字节数,小红书抖音连接剩余数,状态,操作",
+        "2026-07-28T11:00:00,测试账号,电脑,作品集_067[转],source,14,100,0,公众号已使用,人工确认"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = reconcileWorkflowFolders({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot,
+      apply: true
+    });
+    assert.deepEqual(result.summary, { total: 3, mobile: 1, official: 1, used: 1, conflicts: 0 });
+    assert.ok(fs.existsSync(path.join(fixture.collectionsRoot, "抖音小红书", "作品集_065[泛]")));
+    assert.ok(fs.existsSync(path.join(fixture.collectionsRoot, "微信公众号", "作品集_066[泛]")));
+    assert.ok(fs.existsSync(path.join(fixture.collectionsRoot, "已发送", "作品集_067[转].zip")));
+    assert.equal(fs.existsSync(path.join(fixture.collectionsRoot, "作品集_067[转]")), false);
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
+test("a verified zip in 已发送 removes a duplicate source folder during reconciliation", () => {
+  const fixture = makeFixture();
+  try {
+    const duplicate = createCollection(
+      path.join(fixture.collectionsRoot, "微信公众号"),
+      "作品集_068[转]"
+    );
+    const archivePath = path.join(fixture.collectionsRoot, "已发送", "作品集_068[转].zip");
+    fs.writeFileSync(archivePath, "verified archive bytes");
+
+    const preview = reconcileWorkflowFolders({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot,
+      apply: false
+    });
+    assert.equal(preview.actions[0].status, "planned-archive-cleanup");
+    assert.ok(fs.existsSync(duplicate));
+
+    const applied = reconcileWorkflowFolders({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot,
+      apply: true
+    });
+    assert.equal(applied.actions[0].status, "removed-after-verified-archive");
+    assert.equal(fs.existsSync(duplicate), false);
+    assert.ok(fs.existsSync(archivePath));
   } finally {
     cleanup(fixture.root);
   }

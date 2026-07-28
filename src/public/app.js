@@ -1611,9 +1611,9 @@ function humanizeCollectionReason(reason) {
 function renderCollectionFilters() {
   const collections = dashboard?.distribution?.collections || [];
   const options = [
-    ["mobile", "抖音、小红书"],
-    ["official", "公众号"],
-    ["used", "已使用"]
+    ["mobile", "抖音小红书"],
+    ["official", "微信公众号"],
+    ["used", "已发送"]
   ];
   const container = $("#collectionStageTabs");
   if (!container) return;
@@ -1623,6 +1623,13 @@ function renderCollectionFilters() {
       <span class="stage-number">0${index + 1}</span><span>${label}</span><strong>${formatNumber(count)}</strong>
     </button>`;
   }).join("");
+  const pathLine = $("#collectionStagePath");
+  if (pathLine) {
+    const root = dashboard?.distribution?.stageRoots?.[collectionFilters.stage] || "";
+    pathLine.textContent = root
+      ? `${options.find(([value]) => value === collectionFilters.stage)?.[1] || "当前阶段"}：${root}`
+      : "";
+  }
 }
 
 function getFilteredCollections() {
@@ -1676,14 +1683,17 @@ function renderCollections() {
   list.innerHTML = collections.length ? collections.map((collection) => {
     const expanded = expandedCollectionNames.has(collection.name);
     const stageLabel = collection.workflowStage === "mobile" ? "待发送到手机"
-      : collection.workflowStage === "official" ? "待公众号使用" : "流程已完成";
+      : collection.workflowStage === "official" ? "待微信公众号发布" : "三端已发布 · 已压缩";
     const primaryAction = collection.workflowStage === "mobile"
       ? collection.dualPlatformEligible
         ? `<button class="collection-primary-action" type="button" data-send-package="${escapeHtml(collection.name)}">发到手机</button>`
         : `<button type="button" disabled title="先补充 [泛] 或 [转] 分类和双平台入口">待补分类</button>`
       : collection.workflowStage === "official"
-        ? `<button class="collection-primary-action" type="button" data-mark-used="${escapeHtml(collection.name)}">标记已使用</button>`
+        ? collection.sourceValid
+          ? `<button class="collection-primary-action" type="button" data-mark-used="${escapeHtml(collection.name)}">归档到已发送</button>`
+          : `<button type="button" disabled title="原作品文件夹为空，不能生成归档压缩包">作品为空</button>`
         : "";
+    const openPathValue = collection.archivePath || collection.sourcePath || "";
     return `
       <article class="collection-row ${expanded ? "expanded" : ""}" data-collection="${escapeHtml(collection.name)}">
         <button class="collection-toggle" type="button" data-collection-toggle="${escapeHtml(collection.name)}" aria-expanded="${expanded}" aria-label="${expanded ? "收起" : "展开"} ${escapeHtml(collection.name)}">
@@ -1693,7 +1703,7 @@ function renderCollections() {
         <div class="badge-line"><span class="state-badge ${collection.type === "unclassified" ? "warn" : ""}">${escapeHtml(collection.typeLabel)}</span></div>
         <div class="collection-count">${collection.itemCount || 0}/14</div>
         <div class="collection-stage-actions">
-          <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品</button>
+          <button type="button" data-open-collection="${escapeHtml(openPathValue)}">${collection.workflowStage === "used" ? "打开压缩包" : "打开作品"}</button>
           ${primaryAction}
         </div>
         <div class="collection-children">
@@ -1824,7 +1834,7 @@ function renderDistribution() {
           <button type="button" data-send-package="${escapeHtml(collection.name)}">选择设备</button>
         </div>
       </article>
-    `).join("") : `<div class="empty-state"><strong>当前没有可用作品包</strong><p>已使用或入口失效的作品包不会列在这里。</p></div>`}</div>
+    `).join("") : `<div class="empty-state"><strong>当前没有可用作品包</strong><p>已进入“已发送”或入口失效的作品包不会列在这里。</p></div>`}</div>
     ${packageDevicePickerCollectionName ? `<div class="device-picker-backdrop" data-close-device-picker>
       <section class="device-picker-dialog" role="dialog" aria-modal="true" aria-label="选择当前在线设备">
         <header><div><strong>发送作品包</strong><span>${escapeHtml(packageDevicePickerCollectionName)}</span></div><button type="button" data-close-device-picker aria-label="关闭">×</button></header>
@@ -2064,7 +2074,7 @@ async function executeDistributionAction(payload, description) {
     ],
     warning: isOfficial
       ? "打开文件夹只会登记为“已打开过”，上传完成后还需要回到这里确认。"
-      : "发送完成后，该作品包会标记为已使用，不会再次进入手机可用列表；源作品不会删除。",
+      : "手机确认接收后，原作品文件夹会真实移动到“微信公众号”，不会再次进入手机待发送列表。",
     cancelLabel: "返回",
     confirmLabel: isOfficial ? "打开作品包" : "确认发送"
   });
@@ -2118,12 +2128,12 @@ async function confirmOfficialCollection(collection) {
 async function markCollectionUsed(collection) {
   const confirmed = await openSystemDialog({
     eyebrow: "公众号",
-    title: "将这份作品标记为已使用？",
-    description: "确认后，原始作品文件夹会真实移动到“已使用”。",
+    title: "确认抖音、小红书和公众号都已发布？",
+    description: "确认后会在“已发送”生成压缩包；压缩包校验成功后删除原作品文件夹。",
     details: [{ label: "作品包", value: collection }],
-    warning: "资源管理器和工作台会同时更新；需要恢复时可把文件夹移回“公众号”。",
+    warning: "这是释放空间的归档动作。压缩失败或存在同名压缩包时，原文件夹会保留。",
     cancelLabel: "取消",
-    confirmLabel: "标记已使用"
+    confirmLabel: "压缩并归档"
   });
   if (!confirmed) return;
   try {
@@ -2135,9 +2145,39 @@ async function markCollectionUsed(collection) {
     await loadDashboard(true);
     collectionFilters.stage = "used";
     renderCollections();
-    toast("已移动到“已使用”");
+    toast("已压缩到“已发送”，原文件夹已清理");
   } catch (error) {
     showSystemNotice("没有完成移动", error.message, { tone: "danger" });
+  }
+}
+
+async function reconcileDistributionFolders() {
+  const confirmed = await openSystemDialog({
+    eyebrow: "本地文件夹整理",
+    title: "按历史发布记录整理现有作品？",
+    description: "未发送的作品移入“抖音小红书”；已发手机的移入“微信公众号”；三端已发布的压缩到“已发送”并清理原文件夹。",
+    details: [
+      { label: "待手机", value: dashboard?.distribution?.stageRoots?.mobile || "抖音小红书" },
+      { label: "待公众号", value: dashboard?.distribution?.stageRoots?.official || "微信公众号" },
+      { label: "已完成", value: dashboard?.distribution?.stageRoots?.used || "已发送" }
+    ],
+    warning: "同名文件或压缩包冲突时会停止对应作品，不会覆盖；压缩失败不会删除原文件夹。",
+    cancelLabel: "取消",
+    confirmLabel: "开始整理"
+  });
+  if (!confirmed) return;
+  try {
+    const result = await api("/api/distribution/reconcile-folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true })
+    });
+    await loadDashboard(true);
+    renderCollections();
+    const summary = result.summary || {};
+    toast(`整理完成：抖音小红书 ${summary.mobile || 0}，微信公众号 ${summary.official || 0}，已发送 ${summary.used || 0}`);
+  } catch (error) {
+    showSystemNotice("文件夹整理没有完成", error.message, { tone: "danger" });
   }
 }
 
@@ -2198,7 +2238,7 @@ async function sendSelectedDistributionPackage() {
       { label: "目标设备", value: device.note || device.displayName },
       { label: "内容类型", value: typeLabel }
     ],
-    warning: "发送完成后，小红书 + 抖音手机组会整组标记为已使用，不会再次出现在手机可用列表；公众号资格不受影响。",
+    warning: "发送完成并由手机确认接收后，作品文件夹会进入“微信公众号”，等待公众号发布。",
     cancelLabel: "返回重选",
     confirmLabel: "确认发送"
   });
@@ -2827,7 +2867,8 @@ function bindEvents() {
   $("#distributionRefreshBtn")?.addEventListener("click", async () => {
     await checkDistributionDevices();
   });
-  $("#openPublishRootBtn")?.addEventListener("click", () => openPath(dashboard?.distribution?.publishRoot));
+  $("#openPublishRootBtn")?.addEventListener("click", () => openPath(dashboard?.distribution?.workflowRoot || dashboard?.distribution?.libraryRoot));
+  $("#reconcileDistributionFoldersBtn")?.addEventListener("click", reconcileDistributionFolders);
   $("#copyDistributionCommand")?.addEventListener("click", () => copyText($("#distributionCommand").value, "分发指令已复制"));
   $("#refreshJuguangBtn")?.addEventListener("click", async () => {
     await loadJuguang(true);

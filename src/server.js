@@ -14,9 +14,11 @@ const {
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
 const {
   confirmOfficialUpload,
+  ensureWorkflowCompatibilityLinks,
   getDistributionSnapshot,
   markOfficialUsed,
-  moveCollectionSourceToStage
+  moveCollectionSourceToStage,
+  reconcileWorkflowFolders
 } = require("./lib/distribution-data");
 const {
   isDownloadedText,
@@ -2290,6 +2292,13 @@ function startDistributionTask(body = {}) {
     throw new Error("这个任务入口只用于手机作品包分发");
   }
   const args = buildDistributionArgs(body);
+  if (String(body.collection || "").trim()) {
+    ensureWorkflowCompatibilityLinks({
+      publishRoot: PUBLISH_ROOT,
+      libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
+      collection: body.collection
+    });
+  }
   const taskId = `distribution-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   trimCompletedTasks(distributionTasks);
   const record = {
@@ -3262,6 +3271,15 @@ async function route(req, res) {
       publishRoot: PUBLISH_ROOT,
       libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
       collection: body.collection
+    }));
+  }
+  if (pathname === "/api/distribution/reconcile-folders" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认按历史记录整理真实文件夹" }));
+    return sendJson(res, reconcileWorkflowFolders({
+      publishRoot: PUBLISH_ROOT,
+      libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
+      apply: true
     }));
   }
   if (pathname === "/api/open" && req.method === "POST") {

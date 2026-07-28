@@ -235,7 +235,7 @@
       <section class="view" id="productsView">
         <section class="collection-layout">
           <header class="page-heading">
-            <div><p class="label">内容流水线</p><h2>作品集</h2><p>作品从抖音、小红书依次流转到公众号和已使用。</p></div>
+            <div><p class="label">内容流水线</p><h2>作品集</h2><p>真实文件夹依次流转：抖音小红书 → 微信公众号 → 已发送压缩包。</p></div>
             <div class="detail-button-row"><button class="primary-button" id="openPublishRootBtn">打开作品集目录</button></div>
           </header>
           <section class="folder-source-bar" aria-label="作品集目录设置">
@@ -247,6 +247,7 @@
             <div class="workflow-stage-tabs" id="collectionStageTabs" aria-label="作品阶段"></div>
             <button class="collection-view-toggle" type="button" data-collection-view-toggle title="切换为网格视图" aria-label="切换为网格视图"></button>
           </div>
+          <p class="path-line" id="collectionStagePath"></p>
           <div class="collection-workspace">
             <section class="collection-list" id="collectionList"></section>
           </div>
@@ -263,7 +264,7 @@
         <section class="distribution-layout">
           <header class="page-heading">
             <div><p class="label">真实执行入口</p><h2>分发功能</h2><p>自动识别在线设备，完成手机补笔记、公众号上传和分发记录。</p></div>
-            <button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button>
+            <div class="detail-button-row"><button id="reconcileDistributionFoldersBtn" type="button">按历史记录整理</button><button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button></div>
           </header>
           <section class="folder-source-bar compact" aria-label="分发作品集目录设置">
             <input id="distributionCollectionRootInput" class="search-input" type="text" placeholder="粘贴分发作品集目录后按回车" />
