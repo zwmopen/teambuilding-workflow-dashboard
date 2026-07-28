@@ -18,6 +18,7 @@ const {
   getDistributionSnapshot,
   markOfficialUsed,
   moveCollectionSourceToStage,
+  renameCollectionType,
   reconcileWorkflowFolders
 } = require("./lib/distribution-data");
 const {
@@ -3272,6 +3273,20 @@ async function route(req, res) {
       libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
       collection: body.collection
     }));
+  }
+  if (pathname === "/api/distribution/classify" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认同步修改真实文件夹名称" }));
+    try {
+      return sendJson(res, renameCollectionType({
+        publishRoot: PUBLISH_ROOT,
+        libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
+        collection: body.collection,
+        type: body.type
+      }));
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
   }
   if (pathname === "/api/distribution/reconcile-folders" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");

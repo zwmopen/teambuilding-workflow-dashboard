@@ -74,6 +74,8 @@ async function main() {
   };
 
   try {
+    await evaluate(`location.reload(); true`);
+    await wait(700);
     await check("应用外壳已载入", `Boolean(document.querySelector('.app-shell') && document.querySelector('[data-tab]'))`);
     for (let attempt = 0; attempt < 120; attempt += 1) {
       if (await evaluate(`Number(document.querySelector('#statMaterialCategories')?.textContent) > 0 && Boolean(document.querySelector('#collectionList'))`)) break;
@@ -119,7 +121,8 @@ async function main() {
       const template = document.querySelector('#templateQuickSelect');
       const before = library?.value;
       if (library?.options.length > 1) {
-        library.selectedIndex = 1;
+        const nextIndex = [...library.options].findIndex((option) => option.value !== before);
+        library.selectedIndex = nextIndex >= 0 ? nextIndex : 1;
         library.dispatchEvent(new Event('change', { bubbles: true }));
       }
       return { libraries: library?.options.length || 0, templates: template?.options.length || 0, switched: !library || library.options.length < 2 || library.value !== before };
@@ -187,8 +190,8 @@ async function main() {
 
     await evaluate(`document.querySelector('.tab[data-tab="distribution"]').click(); true`);
     await wait(350);
-    await evaluate(`document.querySelector('[data-distribution-filter="devices"]')?.click(); true`);
-    await wait(100);
+    await evaluate(`document.querySelector('#distributionTabs [data-panel="devices"]')?.click(); true`);
+    await wait(150);
     await check("设备在线数量直接显示", `(() => { const text = document.querySelector('.distribution-stats')?.textContent || ''; return text.includes('/') && [...text].some((char) => char >= '0' && char <= '9'); })()`);
     await check("设备显示真实连接方式标签", `(() => { const tags = [...document.querySelectorAll('.device-row .transport-tag')]; return tags.length >= 3 && tags.some((tag) => tag.textContent.includes('Wi-Fi')); })()`);
     const distributionInteraction = await evaluate(`(() => {
@@ -209,31 +212,49 @@ async function main() {
         offlineActionsDisabled: offline.every((row) => [...row.querySelectorAll('.device-actions button')].every((button) => button.disabled))
       };
     })()`);
+    assert.deepEqual(distributionInteraction.tabs.map((item) => item.panel), ["devices", "mobile", "official", "used", "history"]);
     assert(distributionInteraction.tabs.every((item) => item.active), "分发子页面不能切换");
     assert(distributionInteraction.offlineActionsDisabled, "离线设备仍可点击分发");
     checks.push({ name: "分发子页与设备按钮联动", value: distributionInteraction });
+    await check("分发阶段读取真实文件夹", `(() => {
+      const tabs = [...document.querySelectorAll('#distributionTabs [data-panel]')];
+      const labels = tabs.map((button) => button.textContent);
+      return ['设备','抖音小红书','微信公众号','已发送','操作记录'].every((label) => labels.some((text) => text.includes(label)));
+    })()`);
+    await evaluate(`document.querySelector('#distributionTabs [data-panel="mobile"]')?.click(); true`);
+    await wait(100);
+    await check("手机与公众号都有流量分类标签", `(() => {
+      const mobileLabels = [...document.querySelectorAll('#distributionMobile [data-stage-type-filter]')].map((button) => button.textContent);
+      document.querySelector('#distributionTabs [data-panel="official"]')?.click();
+      const officialLabels = [...document.querySelectorAll('#distributionOfficial [data-stage-type-filter]')].map((button) => button.textContent);
+      return ['泛流量帖','精准流量帖','未分类'].every((label) => mobileLabels.some((text) => text.includes(label)) && officialLabels.some((text) => text.includes(label)));
+    })()`);
+    await check("所有主界面都有帮助入口", `document.querySelectorAll('[data-page-help]').length >= 4`);
     const distributionDialogs = await evaluate(`(async () => {
-      document.querySelector('[data-distribution-filter="devices"]')?.click();
+      document.querySelector('#distributionTabs [data-panel="devices"]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 50));
+      document.querySelector('[data-close-upload-choice]')?.click();
       const onlineRow = document.querySelector('.device-row.is-online');
       onlineRow?.querySelector('[data-upload-other]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 50));
       const uploadChoice = Boolean(document.querySelector('.upload-choice-panel'));
       document.querySelector('[data-close-upload-choice]')?.click();
-      document.querySelector('[data-distribution-filter="traffic"]')?.click();
+      document.querySelector('#distributionTabs [data-panel="mobile"]')?.click();
+      document.querySelector('[data-stage-type-filter="traffic"]')?.click();
       const packageButton = document.querySelector('[data-send-package]');
       packageButton?.click();
       const picker = Boolean(document.querySelector('.device-picker-dialog'));
-      document.querySelector('[data-confirm-package-device]')?.click();
+      document.querySelector('.device-picker-dialog [data-close-device-picker]')?.click();
+      document.querySelector('[data-page-help="distributionView"]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 100));
       const confirmation = Boolean(document.querySelector('.system-dialog'));
-      document.querySelector('.system-dialog [data-dialog-result="cancel"]')?.click();
+      document.querySelector('.system-dialog [data-dialog-result="confirm"]')?.click();
       return { uploadChoice, picker, confirmation };
     })()`);
     assert(distributionDialogs.uploadChoice, "上传其他没有打开文件/文件夹选择入口");
     assert(distributionDialogs.picker, "选择设备弹窗不能打开");
-    assert(distributionDialogs.confirmation, "发送确认仍未使用应用内弹窗");
-    checks.push({ name: "上传其他、设备选择、应用内确认弹窗", value: distributionDialogs });
+    assert(distributionDialogs.confirmation, "帮助说明没有使用应用内弹窗");
+    checks.push({ name: "上传其他、设备选择、帮助弹窗", value: distributionDialogs });
 
     await evaluate(`document.querySelector('.tab[data-tab="settings"]').click(); true`);
     await wait(250);

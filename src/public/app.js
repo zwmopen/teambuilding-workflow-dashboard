@@ -14,8 +14,9 @@ let juguangData = null;
 let materialRenderLimit = 12;
 let productRenderLimit = 8;
 let collectionFilters = { stage: "mobile" };
-let activeDistributionPanel = "phones";
+let activeDistributionPanel = "devices";
 let distributionSummaryFilter = "devices";
+let distributionCollectionTypeFilter = "traffic";
 let selectedDistributionCollectionName = "";
 let selectedDistributionDeviceId = "";
 let packageDevicePickerCollectionName = "";
@@ -1769,7 +1770,7 @@ async function showCollectionWorkPreview(previewPath, textPath, workPath) {
   dialog.showModal();
 }
 
-function renderDistribution() {
+function renderDistributionLegacy() {
   const data = dashboard?.distribution || { summary: {}, devices: [] };
   const summary = data.summary || {};
   const devices = DistributionUI.decorateDevices(
@@ -1874,6 +1875,186 @@ function renderDistribution() {
     </div>
   `;
   $("#distributionHistory").innerHTML = renderDistributionRecords(data.deviceHistory || [], "device");
+  showDistributionPanel(activeDistributionPanel);
+}
+
+function renderDistribution() {
+  const data = dashboard?.distribution || { devices: [], collections: [] };
+  const devices = DistributionUI.decorateDevices(data.devices || [], deviceCheckState.onlineDevices || []);
+  const onlineDevices = devices.filter((device) => device.online);
+  const collections = data.collections || [];
+  const mobileCollections = collections.filter((item) => item.workflowStage === "mobile");
+  const officialCollections = collections.filter((item) => item.workflowStage === "official");
+  const usedCollections = collections.filter((item) => item.workflowStage === "used");
+  const visibleMobileCollections = mobileCollections.filter((item) => item.type === distributionCollectionTypeFilter);
+  const visibleOfficialCollections = officialCollections.filter((item) => item.type === distributionCollectionTypeFilter);
+  const stageRoots = data.stageRoots || {};
+  const tabItems = [
+    ["devices", "设备", `${onlineDevices.length}/${devices.length}`],
+    ["mobile", "抖音小红书", mobileCollections.length],
+    ["official", "微信公众号", officialCollections.length],
+    ["used", "已发送", usedCollections.length],
+    ["history", "操作记录", (data.deviceHistory || []).length + (data.officialAccountHistory || []).length + (data.operationHistory || []).length]
+  ];
+
+  $("#distributionTabs").innerHTML = tabItems.map(([panel, label, count]) => `
+    <button type="button" data-panel="${panel}" class="${activeDistributionPanel === panel ? "active" : ""}">
+      <span>${label}</span><b>${count}</b>
+    </button>
+  `).join("");
+
+  const stageHeader = (stage, title, description) => `
+    <header class="distribution-stage-header">
+      <div>
+        <span class="stage-folder-kicker">真实文件夹</span>
+        <h3>${title}</h3>
+        <p>${description}</p>
+        <code>${escapeHtml(stageRoots[stage] || "")}</code>
+      </div>
+      <button type="button" data-open-stage-root="${stage}">打开文件夹</button>
+    </header>
+  `;
+  const typeTabs = (rows) => `
+    <div class="collection-type-tabs" aria-label="作品集类型">
+      <button type="button" data-stage-type-filter="traffic" class="${distributionCollectionTypeFilter === "traffic" ? "active" : ""}">
+        泛流量帖 <b>${rows.filter((item) => item.type === "traffic").length}</b>
+      </button>
+      <button type="button" data-stage-type-filter="conversion" class="${distributionCollectionTypeFilter === "conversion" ? "active" : ""}">
+        精准流量帖 <b>${rows.filter((item) => item.type === "conversion").length}</b>
+      </button>
+      <button type="button" data-stage-type-filter="unclassified" class="${distributionCollectionTypeFilter === "unclassified" ? "active" : ""}">
+        未分类 <b>${rows.filter((item) => item.type === "unclassified").length}</b>
+      </button>
+    </div>
+  `;
+  const classificationSelect = (collection) => `
+    <label class="classification-select">
+      <span>分类</span>
+      <select data-classify-collection="${escapeHtml(collection.name)}">
+        <option value="traffic" ${collection.type === "traffic" ? "selected" : ""}>泛流量帖</option>
+        <option value="conversion" ${collection.type === "conversion" ? "selected" : ""}>精准流量帖</option>
+        <option value="unclassified" ${collection.type === "unclassified" ? "selected" : ""}>未分类</option>
+      </select>
+    </label>
+  `;
+  const devicePicker = () => packageDevicePickerCollectionName ? `
+    <div class="device-picker-backdrop" data-close-device-picker>
+      <section class="device-picker-dialog" role="dialog" aria-modal="true" aria-label="选择当前在线设备">
+        <header><div><strong>发送作品包</strong><span>${escapeHtml(packageDevicePickerCollectionName)}</span></div><button type="button" data-close-device-picker aria-label="关闭">×</button></header>
+        ${renderTransportGuide()}
+        <div class="device-picker-list">
+          ${onlineDevices.length ? onlineDevices.map((device) => `
+            <button type="button" data-confirm-package-device="${escapeHtml(device.id)}">
+              <strong>${escapeHtml(device.note || device.displayName)}</strong>
+              ${renderDeviceTransportTags(device, true)}
+            </button>
+          `).join("") : `<div class="empty-state"><strong>当前没有在线设备</strong><p>设备上线后刷新即可发送。</p></div>`}
+        </div>
+      </section>
+    </div>
+  ` : "";
+  const deviceRows = devices.map((device) => `
+    <article class="device-row ${device.online ? "is-online" : "is-offline"}" data-device-id="${escapeHtml(device.id)}">
+      <div class="device-platform-icon"><b>${device.number}号</b></div>
+      <div class="device-copy">
+        <button class="editable-device-name" type="button" data-edit-device-note="${escapeHtml(device.id)}">${escapeHtml(device.note || device.displayName)}</button>
+        <p>${escapeHtml(device.displayName)} · ${escapeHtml(device.ownerGroup)} · ${device.online ? "在线" : "离线"}</p>
+      </div>
+      <div class="badge-line device-status-badges">
+        ${renderDeviceTransportTags(device)}
+        <span class="state-badge ${device.online ? "good" : "bad"}">${device.online ? "可发送" : "当前离线"}</span>
+      </div>
+      <div class="device-actions">
+        <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补泛流量</button>
+        <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补团建转化</button>
+        <button type="button" data-upload-other="${escapeHtml(device.id)}" ${device.online ? "" : "disabled"}>上传其他</button>
+      </div>
+      ${uploadChoiceDeviceId === device.id ? `<div class="upload-choice-panel">
+        <span>选择要发送给 ${escapeHtml(device.note || device.displayName)} 的内容</span>
+        <button type="button" data-generic-source="file" data-generic-device="${escapeHtml(device.id)}">选择文件</button>
+        <button type="button" data-generic-source="folder" data-generic-device="${escapeHtml(device.id)}">选择文件夹</button>
+        <button type="button" data-close-upload-choice>取消</button>
+      </div>` : ""}
+    </article>
+  `).join("");
+
+  $("#distributionDevices").innerHTML = `
+    <div class="distribution-stats">
+      <article class="summary-card"><span>在线设备</span><strong>${onlineDevices.length}<small> / ${devices.length} 台</small></strong></article>
+      <article class="summary-card"><span>待手机分发</span><strong>${mobileCollections.length}<small> 个</small></strong></article>
+      <article class="summary-card"><span>进行中任务</span><strong>${[...distributionTransferUiTasks.values(), ...genericTransferUiTasks.values()].filter((task) => ["running", "cancelling"].includes(task.state)).length}<small> 个</small></strong></article>
+    </div>
+    ${renderTransferTasks()}
+    <div class="device-list">${deviceRows || `<div class="empty-state"><strong>暂未发现设备</strong><p>刷新后会重新检测 Wi-Fi、USB 和远程连接。</p></div>`}</div>
+  `;
+
+  $("#distributionMobile").innerHTML = `
+    ${stageHeader("mobile", `抖音小红书 · ${mobileCollections.length} 个作品集`, "这里的真实文件夹，就是待发送到手机并发布抖音、小红书的库存。")}
+    ${typeTabs(mobileCollections)}
+    ${renderTransferTasks()}
+    <div class="package-list">${visibleMobileCollections.length ? visibleMobileCollections.map((collection) => {
+      const sendable = collection.sourceValid && collection.dualPlatformEligible;
+      const state = !collection.sourceValid ? ["bad", "作品为空"] : collection.type === "unclassified" ? ["warn", "待补 [泛] / [转] 标签"] : ["good", "可发送到手机"];
+      return `<article class="distribution-package-row ${selectedDistributionCollectionName === collection.name ? "active" : ""}">
+        <button class="package-select" type="button" data-select-package="${escapeHtml(collection.name)}">
+          <span class="package-radio" aria-hidden="true"></span>
+          <span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span>
+        </button>
+        <div class="badge-line"><span class="state-badge ${state[0]}">${state[1]}</span></div>
+        <div class="device-actions">
+          <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品包</button>
+          <button type="button" data-send-package="${escapeHtml(collection.name)}" ${sendable ? "" : "disabled"}>选择设备发送</button>
+          ${classificationSelect(collection)}
+        </div>
+      </article>`;
+    }).join("") : `<div class="empty-state"><strong>这个分类暂时没有作品</strong><p>切换另一个分类，或打开真实文件夹核对。</p></div>`}</div>
+    ${devicePicker()}
+  `;
+
+  $("#distributionOfficial").innerHTML = `
+    ${stageHeader("official", `微信公众号 · ${officialCollections.length} 个作品集`, "手机端发布完成后放到这里；公众号也发布完成后，再压缩归档。")}
+    ${typeTabs(officialCollections)}
+    <div class="official-launcher"><div><strong>微信公众号发布后台</strong><p>先打开作品核对内容，再到公众号后台上传。</p></div><button type="button" class="primary-button" data-open-official-site>打开公众号官网</button></div>
+    <div class="package-list">${visibleOfficialCollections.length ? visibleOfficialCollections.map((collection) => `
+      <article class="distribution-package-row">
+        <div class="package-select"><span class="package-radio" aria-hidden="true"></span><span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span></div>
+        <div class="badge-line"><span class="state-badge ${collection.sourceValid ? "good" : "bad"}">${collection.sourceValid ? "等待公众号发布" : "作品为空"}</span></div>
+        <div class="device-actions">
+          <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品</button>
+          <button type="button" data-mark-used="${escapeHtml(collection.name)}" ${collection.sourceValid ? "" : "disabled"}>三端已发布，归档</button>
+          ${classificationSelect(collection)}
+        </div>
+      </article>
+    `).join("") : `<div class="empty-state"><strong>这个分类暂时没有作品</strong><p>切换另一个分类，或打开真实文件夹核对。</p></div>`}</div>
+  `;
+
+  $("#distributionUsed").innerHTML = `
+    ${stageHeader("used", `已发送 · ${usedCollections.length} 个压缩包`, "这里只存三端都已发布的 ZIP。压缩校验成功后，原作品文件夹会被删除。")}
+    <div class="package-list">${usedCollections.length ? usedCollections.map((collection) => `
+      <article class="distribution-package-row">
+        <div class="package-select"><span class="package-radio archived" aria-hidden="true"></span><span><strong>${escapeHtml(collection.name)}</strong><small>归档压缩包 · 以真实 ZIP 为准</small></span></div>
+        <div class="badge-line"><span class="state-badge good">三端已发布</span></div>
+        <div class="device-actions"><button type="button" data-open-collection="${escapeHtml(collection.archivePath || "")}" ${collection.archivePath ? "" : "disabled"}>打开压缩包</button></div>
+      </article>
+    `).join("") : `<div class="empty-state"><strong>已发送文件夹为空</strong><p>完成三端发布并归档后，会在这里生成 ZIP。</p></div>`}</div>
+  `;
+
+  $("#distributionHistory").innerHTML = `
+    <header class="distribution-stage-header history-heading"><div><span class="stage-folder-kicker">可追溯流水</span><h3>操作记录</h3><p>文件夹是最终事实；这里记录设备传送、公众号确认和结果状态。</p></div></header>
+    ${renderTransferTasks()}
+    <div class="distribution-history-grid">
+      <section><h4>设备传送记录</h4>${renderDistributionRecords(data.deviceHistory || [], "device")}</section>
+      <section><h4>公众号与归档记录</h4>${renderDistributionRecords(data.officialAccountHistory || [], "official")}</section>
+      <section><h4>文件夹操作记录</h4>${(data.operationHistory || []).length ? `<div class="record-list">${data.operationHistory.map((row) => `
+        <article class="record-row">
+          <div class="device-number">夹</div>
+          <div><h3>${escapeHtml(row.action || "文件夹操作")}</h3><p>${escapeHtml(row.collection || "")}${row.targetCollection ? ` → ${escapeHtml(row.targetCollection)}` : ""} · ${escapeHtml(row.time || "")}</p></div>
+          <span class="state-badge good">${escapeHtml(row.status || "completed")}</span>
+          <div></div>
+        </article>
+      `).join("")}</div>` : `<div class="empty-state"><strong>暂无文件夹操作</strong><p>分类改名、阶段移动和归档后会显示在这里。</p></div>`}</section>
+    </div>
+  `;
   showDistributionPanel(activeDistributionPanel);
 }
 
@@ -2032,7 +2213,7 @@ function renderDistributionRecords(rows, kind) {
 }
 
 function showDistributionPanel(panel) {
-  activeDistributionPanel = panel || "phones";
+  activeDistributionPanel = panel || "devices";
   $$("#distributionTabs button").forEach((button) => button.classList.toggle("active", button.dataset.panel === activeDistributionPanel));
   $$(".distribution-panel").forEach((section) => section.classList.toggle("active", section.id === `distribution${activeDistributionPanel[0].toUpperCase()}${activeDistributionPanel.slice(1)}`));
 }
@@ -2144,10 +2325,33 @@ async function markCollectionUsed(collection) {
     });
     await loadDashboard(true);
     collectionFilters.stage = "used";
+    activeDistributionPanel = "used";
     renderCollections();
+    renderDistribution();
     toast("已压缩到“已发送”，原文件夹已清理");
   } catch (error) {
     showSystemNotice("没有完成移动", error.message, { tone: "danger" });
+  }
+}
+
+async function classifyDistributionCollection(collection, type) {
+  const label = type === "conversion" ? "精准流量帖" : type === "traffic" ? "泛流量帖" : "未分类";
+  try {
+    const result = await api("/api/distribution/classify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ collection, type, confirmed: true })
+    });
+    distributionCollectionTypeFilter = type;
+    selectedDistributionCollectionName = result.targetName || collection;
+    await loadDashboard(true);
+    renderCollections();
+    renderDistribution();
+    toast(`已归为“${label}”，本地文件夹已同步改名`);
+  } catch (error) {
+    await loadDashboard(true);
+    renderDistribution();
+    showSystemNotice("分类没有修改", error.message, { tone: "danger" });
   }
 }
 
@@ -2339,6 +2543,55 @@ function renderJuguangRecommendations() {
   $$(".juguang-copy").forEach((button) => button.addEventListener("click", () => {
     copyText(`复刻选题：${button.dataset.keyword}。按“人数 + 玩法 + 预算/路线 + 避坑”生成团建笔记，并保留目标关键词。`, "选题指令已复制");
   }));
+}
+
+const PAGE_HELP = {
+  overviewView: {
+    title: "总览怎么用",
+    description: "这里汇总本地素材、模板、成品、设备和分发阶段。数字来自真实文件夹与运行记录，点击相应卡片可进入具体页面。"
+  },
+  dashboardView: {
+    title: "素材与生产怎么用",
+    description: "先选择素材文件夹和模板，再按作品数量与质量启动生产。素材只提供内容，模板负责固定风格，生成结果会进入成品库。"
+  },
+  productsView: {
+    title: "成品库怎么用",
+    description: "这里按真实文件夹查看作品集。抖音小红书、微信公众号、已发送分别对应三个物理目录，移动后刷新即可同步。"
+  },
+  distributionView: {
+    title: "分发界面怎么用",
+    description: "先在“抖音小红书”选择泛流量帖或精准流量帖并发送到在线设备；手机端发布完成后作品进入“微信公众号”；三端都发布后压缩到“已发送”并删除原目录。所有操作在“操作记录”中可追溯。"
+  },
+  settingsView: {
+    title: "设置怎么用",
+    description: "这里配置本地目录、外观和运行参数。修改目录后请刷新，系统会重新读取真实文件夹，不会凭界面状态猜测库存。"
+  },
+  juguangView: {
+    title: "聚光数据怎么用",
+    description: "这里用于查看和筛选投放、关键词及选题参考。刷新后读取最新数据，复制选题不会自动发布内容。"
+  },
+  workflowView: {
+    title: "自动化工作流怎么用",
+    description: "这里查看生产与分发自动化的执行状态。每次任务都应有开始、完成或失败记录，文件是否存在仍以本地目录为准。"
+  }
+};
+
+function installPageHelpButtons() {
+  Object.entries(PAGE_HELP).forEach(([viewId, help]) => {
+    const view = document.getElementById(viewId);
+    const heading = view?.querySelector(".page-heading, .production-api-flow");
+    if (!heading || heading.querySelector("[data-page-help]")) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "page-help-button";
+    button.dataset.pageHelp = viewId;
+    button.title = help.description;
+    button.setAttribute("aria-label", `${help.title}，点击查看说明`);
+    button.textContent = "?";
+    const actionRow = heading.querySelector(".detail-button-row");
+    if (actionRow) actionRow.appendChild(button);
+    else heading.appendChild(button);
+  });
 }
 
 function restoreSelection() {
@@ -2612,6 +2865,14 @@ function bindEvents() {
     if (openPreviewFolder?.dataset.openPreviewFolder) openPath(openPreviewFolder.dataset.openPreviewFolder);
     const distributionTab = event.target.closest("#distributionTabs [data-panel]");
     if (distributionTab) showDistributionPanel(distributionTab.dataset.panel);
+    const stageTypeFilter = event.target.closest("[data-stage-type-filter]");
+    if (stageTypeFilter) {
+      distributionCollectionTypeFilter = stageTypeFilter.dataset.stageTypeFilter;
+      packageDevicePickerCollectionName = "";
+      renderDistribution();
+    }
+    const openStageRoot = event.target.closest("[data-open-stage-root]");
+    if (openStageRoot) openPath(dashboard?.distribution?.stageRoots?.[openStageRoot.dataset.openStageRoot]);
     const distributionFilter = event.target.closest("[data-distribution-filter]");
     if (distributionFilter) {
       distributionSummaryFilter = distributionFilter.dataset.distributionFilter;
@@ -2697,8 +2958,20 @@ function bindEvents() {
     }
     const confirmOfficial = event.target.closest("[data-confirm-official]");
     if (confirmOfficial) confirmOfficialCollection(confirmOfficial.dataset.confirmOfficial);
+    const pageHelp = event.target.closest("[data-page-help]");
+    if (pageHelp && PAGE_HELP[pageHelp.dataset.pageHelp]) {
+      const help = PAGE_HELP[pageHelp.dataset.pageHelp];
+      showSystemNotice(help.title, help.description, { eyebrow: "使用说明" });
+    }
     const theme = event.target.closest("[data-theme]");
     if (theme) applyTheme(theme.dataset.theme);
+  });
+  document.addEventListener("change", (event) => {
+    const classification = event.target.closest?.("[data-classify-collection]");
+    if (classification) classifyDistributionCollection(
+      classification.dataset.classifyCollection,
+      classification.value
+    );
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeCustomSelects();
@@ -3005,6 +3278,7 @@ localStorage.setItem("tb-dashboard-theme-default-version", themeDefaultVersion);
 applyTheme(initialTheme);
 loadDashboard()
   .then(() => {
+    installPageHelpButtons();
     restoreTransferTasks();
     if (!deviceScanStarted) checkDistributionDevices({ silent: true, refreshInventory: false });
     window.setInterval(() => {

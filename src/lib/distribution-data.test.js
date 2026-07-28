@@ -10,6 +10,7 @@ const {
   getDistributionSnapshot,
   markOfficialUsed,
   moveCollectionSourceToStage,
+  renameCollectionType,
   reconcileWorkflowFolders
 } = require("./distribution-data");
 
@@ -375,6 +376,31 @@ test("marking official use stores a zip in 已发送 and removes the original fo
     }).collections.find((entry) => entry.name === "作品集_064[转]");
     assert.equal(item.workflowStage, "used");
     assert.equal(item.archivePath, result.targetPath);
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
+test("classification changes rename the real stage folder and write an operation record", () => {
+  const fixture = makeFixture();
+  try {
+    const mobileRoot = path.join(fixture.collectionsRoot, "抖音小红书");
+    createCollection(mobileRoot, "作品集_070");
+    const result = renameCollectionType({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot,
+      collection: "作品集_070",
+      type: "traffic"
+    });
+    assert.equal(result.targetName, "作品集_070[泛]");
+    assert.equal(fs.existsSync(path.join(mobileRoot, "作品集_070")), false);
+    assert.equal(fs.existsSync(path.join(mobileRoot, "作品集_070[泛]")), true);
+    const snapshot = getDistributionSnapshot({
+      publishRoot: fixture.publishRoot,
+      libraryRoot: fixture.collectionsRoot
+    });
+    assert.equal(snapshot.collections.find((item) => item.name === "作品集_070[泛]").type, "traffic");
+    assert.equal(snapshot.operationHistory[0].action, "修改作品集分类");
   } finally {
     cleanup(fixture.root);
   }

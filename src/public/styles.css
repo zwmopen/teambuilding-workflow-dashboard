@@ -2751,7 +2751,7 @@ label {
 
 .segment-tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 6px;
   margin-bottom: 14px;
   padding: 6px;
@@ -2759,9 +2759,159 @@ label {
   background: rgba(248, 251, 249, 0.66);
 }
 
+.distribution-stage-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.distribution-stage-tabs button b {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: inherit;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-size: 11px;
+}
+
 .distribution-panel {
   display: none;
   min-height: calc(100vh - 280px);
+}
+
+.distribution-stage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel-light) 88%, var(--selection));
+}
+
+.distribution-stage-header h3,
+.distribution-stage-header p {
+  margin: 0;
+}
+
+.distribution-stage-header p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.distribution-stage-header code {
+  display: block;
+  max-width: min(72vw, 980px);
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--accent-dark);
+  font-family: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.distribution-stage-header > button,
+.page-help-button {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
+  color: var(--accent-dark);
+  background: var(--selection);
+  font-weight: 750;
+}
+
+.stage-folder-kicker {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.collection-type-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.collection-type-tabs button {
+  min-width: 150px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--panel-light);
+  font-weight: 750;
+}
+
+.collection-type-tabs button.active {
+  color: #fff;
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.collection-type-tabs b {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.unclassified-note {
+  margin: -3px 0 12px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  color: #7c5b23;
+  background: #fff5d9;
+  font-size: 12px;
+}
+
+.distribution-history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.distribution-history-grid > section {
+  min-width: 0;
+}
+
+.distribution-history-grid h4 {
+  margin: 0 0 8px;
+}
+
+.page-help-button {
+  display: inline-grid;
+  width: 38px;
+  height: 38px;
+  min-height: 38px !important;
+  padding: 0 !important;
+  place-items: center;
+  border-radius: 50% !important;
+  font-size: 18px;
+  cursor: help;
+}
+
+.classification-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  background: var(--panel-light);
+  font-size: 11px;
+}
+
+.classification-select select {
+  max-width: 112px;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  font: inherit;
+  font-weight: 750;
+  outline: none;
 }
 
 .distribution-panel.active {

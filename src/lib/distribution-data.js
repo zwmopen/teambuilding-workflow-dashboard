@@ -349,6 +349,31 @@ function archiveAndRemoveCollection(sourcePath, archiveRoot, collection) {
   }
 }
 
+function workflowOperationLogFile(stageRoots) {
+  return path.join(stageRoots.workflowRoot, "_portfolio_move_logs", "operation-history.jsonl");
+}
+
+function appendWorkflowOperation(stageRoots, operation = {}) {
+  const logFile = workflowOperationLogFile(stageRoots);
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  const row = { time: new Date().toISOString(), status: "completed", ...operation };
+  fs.appendFileSync(logFile, `${JSON.stringify(row)}\n`, "utf8");
+  return row;
+}
+
+function readWorkflowOperations(stageRoots) {
+  const logFile = workflowOperationLogFile(stageRoots);
+  if (!fs.existsSync(logFile)) return [];
+  return fs.readFileSync(logFile, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try { return [JSON.parse(line)]; } catch { return []; }
+    })
+    .slice(-200)
+    .reverse();
+}
+
 function ensureWorkflowCompatibilityLinks(options = {}) {
   const publishRoot = path.resolve(options.publishRoot || "");
   const libraryRoot = path.resolve(options.libraryRoot || "");
@@ -402,7 +427,59 @@ function moveCollectionSourceToStage(options = {}) {
     fs.renameSync(sourcePath, targetPath);
     syncLegacyLinksForStage(publishRoot, collection, targetPath, stage);
   }
+  appendWorkflowOperation(stageRoots, {
+    action: stage === "used" ? "压缩归档并删除源文件夹" : "移动到微信公众号",
+    collection,
+    from: sourcePath,
+    to: targetPath,
+    stage
+  });
   return { ok: true, collection, sourcePath, targetPath, stage };
+}
+
+function renameCollectionType(options = {}) {
+  const publishRoot = path.resolve(options.publishRoot || "");
+  const libraryRoot = path.resolve(options.libraryRoot || "");
+  const collection = String(options.collection || "").trim();
+  const type = ["traffic", "conversion", "unclassified"].includes(options.type) ? options.type : "";
+  if (!type) throw new Error("只能归为泛流量帖、精准流量帖或未分类");
+  if (!collection || path.basename(collection) !== collection || /[\\/\r\n\0]/.test(collection)) {
+    throw new Error("作品集名称无效");
+  }
+  const snapshot = getDistributionSnapshot({ publishRoot, libraryRoot });
+  const item = snapshot.collections.find((entry) => entry.name === collection);
+  if (!item?.sourcePath || !["mobile", "official"].includes(item.workflowStage)) {
+    throw new Error("只能修改抖音小红书或微信公众号里的真实作品集");
+  }
+  const stageRoots = getWorkflowStageRoots(libraryRoot);
+  const sourcePath = fs.realpathSync.native(item.sourcePath);
+  const sourceStat = fs.lstatSync(sourcePath);
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) throw new Error("只能修改真实作品文件夹");
+  const cleanName = collection.replace(/\[(?:泛|转)\]/g, "");
+  const targetName = `${cleanName}${type === "conversion" ? "[转]" : type === "traffic" ? "[泛]" : ""}`;
+  if (targetName === collection) return { ok: true, collection, targetName, sourcePath, targetPath: sourcePath };
+  const targetPath = path.join(path.dirname(sourcePath), targetName);
+  if (fs.existsSync(targetPath)) throw new Error(`已存在同名作品集：${targetName}`);
+  Object.values(PLATFORM_DIRS).forEach((relativeDirectory) => {
+    const legacyPath = path.join(publishRoot, relativeDirectory, collection);
+    try {
+      if (fs.lstatSync(legacyPath).isSymbolicLink()) fs.unlinkSync(legacyPath);
+    } catch {
+      // Missing or non-link compatibility entries are left untouched.
+    }
+  });
+  fs.renameSync(sourcePath, targetPath);
+  syncLegacyLinksForStage(publishRoot, targetName, targetPath, item.workflowStage);
+  appendWorkflowOperation(stageRoots, {
+    action: "修改作品集分类",
+    collection,
+    targetCollection: targetName,
+    from: sourcePath,
+    to: targetPath,
+    stage: item.workflowStage,
+    type
+  });
+  return { ok: true, collection, targetName, sourcePath, targetPath, type, stage: item.workflowStage };
 }
 
 function reconcileWorkflowFolders(options = {}) {
@@ -740,7 +817,8 @@ function getDistributionSnapshot(options = {}) {
     summary,
     collections,
     deviceHistory: deviceRows.slice().reverse(),
-    officialAccountHistory: officialRows.slice().reverse()
+    officialAccountHistory: officialRows.slice().reverse(),
+    operationHistory: readWorkflowOperations(stageRoots)
   };
 }
 
@@ -752,6 +830,7 @@ module.exports = {
   getDistributionSnapshot,
   markOfficialUsed,
   moveCollectionSourceToStage,
+  renameCollectionType,
   parseCsv,
   reconcileWorkflowFolders
 };

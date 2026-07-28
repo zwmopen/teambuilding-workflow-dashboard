@@ -52,7 +52,7 @@
         <section class="overview-layout">
           <header class="page-heading">
             <div><p class="label">今天从哪里继续</p><h2>工作流总览</h2><p>只显示真实可读取的本地状态，不推测 ChatGPT 页面内部进度。</p></div>
-            <button class="primary-button" id="overviewRefreshBtn">刷新状态</button>
+            <div class="detail-button-row"><button class="primary-button" id="overviewRefreshBtn">刷新状态</button><button class="page-help-button" type="button" data-page-help="overviewView" title="查看这个页面的使用说明">?</button></div>
           </header>
           <div class="overview-stats" id="overviewStats"></div>
           <section class="overview-grid">
@@ -69,6 +69,7 @@
             <span class="api-mode-badge">本地作品生产</span>
             <strong>模板定样，素材换内容</strong>
             <small>先锁定视觉模板，再选择素材，生成同风格作品与配套文案。</small>
+            <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明">?</button>
           </div>
           <div class="production-api-steps">
             <label class="production-api-step"><b>01</b><span><strong>选择模板</strong><select id="templateQuickSelect" class="search-input compact-select"></select></span></label>
@@ -236,7 +237,7 @@
         <section class="collection-layout">
           <header class="page-heading">
             <div><p class="label">内容流水线</p><h2>作品集</h2><p>真实文件夹依次流转：抖音小红书 → 微信公众号 → 已发送压缩包。</p></div>
-            <div class="detail-button-row"><button class="primary-button" id="openPublishRootBtn">打开作品集目录</button></div>
+            <div class="detail-button-row"><button class="primary-button" id="openPublishRootBtn">打开作品集目录</button><button class="page-help-button" type="button" data-page-help="productsView" title="查看作品集的使用说明">?</button></div>
           </header>
           <section class="folder-source-bar" aria-label="作品集目录设置">
             <input id="collectionRootInput" class="search-input" type="text" placeholder="粘贴作品集目录后按回车" />
@@ -264,20 +265,18 @@
         <section class="distribution-layout">
           <header class="page-heading">
             <div><p class="label">真实执行入口</p><h2>分发功能</h2><p>自动识别在线设备，完成手机补笔记、公众号上传和分发记录。</p></div>
-            <div class="detail-button-row"><button id="reconcileDistributionFoldersBtn" type="button">按历史记录整理</button><button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button></div>
+            <div class="detail-button-row"><button id="reconcileDistributionFoldersBtn" type="button">按历史记录整理</button><button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button><button class="page-help-button" type="button" data-page-help="distributionView" title="查看分发流程的使用说明">?</button></div>
           </header>
           <section class="folder-source-bar compact" aria-label="分发作品集目录设置">
             <input id="distributionCollectionRootInput" class="search-input" type="text" placeholder="粘贴分发作品集目录后按回车" />
             <button id="chooseDistributionCollectionRootBtn" class="ghost-button" type="button">选择目录</button>
             <button id="applyDistributionCollectionRootBtn" class="primary-button" type="button">读取目录</button>
           </section>
-          <div class="segment-tabs" id="distributionTabs">
-            <button class="active" data-panel="phones">手机补笔记</button>
-            <button data-panel="official">公众号补笔记</button>
-            <button data-panel="history">分发记录</button>
-          </div>
-          <section class="distribution-panel active" id="distributionPhones"></section>
+          <div class="segment-tabs distribution-stage-tabs" id="distributionTabs"></div>
+          <section class="distribution-panel active" id="distributionDevices"></section>
+          <section class="distribution-panel" id="distributionMobile"></section>
           <section class="distribution-panel" id="distributionOfficial"></section>
+          <section class="distribution-panel" id="distributionUsed"></section>
           <section class="distribution-panel" id="distributionHistory"></section>
           <section class="codex-command-bar">
             <strong>Codex</strong>
@@ -289,7 +288,7 @@
 
       <section class="view" id="settingsView">
         <section class="settings-layout">
-          <header class="page-heading"><div><p class="label">外观与本地数据</p><h2>设置</h2><p>主题偏好会保存在本机浏览器，不修改项目素材。</p></div></header>
+          <header class="page-heading"><div><p class="label">外观与本地数据</p><h2>设置</h2><p>主题偏好会保存在本机浏览器，不修改项目素材。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置的使用说明">?</button></header>
           <section class="settings-card appearance-card">
             <div class="settings-card-heading"><div><p class="label">显示偏好</p><h3>界面风格</h3></div><span class="version-status">即时切换</span></div>
             <div class="theme-options">
