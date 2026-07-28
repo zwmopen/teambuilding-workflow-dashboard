@@ -77,6 +77,30 @@
             <div class="production-api-step"><b>04</b><span><strong>作品 + 文案</strong><small>落盘后进入作品集</small></span></div>
           </div>
         </section>
+        <section class="production-console glass" aria-label="本地 API 生产设置">
+          <div class="production-console-head">
+            <div><p class="label">当前模板的生产配方</p><h2>校准出图</h2><p>素材和模板从下方三个库选择；结果只进入待审区，通过质检后才进成品库。</p></div>
+            <span class="review-only-badge">先校准 · 后批量</span>
+          </div>
+          <div class="production-controls">
+            <label><span>生图平台</span><select id="productionApiProvider" class="search-input"><option value="local-openai">本地 GPT 生图</option><option value="minimax">MiniMax 生图</option></select></label>
+            <label><span>接口地址</span><input id="productionApiBaseUrl" class="search-input" type="url" /></label>
+            <label><span>模型</span><input id="productionApiModel" class="search-input" type="text" /></label>
+            <label><span>本机密钥</span><input id="productionApiKey" class="search-input" type="password" autocomplete="off" placeholder="已保存时可留空" /></label>
+            <label><span>本次数量</span><select id="productionBatchCount" class="search-input"><option value="1">1 张（校准）</option><option value="2">2 张（对比）</option><option value="6">6 张（批量）</option></select></label>
+            <label><span>质量</span><select id="productionQuality" class="search-input"><option value="标准">标准</option><option value="高质量">高质量</option><option value="严格母版">严格母版</option></select></label>
+          </div>
+          <label class="production-prompt-field"><span>提示词 / 本批补充要求</span><textarea id="productionPrompt" rows="4" placeholder="系统已自动加入 A/B/C 身份、事实锁、江浙沪、10人起接、无价格不写价格、独立3:4等规则。这里仅补充本批要求。"></textarea></label>
+          <label class="production-confirm"><input id="productionPlanConfirmed" type="checkbox" /><span>出图计划已经确认；先生成校准图，不直接写入正式成品库</span></label>
+          <div class="production-actions">
+            <button id="saveProductionApiBtn" type="button">保存本机接口</button>
+            <button id="testProductionApiBtn" type="button">测试连接</button>
+            <button id="generateCoverCalibrationBtn" class="primary-button" type="button">生成封面校准</button>
+            <button id="generateInnerCalibrationBtn" type="button">生成内页校准</button>
+          </div>
+          <div class="production-live-status" id="productionLiveStatus">请选择素材与模板，然后确认出图计划。</div>
+          <div class="production-output-grid" id="productionOutputGrid"></div>
+        </section>
         <div class="three-pane" id="threePane">
           <aside class="filter-pane">
             <div class="stats">
@@ -273,16 +297,6 @@
               <button id="savePathSettingsBtn" class="primary-button" type="button">保存目录设置</button>
               <button id="runExistingWorkPackageBtn" type="button">运行现有一键工作包</button>
             </div>
-          </section>
-          <section class="settings-card image-api-card">
-            <div class="settings-card-heading"><div><p class="label">下一阶段生产内核</p><h3>生图 API</h3></div><span class="version-status" id="settingsImageApiStatus">待接入</span></div>
-            <p class="path-line">这里只保存服务地址、模型名和输出规则；访问密钥从本机环境读取，不写入项目、日志或导出文件。</p>
-            <div class="path-settings-grid image-api-settings-grid">
-              <label><span>接口类型</span><select id="settingsImageApiProvider" class="search-input"><option value="openai-compatible">OpenAI 兼容接口</option><option value="custom">自定义接口</option></select></label>
-              <label><span>接口地址</span><input id="settingsImageApiBaseUrl" class="search-input" type="url" placeholder="例如：https://…/v1" /></label>
-              <label><span>生图模型</span><input id="settingsImageApiModel" class="search-input" type="text" placeholder="配置后显示真实模型" /></label>
-            </div>
-            <div class="settings-actions"><button id="saveImageApiSettingsBtn" class="primary-button" type="button">保存 API 设置</button></div>
           </section>
           <section class="settings-card dedup-card">
             <div class="settings-card-heading">

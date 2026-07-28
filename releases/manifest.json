@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.9.4",
-  "source_commit": "80fce76",
+  "version": "0.9.5",
+  "source_commit": "pending",
   "artifacts": [
+    {
+      "file": "0.9.5/团建内容工作台-0.9.5-便携版.exe",
+      "sha256": "898FC55FB6B2C9271D7E03423DB805FF16493BA04C37DF174B834BC7ED7385F2",
+      "size": 89534841,
+      "platform": "Windows x64",
+      "built_at": "2026-07-28",
+      "known_limits": "本地 gpt-image-2 已通过真实出图；MiniMax 当前本机密钥仍被官方接口拒绝。校准结果只进入待审区，正式批量入库与文案 API 闭环仍需后续版本完成。"
+    },
     {
       "file": "0.9.4/团建内容工作台-0.9.4-便携版.exe",
       "sha256": "480FD9F3192B8EF1A6F73F7188778248A486691AE80C588DA955C8CAFB367EE7",

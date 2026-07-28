@@ -436,9 +436,9 @@ function renderWorkspaceSettings() {
   if ($("#settingsBatchSize")) $("#settingsBatchSize").value = settings.workPackage?.batchSize || 14;
   if ($("#settingsAutoGroup")) $("#settingsAutoGroup").checked = settings.workPackage?.autoGroup !== false;
   if ($("#settingsAutoZip")) $("#settingsAutoZip").checked = settings.workPackage?.autoZip !== false;
-  if ($("#settingsImageApiProvider")) $("#settingsImageApiProvider").value = settings.imageApi?.provider || "openai-compatible";
-  if ($("#settingsImageApiBaseUrl")) $("#settingsImageApiBaseUrl").value = settings.imageApi?.baseUrl || "";
-  if ($("#settingsImageApiModel")) $("#settingsImageApiModel").value = settings.imageApi?.model || "";
+  if ($("#productionApiProvider")) $("#productionApiProvider").value = settings.imageApi?.provider || "local-openai";
+  if ($("#productionApiBaseUrl")) $("#productionApiBaseUrl").value = settings.imageApi?.baseUrl || "http://localhost:62104/v1";
+  if ($("#productionApiModel")) $("#productionApiModel").value = settings.imageApi?.model || "gpt-image-2";
   const imageApiReady = Boolean(settings.imageApi?.baseUrl && settings.imageApi?.model && settings.imageApi?.credentialConfigured);
   if ($("#settingsImageApiStatus")) $("#settingsImageApiStatus").textContent = imageApiReady ? "凭据已连接" : settings.imageApi?.baseUrl ? "等待本机密钥" : "待接入";
   if ($("#imageApiStatus")) $("#imageApiStatus").textContent = imageApiReady ? `${settings.imageApi.model} · 已连接` : settings.imageApi?.baseUrl ? "接口已保存，等待密钥" : "API 待接入";
@@ -448,6 +448,97 @@ function renderWorkspaceSettings() {
   if ($("#settingsVersionStatus")) $("#settingsVersionStatus").textContent = appInfo.desktop ? "桌面版运行中" : "浏览器预览中";
   if ($("#settingsDiagnosticsSummary")) {
     $("#settingsDiagnosticsSummary").textContent = `运行数据：${appInfo.runtimeRoot || "未识别"}`;
+  }
+}
+
+function currentImageApiPayload() {
+  return {
+    provider: $("#productionApiProvider")?.value || "local-openai",
+    baseUrl: $("#productionApiBaseUrl")?.value || "",
+    model: $("#productionApiModel")?.value || "",
+    apiKey: $("#productionApiKey")?.value || ""
+  };
+}
+
+function setProductionLiveStatus(message, tone = "") {
+  const status = $("#productionLiveStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.className = `production-live-status${tone ? ` ${tone}` : ""}`;
+}
+
+async function saveProductionApi() {
+  const payload = currentImageApiPayload();
+  const result = await api("/api/image-api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if ($("#productionApiKey")) $("#productionApiKey").value = "";
+  dashboard.workspaceSettings.imageApi = result.imageApi;
+  renderWorkspaceSettings();
+  setProductionLiveStatus(`${result.imageApi.model} 已保存到本机安全凭据区。`);
+}
+
+async function testProductionApi() {
+  setProductionLiveStatus("正在核对接口与模型……", "running");
+  try {
+    const result = await api("/api/image-api/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(currentImageApiPayload())
+    });
+    setProductionLiveStatus(result.modelAvailable ? "连接成功，当前模型可用。" : "接口已连接，但模型列表里没有当前模型。", result.modelAvailable ? "" : "error");
+  } catch (error) {
+    setProductionLiveStatus(error.message, "error");
+  }
+}
+
+function renderProductionOutputs(result) {
+  const grid = $("#productionOutputGrid");
+  if (!grid) return;
+  grid.innerHTML = (result.results || []).map((item, index) => `
+    <button class="production-output-card" type="button" data-output-path="${escapeHtml(item.outputFile)}">
+      <img src="${escapeHtml(item.previewUrl)}" alt="待审图 ${index + 1}" />
+      <span>${item.width || "?"}×${item.height || "?"} · ${(item.bytes / 1024 / 1024).toFixed(1)} MB</span>
+    </button>
+  `).join("");
+  grid.querySelectorAll("[data-output-path]").forEach((button) => button.addEventListener("click", () => openPath(button.dataset.outputPath)));
+}
+
+async function generateCalibration(stage) {
+  if (!selectedMaterial || !selectedTemplate) {
+    setProductionLiveStatus("请先从素材库和模板库各选择一项。", "error");
+    return;
+  }
+  if (!$("#productionPlanConfirmed")?.checked) {
+    setProductionLiveStatus("先确认出图计划。系统不会绕过确认直接批量生产。", "error");
+    return;
+  }
+  const count = Number($("#productionBatchCount")?.value || 1);
+  setProductionLiveStatus(`正在生成${stage === "inner" ? "内页" : "封面"}校准图（${count}张）；结果只进入待审区……`, "running");
+  ["#generateCoverCalibrationBtn", "#generateInnerCalibrationBtn"].forEach((selector) => { if ($(selector)) $(selector).disabled = true; });
+  try {
+    const result = await api("/api/image-api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...currentImageApiPayload(),
+        materialPath: selectedMaterial.path,
+        templatePath: selectedTemplate.path,
+        prompt: $("#productionPrompt")?.value || "",
+        quality: $("#productionQuality")?.value || "标准",
+        count,
+        stage,
+        confirmed: true
+      })
+    });
+    renderProductionOutputs(result);
+    setProductionLiveStatus(`已生成 ${result.results.length} 张待审校准图。请检查风格、事实和中文，再决定是否继续。`);
+  } catch (error) {
+    setProductionLiveStatus(error.message, "error");
+  } finally {
+    ["#generateCoverCalibrationBtn", "#generateInnerCalibrationBtn"].forEach((selector) => { if ($(selector)) $(selector).disabled = false; });
   }
 }
 
@@ -2520,10 +2611,15 @@ function bindEvents() {
     saveWorkspacePaths({ returnTab: "settings" })
       .catch((error) => showSystemNotice("设置没有保存", error.message, { tone: "danger" }));
   });
-  $("#saveImageApiSettingsBtn")?.addEventListener("click", () => {
-    saveWorkspacePaths({ returnTab: "settings", includeImageApi: true })
-      .then(() => showSystemNotice("生图 API 设置已保存", "密钥只从本机环境读取；接口未连通前不会显示为可生产。", { tone: "success" }))
-      .catch((error) => showSystemNotice("API 设置没有保存", error.message, { tone: "danger" }));
+  $("#saveProductionApiBtn")?.addEventListener("click", () => saveProductionApi().catch((error) => setProductionLiveStatus(error.message, "error")));
+  $("#testProductionApiBtn")?.addEventListener("click", testProductionApi);
+  $("#generateCoverCalibrationBtn")?.addEventListener("click", () => generateCalibration("cover"));
+  $("#generateInnerCalibrationBtn")?.addEventListener("click", () => generateCalibration("inner"));
+  $("#productionApiProvider")?.addEventListener("change", () => {
+    const minimax = $("#productionApiProvider").value === "minimax";
+    $("#productionApiBaseUrl").value = minimax ? "https://api.minimaxi.com/v1" : "http://localhost:62104/v1";
+    $("#productionApiModel").value = minimax ? "image-01" : "gpt-image-2";
+    setProductionLiveStatus(minimax ? "已切换 MiniMax；请测试当前密钥是否有效。" : "已切换本地 GPT 生图。");
   });
   $("#checkAppUpdateBtn")?.addEventListener("click", async () => {
     const previousVersion = dashboard?.appInfo?.version || "未知";

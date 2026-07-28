@@ -4,6 +4,7 @@ const path = require("path");
 const url = require("url");
 const childProcess = require("child_process");
 const crypto = require("crypto");
+const { generateImages, normalizeImageApiConfig } = require("./lib/image-generation");
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
 const {
   confirmOfficialUpload,
@@ -39,6 +40,8 @@ const STATE_FILE = path.join(DATA_ROOT, "state.json");
 const PROMPTS_FILE = path.join(DATA_ROOT, "prompt-versions.json");
 const TASK_INDEX_FILE = path.join(DATA_ROOT, "production-task-index.json");
 const APP_SETTINGS_FILE = path.join(DATA_ROOT, "app-settings.json");
+const IMAGE_API_SECRET_FILE = path.join(DATA_ROOT, "secrets", "image-api.local.env");
+const IMAGE_REVIEW_ROOT = path.join(DATA_ROOT, "API生产待审");
 const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
 const DEVICE_PRESENCE_FILE = path.join(DATA_ROOT, "device-presence.json");
 const DEVICE_NOTES_FILE = path.join(DATA_ROOT, "device-notes.json");
@@ -602,12 +605,7 @@ function getWorkspaceSettings() {
   const defaultMaterialRoot = path.join(PROJECT_ROOT, "01-素材库");
   return {
     materialRoot: path.resolve(local.materialRoot || defaultMaterialRoot),
-    imageApi: {
-      provider: String(local.imageApi?.provider || "openai-compatible"),
-      baseUrl: String(local.imageApi?.baseUrl || ""),
-      model: String(local.imageApi?.model || ""),
-      credentialConfigured: Boolean(process.env.TEAMBUILDING_IMAGE_API_KEY)
-    },
+    imageApi: publicImageApiSettings(local.imageApi),
     workPackage: {
       configFile: WORKPKG_CONFIG_FILE,
       scriptDirectory: path.dirname(WORKPKG_CONFIG_FILE),
@@ -617,6 +615,93 @@ function getWorkspaceSettings() {
       autoZip: workPackage.portfolio_auto_zip !== false
     }
   };
+}
+
+function readEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+  return fs.readFileSync(filePath, "utf8").split(/\r?\n/).reduce((result, line) => {
+    const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+    if (match) result[match[1]] = match[2].trim();
+    return result;
+  }, {});
+}
+
+function imageApiCredential(provider, suppliedKey = "") {
+  if (String(suppliedKey).trim()) return String(suppliedKey).trim();
+  const saved = readEnvFile(IMAGE_API_SECRET_FILE);
+  if (provider === "minimax") {
+    return saved.MINIMAX_IMAGE_API_KEY || process.env.TEAMBUILDING_MINIMAX_IMAGE_API_KEY
+      || process.env.MINIMAXI_API_KEY || process.env.MINIMAX_API_KEY || "";
+  }
+  return saved.LOCAL_IMAGE_API_KEY || process.env.TEAMBUILDING_IMAGE_API_KEY || "";
+}
+
+function publicImageApiSettings(value = {}) {
+  const saved = readEnvFile(IMAGE_API_SECRET_FILE);
+  const config = normalizeImageApiConfig({
+    provider: value?.provider || saved.LOCAL_IMAGE_API_PROVIDER,
+    baseUrl: value?.baseUrl || saved.LOCAL_IMAGE_API_BASE_URL,
+    model: value?.model || saved.LOCAL_IMAGE_API_MODEL
+  });
+  return { ...config, credentialConfigured: Boolean(imageApiCredential(config.provider)), secretStoredLocally: true };
+}
+
+function saveImageApiSecret({ provider, baseUrl, model, apiKey }) {
+  const existing = readEnvFile(IMAGE_API_SECRET_FILE);
+  const config = normalizeImageApiConfig({ provider, baseUrl, model });
+  const next = { ...existing };
+  next.LOCAL_IMAGE_API_PROVIDER = config.provider;
+  next.LOCAL_IMAGE_API_BASE_URL = config.baseUrl;
+  next.LOCAL_IMAGE_API_MODEL = config.model;
+  if (String(apiKey || "").trim()) {
+    if (config.provider === "minimax") next.MINIMAX_IMAGE_API_KEY = String(apiKey).trim();
+    else next.LOCAL_IMAGE_API_KEY = String(apiKey).trim();
+  }
+  fs.mkdirSync(path.dirname(IMAGE_API_SECRET_FILE), { recursive: true });
+  const lines = [
+    "# 团建内容工作台本机生图凭据。禁止提交仓库、日志或导出包。",
+    "# 界面只返回是否已配置，不会回传密钥明文。",
+    ...Object.entries(next).map(([key, value]) => `${key}=${value}`)
+  ];
+  fs.writeFileSync(IMAGE_API_SECRET_FILE, `${lines.join("\n")}\n`, "utf8");
+  return config;
+}
+
+function safeOutputName(value) {
+  return String(value || "待审作品").replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, " ").trim().slice(0, 70) || "待审作品";
+}
+
+function collectReferenceImages(folderPath, limit = 4) {
+  if (!folderPath || !isAllowedFile(folderPath) || !exists(folderPath) || !fs.statSync(folderPath).isDirectory()) return [];
+  return safeList(folderPath)
+    .filter((entry) => entry.isFile() && imageExts.has(path.extname(entry.name).toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }))
+    .slice(0, limit)
+    .map((entry) => path.join(folderPath, entry.name));
+}
+
+function materialFacts(folderPath) {
+  if (!folderPath || !isAllowedFile(folderPath) || !exists(folderPath)) return "";
+  return safeList(folderPath)
+    .filter((entry) => entry.isFile() && textExts.has(path.extname(entry.name).toLowerCase()))
+    .slice(0, 3)
+    .map((entry) => readPromptFile(path.join(folderPath, entry.name)))
+    .join("\n")
+    .slice(0, 12000);
+}
+
+function buildProductionPrompt(body, facts) {
+  const userPrompt = String(body.prompt || "").trim().slice(0, 16000);
+  return [
+    "你正在执行严格的轮播母版迁移，不是自由设计。第一组参考图是A类永久视觉母版，后续参考图是B类内容素材。",
+    "锁定母版的字体气质、字号比例、配色、标题位置、拼图骨架和页面气质；只从素材提取真实内容。",
+    "禁止继承素材自身排版，禁止虚构地点、项目、价格、车程或场景，禁止新增素材和事实中没有的露营、篝火、建筑等内容。",
+    "业务口径：江浙沪企业团建，10人起接。没有明确价格则不出现价格。人物、分区和道具应去重，保持真实手机抓拍感。",
+    "每次只生成一张独立3:4图片，不得输出多页合集、长图、缩略图墙或样机展示。中文必须准确。",
+    `本次阶段：${body.stage === "inner" ? "典型内页校准" : "封面校准"}。质量档：${body.quality || "标准"}。`,
+    userPrompt ? `用户补充要求：\n${userPrompt}` : "",
+    facts ? `素材事实（只能从这里取业务事实）：\n${facts}` : ""
+  ].filter(Boolean).join("\n\n");
 }
 
 function mergeCollectionLedger(collections) {
@@ -2366,8 +2451,8 @@ function saveWorkspaceSettings(body) {
   }
   const localPrevious = readJson(APP_SETTINGS_FILE, {});
   const imageApi = body.imageApi ? {
-    provider: ["openai-compatible", "custom"].includes(String(body.imageApi.provider))
-      ? String(body.imageApi.provider) : "openai-compatible",
+    provider: ["local-openai", "minimax"].includes(String(body.imageApi.provider))
+      ? String(body.imageApi.provider) : "local-openai",
     baseUrl: String(body.imageApi.baseUrl || "").trim().slice(0, 500),
     model: String(body.imageApi.model || "").trim().slice(0, 200)
   } : localPrevious.imageApi;
@@ -2629,6 +2714,71 @@ async function route(req, res) {
   if (pathname === "/api/settings/paths" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     return sendJson(res, { ok: true, settings: saveWorkspaceSettings(body) });
+  }
+
+  if (pathname === "/api/image-api/config" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const config = saveImageApiSecret(body);
+    const previous = readJson(APP_SETTINGS_FILE, {});
+    writeJson(APP_SETTINGS_FILE, { ...previous, imageApi: config });
+    return sendJson(res, { ok: true, imageApi: publicImageApiSettings(config) });
+  }
+
+  if (pathname === "/api/image-api/test" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const config = normalizeImageApiConfig(body);
+    const apiKey = imageApiCredential(config.provider, body.apiKey);
+    if (!apiKey) return send(res, 400, JSON.stringify({ error: "没有找到这个平台的本机密钥" }));
+    const endpoint = config.provider === "minimax" ? `${config.baseUrl}/models` : `${config.baseUrl}/models`;
+    const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } });
+    if (!response.ok) return send(res, 502, JSON.stringify({ error: `连接失败（HTTP ${response.status}）` }));
+    const data = await response.json();
+    const models = Array.isArray(data.data) ? data.data.map((item) => item.id).filter(Boolean).slice(0, 50) : [];
+    return sendJson(res, { ok: true, modelAvailable: !models.length || models.includes(config.model), models });
+  }
+
+  if (pathname === "/api/image-api/generate" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 256_000) || "{}");
+    const config = normalizeImageApiConfig(body);
+    const apiKey = imageApiCredential(config.provider, body.apiKey);
+    const materialPath = path.resolve(String(body.materialPath || ""));
+    const templatePath = path.resolve(String(body.templatePath || ""));
+    if (!body.confirmed) return send(res, 409, JSON.stringify({ error: "请先确认出图计划，再开始校准" }));
+    if (!isAllowedFile(materialPath) || !exists(materialPath)) return send(res, 400, JSON.stringify({ error: "请选择真实存在的素材文件夹" }));
+    if (!isAllowedFile(templatePath) || !exists(templatePath)) return send(res, 400, JSON.stringify({ error: "请选择真实存在的模板文件夹" }));
+    const stage = body.stage === "inner" ? "inner" : "cover";
+    const templateImages = collectReferenceImages(templatePath, stage === "cover" ? 1 : 2);
+    const materialImages = collectReferenceImages(materialPath, 6);
+    if (!templateImages.length || !materialImages.length) return send(res, 400, JSON.stringify({ error: "模板或素材文件夹中没有可用图片" }));
+    const facts = materialFacts(materialPath);
+    const prompt = buildProductionPrompt({ ...body, stage }, facts);
+    const folderName = `${new Date().toISOString().slice(0, 10).replaceAll("-", "")}_${safeOutputName(path.basename(materialPath))}_${safeOutputName(path.basename(templatePath))}`;
+    const outputRoot = path.join(IMAGE_REVIEW_ROOT, folderName, stage === "cover" ? "封面校准" : "内页校准");
+    const results = await generateImages({
+      config, apiKey, prompt,
+      referencePaths: [...templateImages, ...materialImages].slice(0, 8),
+      outputRoot, count: body.count
+    });
+    const report = {
+      status: "review-ready",
+      createdAt: new Date().toISOString(),
+      stage,
+      materialPath,
+      templatePath,
+      provider: config.provider,
+      model: config.model,
+      requestedCount: Number(body.count) || 1,
+      rules: { templateClass: "A", materialClass: "B", historicalResultsClass: "C", officialLibraryWritten: false },
+      results
+    };
+    fs.mkdirSync(outputRoot, { recursive: true });
+    writeJson(path.join(outputRoot, "生成记录.json"), report);
+    return sendJson(res, {
+      ok: true,
+      status: report.status,
+      outputRoot,
+      results: results.map((item) => ({ ...item, previewUrl: `/file?path=${encodeURIComponent(item.outputFile)}` }))
+    });
   }
 
   if (pathname === "/api/dedup/status" && req.method === "GET") {
