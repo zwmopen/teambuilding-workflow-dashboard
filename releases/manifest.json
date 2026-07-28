@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.9.6",
-  "source_commit": "92c463b",
+  "version": "0.10.0",
+  "source_commit": "97df1b2",
   "artifacts": [
+    {
+      "file": "0.10.0/团建内容工作台-0.10.0-便携版.exe",
+      "sha256": "706187A7789D2F7B675A9C91CFFEE783EB1772E93194BD6BDA4ABFE7CA9732D7",
+      "size": 89564837,
+      "platform": "Windows x64",
+      "built_at": "2026-07-28",
+      "known_limits": "素材、模板、成品、待发打包和分发可直接使用。ByteCat 已安全配置，但当前密钥分组尚未返回图片模型；素材自动生图需后续完成模型分组校准。长任务仍会在应用退出时中断。"
+    },
     {
       "file": "0.9.6/团建内容工作台-0.9.6-便携版.exe",
       "sha256": "6D6FC7EE72BD6B46EC052A622DE51267ED78CF657AD948CDE3E7CE31BD288D7D",
