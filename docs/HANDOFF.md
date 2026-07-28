@@ -14,6 +14,7 @@
 - 0.10.1 便携版大小 89,564,723 字节，SHA-256 `7FD1CB0B42F5023009677655D1C7908FA1CF1C29BC713E75CFD7DF981B99A949`；打包应用实测主页返回 200，ByteCat 模型检查返回 `gpt-image-2` 可用；桌面快捷方式已切换到 0.10.1。
 - GitHub `v0.10.1` Release 已发布：<https://github.com/zwmopen/teambuilding-workflow-dashboard/releases/tag/v0.10.1>；源码和发布记录已推送到 `master`。
 - 0.10.0 便携版大小 89,564,837 字节，SHA-256 `706187A7789D2F7B675A9C91CFFEE783EB1772E93194BD6BDA4ABFE7CA9732D7`，保留作回退版本。
+- 2026-07-28 分发踩坑：应用升级/重启时若直接终止正在运行的分发子进程，手机可能停在 `receiving`，并留下 `state=sending` 的独占 claim；后续重试会在 0% 被防重复规则拦截。发布或重启应用前必须先检查 `/api/distribution/tasks`，不得停止仍在运行的任务。恢复时按精确远端任务 ID 取消接收，确认没有成功使用日志后，将旧 claim 可恢复归档，再重新发送；禁止直接删除 claim 后盲目重发。
 - GitHub `v0.10.0` Release 已发布：<https://github.com/zwmopen/teambuilding-workflow-dashboard/releases/tag/v0.10.0>；源码和发布记录已推送到 `master`。
 
 ## 0.9.9 当前事实
