@@ -348,6 +348,7 @@ async function loadDashboard(force = false, libraryPath = "") {
   renderMaterials();
   renderPrompts();
   renderWorkspaceSettings();
+  loadCloudBackupStatus();
   if ($("#overviewView")) renderOverview();
   restoreSelection();
 }
@@ -2219,7 +2220,14 @@ function showDistributionPanel(panel) {
 }
 
 function applyTheme(theme) {
-  const value = ["solid", "glass", "neumorphic", "jianghu", "editorial", "midnight"].includes(theme) ? theme : "solid";
+  const aliases = {
+    solid: "neo",
+    neumorphic: "neo",
+    jianghu: "neo",
+    editorial: "neo",
+    midnight: "glass"
+  };
+  const value = ["glass", "neo"].includes(theme) ? theme : (aliases[theme] || "neo");
   document.body.dataset.theme = value;
   localStorage.setItem("tb-dashboard-theme", value);
   $$(".theme-option").forEach((button) => button.classList.toggle("active", button.dataset.theme === value));
@@ -2547,24 +2555,67 @@ function renderJuguangRecommendations() {
 
 const PAGE_HELP = {
   overviewView: {
-    title: "总览怎么用",
-    description: "这里汇总本地素材、模板、成品、设备和分发阶段。数字来自真实文件夹与运行记录，点击相应卡片可进入具体页面。"
+    title: "工作流总览说明",
+    description: "总览不是一张装饰性仪表盘，而是整条生产链的事实入口。它把素材、模板、成品、设备和分发阶段连接起来，帮助你判断今天应该从哪里继续。",
+    details: [
+      ["开发背景", "过去的生产信息分散在聊天、文件夹、脚本和手机里，容易忘记素材是否用过、作品是否发过。总览把这些真实状态集中呈现。"],
+      ["方法论", "文件夹是客观事实，数据库负责补充历史与关系，界面只负责解释和操作；三者冲突时优先核对真实文件。"],
+      ["怎么使用", "先看异常和待办数字，再点击素材生产、作品集或分发卡片进入对应页面。需要最新状态时点击“刷新状态”。"],
+      ["结果标准", "每个数字都应能追溯到真实文件夹或操作记录，不显示无法验证的虚构进度。"]
+    ]
   },
   dashboardView: {
-    title: "素材与生产怎么用",
-    description: "先选择素材文件夹和模板，再按作品数量与质量启动生产。素材只提供内容，模板负责固定风格，生成结果会进入成品库。"
+    title: "素材生产说明",
+    description: "这个页面把你在 ChatGPT 网页里的口述生产过程做成本地产品：选择模板、选择素材、确定数量和质量，然后产出独立图片、文案与生产记录。",
+    details: [
+      ["开发背景", "网页对话能理解复杂规则，但每次都要重新口述。工作台把稳定规则固化，把素材、模板和成品分开管理。"],
+      ["核心方法", "A 类母版只决定视觉；B 类素材只决定内容；历史生成结果不能反过来覆盖母版。版式合成与生成式图片处理分开执行。"],
+      ["怎么使用", "选择一个模板和一个素材文件夹，选择做一张、做一套或批量做，设置页数与质量；额外要求只写本次变化，不必重写整套规则。"],
+      ["合格结果", "一个作品文件夹里应有多张独立成品图、一份文案和生产记录；风格能一眼认出母版，事实与业务口径经过检查。"],
+      ["安全边界", "没有明确价格就不生成价格；不虚构场地和项目；结果先进入待审区，确认后才进入正式成品库。"]
+    ]
   },
   productsView: {
-    title: "成品库怎么用",
-    description: "这里按真实文件夹查看作品集。抖音小红书、微信公众号、已发送分别对应三个物理目录，移动后刷新即可同步。"
+    title: "成品库说明",
+    description: "成品库用真实作品文件夹管理生产结果，而不是只在软件里画一个状态。图片、文案、生产记录和作品集归属都应在磁盘上可见。",
+    details: [
+      ["开发背景", "只靠界面状态会让其他软件和人工操作看不懂，也容易重复发布，所以作品必须落到稳定目录。"],
+      ["方法论", "作品文件夹是最小交付单元；作品集是批量分发单元；数据库只记录哈希、来源、时间与操作，不替代原文件。"],
+      ["怎么使用", "按分类查看作品或作品集，双击预览，打开真实目录核对图片和文案。确认合格后再进入分发阶段。"],
+      ["防重复", "系统同时使用作品记录、文件哈希和分发历史；即使文件夹改名，也尽量通过内容指纹识别旧作品。"]
+    ]
   },
   distributionView: {
-    title: "分发界面怎么用",
-    description: "先在“抖音小红书”选择泛流量帖或精准流量帖并发送到在线设备；手机端发布完成后作品进入“微信公众号”；三端都发布后压缩到“已发送”并删除原目录。所有操作在“操作记录”中可追溯。"
+    title: "分发中心说明",
+    description: "分发中心按真实文件夹阶段工作：抖音小红书 → 微信公众号 → 已发送。界面切标签、发送、归档后，本地文件必须同步变化。",
+    details: [
+      ["开发背景", "发布最怕重复和漏发。单靠人工记忆不可靠，所以把平台阶段、作品类型和设备反馈都落到文件与记录中。"],
+      ["顶部标签", "设备用于确认连接；抖音小红书与微信公众号展示待发布作品；已发送只存三端完成后的压缩包；操作记录用于追溯。"],
+      ["分类标签", "泛流量帖、精准流量帖、未分类来自作品集文件夹名称。切换分类会真实重命名文件夹，不是只改界面颜色。"],
+      ["标准流程", "先发送到手机并等待真实接收反馈；确认抖音/小红书完成后移到微信公众号；公众号完成后压缩进已发送，并删除原作品集目录节省空间。"],
+      ["事实与恢复", "磁盘文件夹是最终事实，操作记录保存时间、来源、目标和结果；发生异常时先核对文件，再用记录定位原因。"]
+    ]
+  },
+  pluginsView: {
+    title: "插件市场说明",
+    description: "插件市场是本地生产生态的导航页。它不会把所有工具强行揉进工作台，而是让每个独立插件、软件和脚本保留自己的边界，同时提供统一入口。",
+    details: [
+      ["开发背景", "生产链上已经有网页脚本、浏览器扩展、下载器、本地助手和转化系统。入口分散会导致找不到版本、装错副本或忘记用途。"],
+      ["收录原则", "只收录本地真实存在或有明确开源地址的资产；测试中和停用项必须标注；密钥、私人数据和内部仓库内容不会展示。"],
+      ["怎么使用", "按“浏览器辅助、本地软件、脚本工具、测试中”筛选。点击“打开本地”进入真实目录或启动入口；点击“源码/发布页”跳到对应网站。"],
+      ["版本原则", "卡片展示的是已核对版本。升级仍在各自项目中完成，插件市场只做入口和状态说明，不复制第二份源码。"],
+      ["故障处理", "浏览器扩展升级后通常需要在扩展管理页重新加载；油猴脚本需由脚本管理器安装；本地软件打不开时先打开项目目录查看说明。"]
+    ]
   },
   settingsView: {
-    title: "设置怎么用",
-    description: "这里配置本地目录、外观和运行参数。修改目录后请刷新，系统会重新读取真实文件夹，不会凭界面状态猜测库存。"
+    title: "设置中心说明",
+    description: "设置中心管理路径、外观、生产参数和诊断入口。它不保存素材正文，也不会因为更换主题而修改业务文件。",
+    details: [
+      ["开发背景", "路径、API、作品集数量和界面偏好变化频繁，需要集中管理，同时避免散落在脚本源码里。"],
+      ["怎么使用", "先设置素材目录和成品目录，再配置作品集数量与自动整理；接口设置只在需要本地 API 生产时修改。"],
+      ["保存规则", "普通升级保留用户明确保存的配置；密钥只进入本机受忽略的运行配置，不写进仓库、日志或公开发布包。"],
+      ["排错方法", "修改后刷新数据；仍有问题时复制诊断信息，核对版本、运行目录和真实路径是否一致。"]
+    ]
   },
   juguangView: {
     title: "聚光数据怎么用",
@@ -2576,21 +2627,176 @@ const PAGE_HELP = {
   }
 };
 
+const PLUGIN_MARKET_ITEMS = [
+  {
+    id: "chatgpt-work-assistant",
+    name: "ChatGPT 作品助手",
+    type: "browser",
+    typeLabel: "油猴脚本＋本地助手",
+    version: "1.15.3",
+    status: "可用",
+    statusTone: "ready",
+    description: "给 ChatGPT 最近对话增加可拖动分组、提示词、图片批量下载，并把生成结果交给本地作品打包器整理、查重和组成作品集。",
+    capabilities: ["对话分组", "图片批量下载", "作品打包", "查重与作品集"],
+    localPath: "D:\\AICode\\工具开发\\projects\\chatgpt-conversation-tree",
+    installPath: "D:\\AICode\\工具开发\\projects\\chatgpt-conversation-tree\\releases\\GPT作品助手-傻瓜安装包.zip",
+    sourceUrl: "https://github.com/zwmopen/scripts",
+    installUrl: "https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-conversation-tree.user.js",
+    sourceLabel: "开源脚本"
+  },
+  {
+    id: "teambuilding-gpt-extension",
+    name: "团建 GPT 数字作品生产助手",
+    type: "browser",
+    typeLabel: "Chrome / Edge 扩展",
+    version: "0.2.2",
+    status: "可用",
+    statusTone: "ready",
+    description: "在 ChatGPT 右侧提供素材库和成品库，支持筛选、拖入真实附件、生产指令、下载打包与使用次数回填。",
+    capabilities: ["素材传 GPT", "全库标签筛选", "生成结果下载", "生产历史"],
+    localPath: "D:\\AICode\\工具开发\\projects\\teambuilding-gpt-production-extension",
+    installPath: "D:\\AICode\\工具开发\\projects\\teambuilding-gpt-production-extension\\releases\\0.2.2",
+    sourceUrl: "https://github.com/zwmopen/teambuilding-gpt-production-extension",
+    releaseUrl: "https://github.com/zwmopen/teambuilding-gpt-production-extension/releases/tag/v0.2.2",
+    sourceLabel: "开源仓库"
+  },
+  {
+    id: "jianghu-conversion",
+    name: "江湖团建转化助手",
+    type: "desktop",
+    typeLabel: "独立本地软件",
+    version: "1.0.6",
+    status: "可用",
+    statusTone: "ready",
+    description: "把微信聊天、正式 SOP、客户话术和方案库做成本地检索与转化协作系统，服务前端接粉和后端成交。",
+    capabilities: ["话术检索", "转化 SOP", "方案匹配", "聊天证据沉淀"],
+    localPath: "D:\\AICode\\工具开发\\projects\\jianghu-conversion-assistant",
+    launchPath: "D:\\AICode\\工具开发\\projects\\jianghu-conversion-assistant\\start.vbs",
+    sourceUrl: "https://github.com/zwmopen/jianghu-conversion-assistant",
+    sourceLabel: "私有仓库"
+  },
+  {
+    id: "xhs-downloader",
+    name: "红薯下载",
+    type: "desktop",
+    typeLabel: "素材采集软件",
+    version: "2.4.0",
+    status: "可用",
+    statusTone: "ready",
+    description: "批量读取小红书公开分享链接，下载原始图片或视频并保存文案，作为素材库的上游采集入口。",
+    capabilities: ["批量链接", "原始媒体", "文案落盘", "下载历史"],
+    localPath: "D:\\AICode\\工具开发\\projects\\xhs-dl",
+    sourceUrl: "https://github.com/zwmopen/xhs-dl",
+    upstreamUrl: "https://github.com/JoeanAmier/XHS-Downloader",
+    sourceLabel: "开源仓库"
+  },
+  {
+    id: "text-to-excel",
+    name: "一键提取文案",
+    type: "desktop",
+    typeLabel: "本地整理工具",
+    version: "0.1.0",
+    status: "可用",
+    statusTone: "ready",
+    description: "把采集目录中的 TXT 文案汇总到 Excel，并从文件名提取标题、点赞量等字段，便于筛选和复盘。",
+    capabilities: ["TXT 汇总", "Excel 输出", "标题提取", "批量整理"],
+    localPath: "D:\\AICode\\工具开发\\projects\\一键提取文案",
+    sourceLabel: "本地项目"
+  },
+  {
+    id: "media-copy-extractor",
+    name: "视频音频文案提取",
+    type: "testing",
+    typeLabel: "本地测试工具",
+    version: "0.1.0",
+    status: "测试中",
+    statusTone: "testing",
+    description: "从本地视频或音频批量提取 TXT、SRT 和 JSON。当前保留测试入口，真实短样本复核完成前不作为正式生产依赖。",
+    capabilities: ["音视频转写", "批量处理", "字幕输出", "测试资产"],
+    localPath: "D:\\AICode\\工具开发\\projects\\视频音频文案提取",
+    sourceLabel: "本地测试"
+  },
+  {
+    id: "hardlink-preview",
+    name: "素材硬链接预览",
+    type: "script",
+    typeLabel: "文件辅助脚本",
+    version: "本地版",
+    status: "可用",
+    statusTone: "ready",
+    description: "为素材建立不重复占空间的硬链接工作副本，方便预览、筛选和临时加工，同时保留原素材目录作为真源。",
+    capabilities: ["硬链接副本", "节省空间", "素材预览", "真源保护"],
+    localPath: "D:\\AICode\\工具开发\\projects\\public-scripts\\本地文件处理脚本\\素材处理脚本",
+    sourceUrl: "https://github.com/zwmopen/scripts",
+    sourceLabel: "开源脚本库"
+  }
+];
+
+let activePluginFilter = "all";
+
+function renderPluginMarket() {
+  const grid = $("#pluginMarketGrid");
+  if (!grid) return;
+  const query = ($("#pluginMarketSearch")?.value || "").trim().toLowerCase();
+  const items = PLUGIN_MARKET_ITEMS.filter((item) => {
+    const typeMatch = activePluginFilter === "all"
+      || item.type === activePluginFilter
+      || (activePluginFilter === "desktop" && item.type === "testing");
+    const haystack = [item.name, item.typeLabel, item.description, ...(item.capabilities || [])].join(" ").toLowerCase();
+    return typeMatch && (!query || haystack.includes(query));
+  });
+  grid.innerHTML = items.length ? items.map((item) => `
+    <article class="plugin-market-card">
+      <div class="plugin-card-topline">
+        <span class="plugin-kind">${escapeHtml(item.typeLabel)}</span>
+        <span class="plugin-status ${escapeHtml(item.statusTone)}">${escapeHtml(item.status)}</span>
+      </div>
+      <div class="plugin-card-title">
+        <span class="plugin-glyph">${escapeHtml(item.name.slice(0, 1))}</span>
+        <div><h3>${escapeHtml(item.name)}</h3><small>v${escapeHtml(item.version)}</small></div>
+      </div>
+      <p>${escapeHtml(item.description)}</p>
+      <div class="plugin-capabilities">${item.capabilities.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>
+      <div class="plugin-card-actions">
+        ${item.launchPath ? `<button class="primary-button" type="button" data-plugin-path="${escapeHtml(item.launchPath)}">启动</button>` : ""}
+        <button type="button" data-plugin-path="${escapeHtml(item.installPath || item.localPath)}">${item.installPath ? "打开安装包" : "打开本地"}</button>
+        ${item.releaseUrl ? `<button type="button" data-plugin-url="${escapeHtml(item.releaseUrl)}">发布页</button>` : ""}
+        ${item.installUrl ? `<button type="button" data-plugin-url="${escapeHtml(item.installUrl)}">安装脚本</button>` : ""}
+        ${item.sourceUrl ? `<button type="button" data-plugin-url="${escapeHtml(item.sourceUrl)}">${escapeHtml(item.sourceLabel || "源码")}</button>` : ""}
+        ${item.upstreamUrl ? `<button type="button" data-plugin-url="${escapeHtml(item.upstreamUrl)}">上游项目</button>` : ""}
+      </div>
+    </article>
+  `).join("") : `<div class="plugin-market-empty">没有匹配的本地工具。换一个关键词或分类试试。</div>`;
+  $$("#pluginMarketFilters [data-plugin-filter]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.pluginFilter === activePluginFilter);
+  });
+}
+
 function installPageHelpButtons() {
+  const buttonContent = `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 4.75A2.75 2.75 0 0 1 8.75 2H20v16.25H8.75A2.75 2.75 0 0 0 6 21V4.75Z"></path>
+      <path d="M6 4.75A2.75 2.75 0 0 0 3.25 2H2v16.25h1.25A2.75 2.75 0 0 1 6 21"></path>
+      <path d="M9.5 7h7M9.5 11h7"></path>
+    </svg>
+    <span>说明</span>`;
   Object.entries(PAGE_HELP).forEach(([viewId, help]) => {
     const view = document.getElementById(viewId);
     const heading = view?.querySelector(".page-heading, .production-api-flow");
-    if (!heading || heading.querySelector("[data-page-help]")) return;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "page-help-button";
-    button.dataset.pageHelp = viewId;
-    button.title = help.description;
+    if (!heading) return;
+    let button = heading.querySelector("[data-page-help]");
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "page-help-button";
+      button.dataset.pageHelp = viewId;
+      const actionRow = heading.querySelector(".detail-button-row");
+      if (actionRow) actionRow.appendChild(button);
+      else heading.appendChild(button);
+    }
+    button.innerHTML = buttonContent;
+    button.title = `${help.title}：${help.description}`;
     button.setAttribute("aria-label", `${help.title}，点击查看说明`);
-    button.textContent = "?";
-    const actionRow = heading.querySelector(".detail-button-row");
-    if (actionRow) actionRow.appendChild(button);
-    else heading.appendChild(button);
   });
 }
 
@@ -2640,7 +2846,7 @@ function activateTab(name) {
     juguangRendered = true;
   }
   if (name === "settings") {
-    applyTheme(localStorage.getItem("tb-dashboard-theme") || "jianghu");
+    applyTheme(localStorage.getItem("tb-dashboard-theme") || "neo");
     loadDedupStatus().catch((error) => {
       if ($("#dedupSummary")) $("#dedupSummary").textContent = `防重复账本读取失败：${error.message}`;
     });
@@ -2792,6 +2998,80 @@ async function renamePath(targetPath, currentLabel) {
 
 function buildTemplateCommand(target) {
   return `请把这个素材识别并转化为团建笔记模板：\\n\\n素材/模板名称：${target?.label || ""}\\n本地路径：${target?.path || ""}\\n\\n执行要求：\\n1. 读取该文件夹里的图片和文案，只分析固定视觉骨架，不继承具体内容主题。\\n2. 识别封面结构、内页结构、字体气质、配色、标题位置、拼图比例、页面角色和适用素材类型。\\n3. 按“封面核心结构＋标题样式 × 内页结构＋拼图样式”自动命名模板。\\n4. 在 01-素材库/团建攻略图文素材/模板素材 下创建对应模板文件夹，复制参考图，写入模板说明.md 和模板提示词.md。\\n5. 更新 02-模板库/爆款链接库.csv，记录模板ID、模板名称、适用内容、默认页数、源模板路径和状态。\\n6. 后续生产时把它作为 A 类永久视觉母版，素材只负责提供内容。`;
+}
+
+function renderCloudBackupStatus(status = {}) {
+  if (!$("#cloudBackupStatus")) return;
+  $("#cloudBackupStatus").textContent = status.configured ? "已接入" : "未接入";
+  $("#cloudBackupStatus").classList.toggle("is-ready", Boolean(status.configured));
+  $("#cloudBackupSource").textContent = status.importedFrom || "尚未导入";
+  $("#cloudBackupAccount").textContent = status.account || "—";
+  $("#cloudBackupPath").textContent = status.basePath || "—";
+  $("#cloudBackupTime").textContent = status.lastBackupAt
+    ? new Date(status.lastBackupAt).toLocaleString("zh-CN", { hour12: false })
+    : "尚未备份";
+  $("#cloudBackupMessage").textContent = status.lastResult
+    || "备份范围：设置、提示词、生产任务索引、设备备注、分发记录和防重复账本；素材与成品大文件仍以本地文件夹为真源。";
+  $("#testCloudBackupBtn").disabled = !status.configured;
+  $("#runCloudBackupBtn").disabled = !status.configured;
+}
+
+async function loadCloudBackupStatus() {
+  if (!$("#cloudBackupStatus")) return;
+  try {
+    renderCloudBackupStatus(await api("/api/cloud-backup/status"));
+  } catch (error) {
+    $("#cloudBackupStatus").textContent = "读取失败";
+    $("#cloudBackupMessage").textContent = error.message;
+  }
+}
+
+async function importLifeGameCloudConfig() {
+  $("#importLifeGameCloudBtn").disabled = true;
+  $("#cloudBackupMessage").textContent = "正在从人生游戏系统安全读取坚果云配置…";
+  try {
+    const status = await api("/api/cloud-backup/import-life-game", { method: "POST" });
+    renderCloudBackupStatus(status);
+    toast("已沿用人生游戏系统的坚果云配置");
+  } catch (error) {
+    showSystemNotice("坚果云配置没有导入", error.message, {
+      tone: "danger",
+      warning: "不会读取或显示你的明文密码；请确认人生游戏系统已配置并能正常启动。"
+    });
+    await loadCloudBackupStatus();
+  } finally {
+    $("#importLifeGameCloudBtn").disabled = false;
+  }
+}
+
+async function testCloudBackup() {
+  $("#testCloudBackupBtn").disabled = true;
+  $("#cloudBackupMessage").textContent = "正在测试坚果云连接…";
+  try {
+    const result = await api("/api/cloud-backup/test", { method: "POST" });
+    $("#cloudBackupMessage").textContent = result.message;
+    toast("坚果云连接正常");
+  } catch (error) {
+    showSystemNotice("坚果云连接失败", error.message, { tone: "danger" });
+    $("#cloudBackupMessage").textContent = error.message;
+  } finally {
+    $("#testCloudBackupBtn").disabled = false;
+  }
+}
+
+async function runCloudBackup() {
+  $("#runCloudBackupBtn").disabled = true;
+  $("#cloudBackupMessage").textContent = "正在备份设置和操作记录…";
+  try {
+    const status = await api("/api/cloud-backup/run", { method: "POST" });
+    renderCloudBackupStatus(status);
+    toast("坚果云备份完成");
+  } catch (error) {
+    showSystemNotice("坚果云备份没有完成", error.message, { tone: "danger" });
+    $("#cloudBackupMessage").textContent = error.message;
+  } finally {
+    $("#runCloudBackupBtn").disabled = false;
+  }
 }
 
 function bindEvents() {
@@ -2961,7 +3241,24 @@ function bindEvents() {
     const pageHelp = event.target.closest("[data-page-help]");
     if (pageHelp && PAGE_HELP[pageHelp.dataset.pageHelp]) {
       const help = PAGE_HELP[pageHelp.dataset.pageHelp];
-      showSystemNotice(help.title, help.description, { eyebrow: "使用说明" });
+      showSystemNotice(help.title, help.description, {
+        eyebrow: "使用说明",
+        details: help.details,
+        warning: help.warning
+      });
+    }
+    const pluginFilter = event.target.closest("[data-plugin-filter]");
+    if (pluginFilter) {
+      activePluginFilter = pluginFilter.dataset.pluginFilter || "all";
+      renderPluginMarket();
+    }
+    const pluginPath = event.target.closest("[data-plugin-path]");
+    if (pluginPath?.dataset.pluginPath) {
+      openPath(pluginPath.dataset.pluginPath);
+    }
+    const pluginUrl = event.target.closest("[data-plugin-url]");
+    if (pluginUrl?.dataset.pluginUrl) {
+      openExternal(pluginUrl.dataset.pluginUrl);
     }
     const theme = event.target.closest("[data-theme]");
     if (theme) applyTheme(theme.dataset.theme);
@@ -3148,6 +3445,10 @@ function bindEvents() {
     toast("聚光数据已刷新");
   });
   $("#juguangKeywordSearch")?.addEventListener("input", renderJuguangRecommendations);
+  $("#pluginMarketSearch")?.addEventListener("input", renderPluginMarket);
+  $("#importLifeGameCloudBtn")?.addEventListener("click", importLifeGameCloudConfig);
+  $("#testCloudBackupBtn")?.addEventListener("click", testCloudBackup);
+  $("#runCloudBackupBtn")?.addEventListener("click", runCloudBackup);
 
   $("#materialLibraryFilter").addEventListener("change", async () => {
     const libraryPath = $("#materialLibraryFilter").value;
@@ -3269,15 +3570,16 @@ window.addEventListener("desktop-gpt-transfer-result", (event) => {
     ? `已放入 ${result.fileCount} 个文件和生产指令，请在右侧确认发送`
     : "生产指令已填入；请打开一个对话后再次点击传 GPT 上传文件");
 });
-const themeDefaultVersion = "jianghu-v2";
+const themeDefaultVersion = "jianghu-knowledge-two-themes-v1";
 const storedThemeDefaultVersion = localStorage.getItem("tb-dashboard-theme-default-version");
 const initialTheme = storedThemeDefaultVersion === themeDefaultVersion
-  ? (localStorage.getItem("tb-dashboard-theme") || "jianghu")
-  : "jianghu";
+  ? (localStorage.getItem("tb-dashboard-theme") || "neo")
+  : "neo";
 localStorage.setItem("tb-dashboard-theme-default-version", themeDefaultVersion);
 applyTheme(initialTheme);
 loadDashboard()
   .then(() => {
+    renderPluginMarket();
     installPageHelpButtons();
     restoreTransferTasks();
     if (!deviceScanStarted) checkDistributionDevices({ silent: true, refreshInventory: false });

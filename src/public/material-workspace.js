@@ -3,7 +3,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.MaterialWorkspace = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function createMaterialWorkspace() {
-  const allowedTabs = new Set(["dashboard", "products", "distribution", "settings"]);
+  const allowedTabs = new Set(["dashboard", "products", "distribution", "plugins", "settings"]);
 
   function resolveInitialTab(savedTab) {
     return allowedTabs.has(savedTab) ? savedTab : "dashboard";

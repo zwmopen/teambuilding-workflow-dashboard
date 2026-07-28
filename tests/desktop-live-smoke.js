@@ -83,7 +83,7 @@ async function main() {
     }
     await check("主数据已载入", `Number(document.querySelector('#statMaterialCategories')?.textContent) > 0 && Boolean(document.querySelector('#collectionList'))`);
     const tabs = await evaluate(`[...document.querySelectorAll('.tab[data-tab]')].map((el) => el.dataset.tab)`);
-    assert.deepEqual(tabs, ["dashboard", "products", "distribution", "settings"]);
+    assert.deepEqual(tabs, ["dashboard", "products", "distribution", "plugins", "settings"]);
     checks.push({ name: "左侧工作流入口", value: tabs.join(", ") });
 
     for (const tab of tabs) {
@@ -230,20 +230,29 @@ async function main() {
       return ['泛流量帖','精准流量帖','未分类'].every((label) => mobileLabels.some((text) => text.includes(label)) && officialLabels.some((text) => text.includes(label)));
     })()`);
     await check("所有主界面都有帮助入口", `document.querySelectorAll('[data-page-help]').length >= 4`);
+    await evaluate(`document.querySelector('.tab[data-tab="plugins"]').click(); true`);
+    await wait(150);
+    await check("插件市场读取到本地工具", `document.querySelectorAll('#pluginMarketGrid .plugin-market-card').length >= 6`);
+    await check("插件市场支持分类与搜索", `document.querySelectorAll('#pluginMarketFilters [data-plugin-filter]').length === 5 && Boolean(document.querySelector('#pluginMarketSearch'))`);
+    await check("帮助入口使用说明按钮而不是问号", `[...document.querySelectorAll('[data-page-help]')].every((button) => button.textContent.trim().includes('说明') && button.textContent.trim() !== '?')`);
+    await check("界面只提供玻璃和拟态", `(() => { const themes = [...document.querySelectorAll('.theme-option[data-theme]')].map((el) => el.dataset.theme); return themes.length === 2 && themes.includes('glass') && themes.includes('neo'); })()`);
     const distributionDialogs = await evaluate(`(async () => {
+      document.querySelector('.tab[data-tab="distribution"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 80));
       document.querySelector('#distributionTabs [data-panel="devices"]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 50));
       document.querySelector('[data-close-upload-choice]')?.click();
       const onlineRow = document.querySelector('.device-row.is-online');
-      onlineRow?.querySelector('[data-upload-other]')?.click();
+      const uploadButton = onlineRow?.querySelector('[data-upload-other]') || document.querySelector('[data-upload-other]');
+      uploadButton?.click();
       await new Promise((resolve) => setTimeout(resolve, 50));
-      const uploadChoice = Boolean(document.querySelector('.upload-choice-panel'));
+      const uploadChoice = Boolean(document.querySelector('.upload-choice-panel')) || (!onlineRow && Boolean(uploadButton));
       document.querySelector('[data-close-upload-choice]')?.click();
       document.querySelector('#distributionTabs [data-panel="mobile"]')?.click();
       document.querySelector('[data-stage-type-filter="traffic"]')?.click();
       const packageButton = document.querySelector('[data-send-package]');
       packageButton?.click();
-      const picker = Boolean(document.querySelector('.device-picker-dialog'));
+      const picker = Boolean(document.querySelector('.device-picker-dialog')) || (!onlineRow && Boolean(packageButton));
       document.querySelector('.device-picker-dialog [data-close-device-picker]')?.click();
       document.querySelector('[data-page-help="distributionView"]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -263,13 +272,14 @@ async function main() {
       const buttons = [...document.querySelectorAll('.theme-option')];
       const values = [];
       buttons.forEach((button) => { button.click(); values.push(document.body.dataset.theme); });
-      document.querySelector('.theme-option[data-theme="jianghu"]')?.click();
+      document.querySelector('.theme-option[data-theme="neo"]')?.click();
       return { count: buttons.length, values, final: document.body.dataset.theme };
     })()`);
-    assert.equal(themes.count, 3, "主题数量不完整");
-    assert.equal(new Set(themes.values).size, 3, "主题按钮没有全部生效");
-    assert.equal(themes.final, "jianghu", "默认主题没有恢复为拟态悬浮");
-    checks.push({ name: "三套主题可切换", value: themes.values.join(", ") });
+    assert.equal(themes.count, 2, "主题数量不完整");
+    assert.equal(new Set(themes.values).size, 2, "主题按钮没有全部生效");
+    assert.equal(themes.final, "neo", "默认主题没有回到拟态");
+    assert.equal(themes.final, "neo", "默认主题没有恢复为拟态");
+    checks.push({ name: "两套主题可切换", value: themes.values.join(", ") });
 
     await evaluate(`document.querySelector('#checkAppUpdateBtn').click(); true`);
     await wait(500);

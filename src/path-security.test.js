@@ -360,6 +360,8 @@ test('external launcher only allows approved workflow sites and the existing wor
   assert.equal(server.isAllowedExternalTarget('https://chatgpt.com/'), true);
   assert.equal(server.isAllowedExternalTarget('https://chatgpt.com/c/abc'), true);
   assert.equal(server.isAllowedExternalTarget('https://mp.weixin.qq.com/'), true);
+  assert.equal(server.isAllowedExternalTarget('https://github.com/zwmopen/scripts'), true);
+  assert.equal(server.isAllowedExternalTarget('https://raw.githubusercontent.com/zwmopen/scripts/master/example.user.js'), true);
   assert.equal(server.isAllowedExternalTarget('cgpt-workpkg://run'), true);
   assert.equal(server.isAllowedExternalTarget('cgpt-workpkg://configure'), true);
   assert.equal(server.isAllowedExternalTarget('https://example.com/'), false);

@@ -4,6 +4,7 @@ const path = require("path");
 const url = require("url");
 const childProcess = require("child_process");
 const crypto = require("crypto");
+const os = require("os");
 const { generateImages, generateText, normalizeImageApiConfig } = require("./lib/image-generation");
 const {
   applySuggestedTitles,
@@ -32,6 +33,13 @@ const {
   publicTransferTask,
   updateTransferProgress
 } = require("./lib/transfer-progress");
+const {
+  importLifeGameConfig,
+  publicStatus: publicCloudBackupStatus,
+  readSecureConfig,
+  testConnection: testCloudBackupConnection,
+  uploadBackup
+} = require("./lib/webdav-backup");
 
 const PORT = Number(process.env.PORT || 4327);
 const PROJECT_ROOT = process.env.TEAMBUILDING_ROOT || "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目";
@@ -50,6 +58,8 @@ const PROMPTS_FILE = path.join(DATA_ROOT, "prompt-versions.json");
 const TASK_INDEX_FILE = path.join(DATA_ROOT, "production-task-index.json");
 const APP_SETTINGS_FILE = path.join(DATA_ROOT, "app-settings.json");
 const IMAGE_API_SECRET_FILE = path.join(DATA_ROOT, "secrets", "image-api.local.env");
+const WEBDAV_CONFIG_FILE = path.join(DATA_ROOT, "secrets", "webdav-config.dpapi.json");
+const CLOUD_BACKUP_META_FILE = path.join(DATA_ROOT, "cloud-backup-meta.json");
 const IMAGE_REVIEW_ROOT = path.join(DATA_ROOT, "API生产待审");
 const PRODUCTION_JOB_ROOT = path.join(DATA_ROOT, "production-jobs");
 const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
@@ -115,6 +125,47 @@ function ensureDataFiles() {
     });
   }
   if (!fs.existsSync(DEDUP_LEDGER_FILE)) syncHistoricalDedupLedger();
+}
+
+function getCloudBackupStatus() {
+  let config = null;
+  try { config = readSecureConfig(WEBDAV_CONFIG_FILE); } catch { config = null; }
+  return publicCloudBackupStatus(config, readJson(CLOUD_BACKUP_META_FILE, {
+    lastBackupAt: "",
+    lastBackupFile: "",
+    lastResult: ""
+  }));
+}
+
+function buildCloudBackupPayload() {
+  const files = [
+    STATE_FILE,
+    PROMPTS_FILE,
+    TASK_INDEX_FILE,
+    APP_SETTINGS_FILE,
+    COLLECTION_LEDGER_FILE,
+    DEVICE_PRESENCE_FILE,
+    DEVICE_NOTES_FILE,
+    DEDUP_LEDGER_FILE,
+    EXTENSION_DOWNLOAD_LOG_FILE,
+    MATERIAL_USAGE_LEDGER_FILE,
+    MATERIAL_METADATA_LEDGER_FILE
+  ];
+  const records = {};
+  for (const filePath of files) {
+    if (!fs.existsSync(filePath)) continue;
+    const relative = path.relative(DATA_ROOT, filePath).replace(/\\/g, "/");
+    try { records[relative] = JSON.parse(fs.readFileSync(filePath, "utf8")); }
+    catch { records[relative] = fs.readFileSync(filePath, "utf8"); }
+  }
+  return {
+    schema: "teambuilding-workbench-backup-v1",
+    appVersion: APP_VERSION,
+    createdAt: new Date().toISOString(),
+    machine: os.hostname?.() || process.env.COMPUTERNAME || "windows",
+    scope: "设置、提示词、任务索引、设备备注、分发与防重复记录；不包含素材和成品大文件",
+    records
+  };
 }
 
 function syncHistoricalDedupLedger() {
@@ -2207,7 +2258,7 @@ function isAllowedExternalTarget(target) {
   try {
     const parsed = new URL(target);
     return parsed.protocol === "https:"
-      && ["chatgpt.com", "mp.weixin.qq.com"].includes(parsed.hostname);
+      && ["chatgpt.com", "mp.weixin.qq.com", "github.com", "raw.githubusercontent.com"].includes(parsed.hostname);
   } catch {
     return false;
   }
@@ -3066,6 +3117,54 @@ async function route(req, res) {
       outputRoot,
       results: results.map((item) => ({ ...item, previewUrl: `/file?path=${encodeURIComponent(item.outputFile)}` }))
     });
+  }
+
+  if (pathname === "/api/cloud-backup/status" && req.method === "GET") {
+    return sendJson(res, getCloudBackupStatus());
+  }
+
+  if (pathname === "/api/cloud-backup/import-life-game" && req.method === "POST") {
+    try {
+      const config = await importLifeGameConfig(WEBDAV_CONFIG_FILE);
+      return sendJson(res, publicCloudBackupStatus(config, {
+        lastBackupAt: "",
+        lastBackupFile: "",
+        lastResult: "已安全导入人生游戏系统的坚果云配置"
+      }));
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message || "坚果云配置没有导入" }));
+    }
+  }
+
+  if (pathname === "/api/cloud-backup/test" && req.method === "POST") {
+    try {
+      const config = readSecureConfig(WEBDAV_CONFIG_FILE);
+      if (!config) throw new Error("请先导入人生游戏系统的坚果云配置");
+      await testCloudBackupConnection(config);
+      return sendJson(res, { ok: true, message: "坚果云连接正常" });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message || "坚果云连接失败" }));
+    }
+  }
+
+  if (pathname === "/api/cloud-backup/run" && req.method === "POST") {
+    try {
+      const config = readSecureConfig(WEBDAV_CONFIG_FILE);
+      if (!config) throw new Error("请先导入人生游戏系统的坚果云配置");
+      const payload = buildCloudBackupPayload();
+      const stamp = payload.createdAt.replace(/[:.]/g, "-");
+      const fileName = `teambuilding-workbench-${stamp}.json`;
+      await uploadBackup(config, payload, fileName);
+      const metadata = {
+        lastBackupAt: payload.createdAt,
+        lastBackupFile: fileName,
+        lastResult: `已备份 ${Object.keys(payload.records).length} 份本地记录`
+      };
+      writeJson(CLOUD_BACKUP_META_FILE, metadata);
+      return sendJson(res, publicCloudBackupStatus(config, metadata));
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message || "坚果云备份失败" }));
+    }
   }
 
   if (pathname === "/api/dedup/status" && req.method === "GET") {

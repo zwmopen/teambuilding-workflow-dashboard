@@ -31,6 +31,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/><path d="m3 9 2-2 2 2M21 13l-2 2-2-2"/></svg>
           <span>分发功能</span>
         </button>
+        <button class="tab rail-tab" data-tab="plugins" type="button" title="插件市场">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3H4a1 1 0 0 0-1 1v4.5a2.5 2.5 0 1 1 0 5V20a1 1 0 0 0 1 1h6.5a2.5 2.5 0 1 1 5 0H20a1 1 0 0 0 1-1v-4.5a2.5 2.5 0 1 1 0-5V4a1 1 0 0 0-1-1h-6.5a2.5 2.5 0 1 1-5 0Z"/></svg>
+          <span>插件市场</span>
+        </button>
         <button class="tab rail-tab rail-bottom" data-tab="settings" type="button" title="设置">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg>
           <span>设置</span>
@@ -286,15 +290,50 @@
         </section>
       </section>
 
+      <section class="view" id="pluginsView">
+        <section class="plugin-market-layout">
+          <header class="page-heading plugin-market-heading">
+            <div>
+              <p class="label">生产辅助工具统一入口</p>
+              <h2>插件市场</h2>
+              <p>这里不卖插件，只集中管理本机已经存在、正在测试或有开源地址的生产辅助工具。</p>
+            </div>
+            <button class="page-help-button" type="button" data-page-help="pluginsView" title="查看插件市场的使用说明">?</button>
+          </header>
+          <section class="plugin-market-hero">
+            <div>
+              <span class="plugin-market-kicker">江湖有旅人 · 本地工具生态</span>
+              <h3>一个入口，找到生产链上的每件工具</h3>
+              <p>从素材采集、GPT 生产、作品打包到团建转化，按真实用途展示；本地工具打开目录，开源项目直达仓库，测试资产明确标注状态。</p>
+            </div>
+            <div class="plugin-market-principles">
+              <span><b>真实</b>只登记本地存在的资产</span>
+              <span><b>边界</b>独立软件不揉进工作台</span>
+              <span><b>可追溯</b>版本、来源、入口写清楚</span>
+            </div>
+          </section>
+          <div class="plugin-market-toolbar">
+            <div class="plugin-filter-tabs" id="pluginMarketFilters">
+              <button class="active" type="button" data-plugin-filter="all">全部</button>
+              <button type="button" data-plugin-filter="browser">浏览器辅助</button>
+              <button type="button" data-plugin-filter="desktop">本地软件</button>
+              <button type="button" data-plugin-filter="script">脚本工具</button>
+              <button type="button" data-plugin-filter="testing">测试中</button>
+            </div>
+            <input class="search-input" id="pluginMarketSearch" type="search" placeholder="搜索名称、用途或能力" />
+          </div>
+          <section class="plugin-market-grid" id="pluginMarketGrid"></section>
+        </section>
+      </section>
+
       <section class="view" id="settingsView">
         <section class="settings-layout">
           <header class="page-heading"><div><p class="label">外观与本地数据</p><h2>设置</h2><p>主题偏好会保存在本机浏览器，不修改项目素材。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置的使用说明">?</button></header>
           <section class="settings-card appearance-card">
             <div class="settings-card-heading"><div><p class="label">显示偏好</p><h3>界面风格</h3></div><span class="version-status">即时切换</span></div>
             <div class="theme-options">
-              <button class="theme-option theme-preview-jianghu active" data-theme="jianghu"><i aria-hidden="true"></i><span><b>清晰工作台</b><small>默认 · 明亮、紧凑、适合长时间操作</small></span></button>
-              <button class="theme-option theme-preview-editorial" data-theme="editorial"><i aria-hidden="true"></i><span><b>纸墨编辑部</b><small>暖色、扁平、强调内容层级</small></span></button>
-              <button class="theme-option theme-preview-midnight" data-theme="midnight"><i aria-hidden="true"></i><span><b>深色模式</b><small>低亮度环境使用</small></span></button>
+              <button class="theme-option theme-preview-glass" data-theme="glass"><i aria-hidden="true"></i><span><b>玻璃</b><small>清透、悬浮、蓝灰色工作空间</small></span></button>
+              <button class="theme-option theme-preview-neo active" data-theme="neo"><i aria-hidden="true"></i><span><b>拟态</b><small>默认 · 柔和、低对比、适合长时间操作</small></span></button>
             </div>
           </section>
           <section class="settings-card workspace-settings-card">
@@ -312,6 +351,25 @@
               <button id="savePathSettingsBtn" class="primary-button" type="button">保存目录设置</button>
               <button id="runExistingWorkPackageBtn" type="button">运行现有一键工作包</button>
             </div>
+          </section>
+          <section class="settings-card cloud-backup-card">
+            <div class="settings-card-heading">
+              <div><p class="label">复用人生游戏系统配置</p><h3>坚果云备份</h3></div>
+              <span class="version-status" id="cloudBackupStatus">读取中</span>
+            </div>
+            <p class="path-line">直接沿用人生游戏系统已登录的坚果云 WebDAV。账号和应用密码使用 Windows 当前用户加密保存，不进入仓库、日志或诊断信息。</p>
+            <div class="cloud-backup-summary">
+              <article><span>配置来源</span><strong id="cloudBackupSource">尚未读取</strong></article>
+              <article><span>备份账号</span><strong id="cloudBackupAccount">—</strong></article>
+              <article><span>云端目录</span><strong id="cloudBackupPath">—</strong></article>
+              <article><span>最近备份</span><strong id="cloudBackupTime">尚未备份</strong></article>
+            </div>
+            <div class="settings-actions">
+              <button id="importLifeGameCloudBtn" class="primary-button" type="button">沿用人生游戏配置</button>
+              <button id="testCloudBackupBtn" type="button">测试连接</button>
+              <button id="runCloudBackupBtn" type="button">立即备份</button>
+            </div>
+            <p class="path-line" id="cloudBackupMessage">备份范围：设置、提示词、生产任务索引、设备备注、分发记录和防重复账本；素材与成品大文件仍以本地文件夹为真源。</p>
           </section>
           <section class="settings-card dedup-card">
             <div class="settings-card-heading">

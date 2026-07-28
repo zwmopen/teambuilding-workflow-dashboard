@@ -10,6 +10,7 @@ const {
 test("旧版总览状态会迁移到素材生产", () => {
   assert.equal(resolveInitialTab("overview"), "dashboard");
   assert.equal(resolveInitialTab("products"), "products");
+  assert.equal(resolveInitialTab("plugins"), "plugins");
   assert.equal(resolveInitialTab(""), "dashboard");
 });
 
