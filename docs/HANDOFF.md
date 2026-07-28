@@ -11,6 +11,7 @@
 - ByteCat Image 2.0 密钥仅写入运行数据的 `secrets/image-api.local.env`，不进入仓库或发布包。2026-07-28 已将渠道切换为 `image` 生图分组，并用 `gpt-image-2` 完成真实参考图编辑：输出 1024×1536 PNG 到 `API生产待审`。
 - ByteCat 图片分组不提供文本模型通道；0.10.1 已把标题和小红书文案自动路由到本机已验证的 OpenAI 兼容文本接口，图片仍走 ByteCat。
 - Node 语法检查通过，自动化测试 63 项通过；最终便携版桌面烟测通过三栏工作台、素材分类切换、游戏/转化模板、成品打包入口、作品集、设备分发、插件市场、帮助弹层和拟态/玻璃主题。
+- 0.10.1 便携版大小 89,564,723 字节，SHA-256 `7FD1CB0B42F5023009677655D1C7908FA1CF1C29BC713E75CFD7DF981B99A949`；打包应用实测主页返回 200，ByteCat 模型检查返回 `gpt-image-2` 可用。
 - 0.10.0 便携版大小 89,564,837 字节，SHA-256 `706187A7789D2F7B675A9C91CFFEE783EB1772E93194BD6BDA4ABFE7CA9732D7`；桌面快捷方式已切换到 0.10.0。
 - GitHub `v0.10.0` Release 已发布：<https://github.com/zwmopen/teambuilding-workflow-dashboard/releases/tag/v0.10.0>；源码和发布记录已推送到 `master`。
 
