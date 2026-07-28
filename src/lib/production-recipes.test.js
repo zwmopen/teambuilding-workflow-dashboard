@@ -1,11 +1,31 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { applySuggestedTitles, buildProductionPlan, recipeForTemplate } = require("./production-recipes");
+const { applySuggestedTitles, buildCopyPrompt, buildProductionPlan, recipeForTemplate } = require("./production-recipes");
 
 test("chat-derived template recipes identify the three long-term master styles", () => {
   assert.equal(recipeForTemplate("米字格大字四宫格封面 × 黄底引号手写标题").id, "rice-grid-quotes");
   assert.equal(recipeForTemplate("湖景绿底价格信息封面 × 彩色键帽大字四宫格").id, "green-info-keycaps");
   assert.equal(recipeForTemplate("森林漂流路线节点封面 × 无白边四宫格黑描边").id, "forest-route-seam-title");
+});
+
+test("referenced master names resolve to their permanent visual recipes", () => {
+  assert.equal(recipeForTemplate("湖景绿底价格信息封面 × 彩色键帽大字四宫格项目拼图模板").id, "green-info-keycaps");
+  assert.equal(recipeForTemplate("超大四角地域字草海封面 × 暗调酒店上下双段透明框＋中心叠图高奢体验拼贴模板").id, "luxury-region-hotel-collage");
+  assert.equal(recipeForTemplate("瀑布溪谷路线节点封面 × 黑白描边大字无白边项目拼图模板").id, "forest-route-seam-title");
+});
+
+test("copy prompt contains the latest factual and optional-project rules", () => {
+  const plan = buildProductionPlan({
+    mode: "set",
+    materialPath: "D:\\素材\\安吉两天一夜",
+    templatePath: "D:\\模板\\湖景绿底价格信息封面 × 彩色键帽大字四宫格项目拼图模板",
+    materialImages: ["1.jpg", "2.jpg"]
+  });
+  const prompt = buildCopyPrompt(plan, "参考人均550+");
+  assert.match(prompt, /2—3个短标题/);
+  assert.match(prompt, /10人起接/);
+  assert.match(prompt, /可选、可组合或路线参考/);
+  assert.match(prompt, /参考价/);
 });
 
 test("one, set and material-driven page counts are explicit", () => {

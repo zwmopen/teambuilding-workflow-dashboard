@@ -9,6 +9,21 @@
     return allowedTabs.has(savedTab) ? savedTab : "dashboard";
   }
 
+  function inferSelectionMode(materialPaths = []) {
+    const paths = [...new Set((materialPaths || []).filter(Boolean))];
+    return {
+      mode: paths.length > 1 ? "batch" : "set",
+      workCount: paths.length,
+      label: paths.length > 1 ? `批量生产 ${paths.length} 套` : "生产 1 套"
+    };
+  }
+
+  function categoryCountLabel(category = {}) {
+    return category.loaded === false && category.countKnown === false
+      ? "未读取"
+      : String(Number(category.count || 0));
+  }
+
   function buildMaterialTree(categories, selectedId = "", expandedPaths = []) {
     const expanded = new Set(expandedPaths || []);
     return (categories || []).map((category) => ({
@@ -54,6 +69,8 @@
 
   return {
     resolveInitialTab,
+    inferSelectionMode,
+    categoryCountLabel,
     buildMaterialTree,
     buildChatGptInstruction,
     installShell

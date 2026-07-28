@@ -126,11 +126,7 @@
               <section class="workbench-card production-dialog-card">
                 <header class="workbench-card-head production-dialog-head">
                   <div><span class="workbench-step">03</span><strong id="workbenchDialogTitle">模板生产对话</strong><small id="workbenchDialogMeta">一个模板保留一套生产记录</small></div>
-                  <div class="production-mode-pills">
-                    <button type="button" data-workbench-mode="one">做一张</button>
-                    <button class="active" type="button" data-workbench-mode="set">做一套</button>
-                    <button type="button" data-workbench-mode="batch">批量做</button>
-                  </div>
+                  <span class="selection-driven-mode" id="workbenchSelectionMode">选择 1 个素材文件夹生成 1 套；选择多个则批量生成多套</span>
                 </header>
                 <div class="workbench-template-preview" id="workbenchTemplatePreview">
                   <div class="empty-state"><strong>先选择模板</strong><p>这里会显示封面和内页参考图。</p></div>
@@ -148,7 +144,6 @@
                 <div class="workbench-run-settings">
                   <label>页数<select id="workbenchPageCount"><option value="">按素材自动</option><option>3</option><option>5</option><option>7</option><option>9</option><option>10</option></select></label>
                   <label>质量<select id="workbenchQuality"><option value="严格母版">严格母版</option><option value="高质量">高质量</option><option value="标准">标准</option></select></label>
-                  <label>批量数量<select id="workbenchBatchCount"><option>2</option><option>3</option><option>5</option><option>10</option></select></label>
                 </div>
                 <button id="workbenchStartProductionBtn" class="primary-button workbench-start-button" type="button">开始生产整套作品</button>
                 <div id="workbenchProductionStatus" class="workbench-production-status">请选择素材和模板。</div>
@@ -198,17 +193,10 @@
         </section>
         <section class="production-console glass" aria-label="作品生产">
           <div class="production-console-head">
-            <div><p class="label">选好素材和模板，直接得到结果</p><h2>这次要怎么做？</h2><p>生产规则已从实际对话流程写进系统；你只需要选择要做一张、一套还是连续做多套。</p></div>
+            <div><p class="label">选好素材和模板，直接得到结果</p><h2>生产数量跟随素材选择</h2><p>选择 1 个素材文件夹生成 1 套作品；选择多个素材文件夹，则同一模板批量生成多套。</p></div>
             <span class="review-only-badge">结果先进入待审区</span>
           </div>
-          <div class="production-mode-grid" role="radiogroup" aria-label="生产方式">
-            <button class="production-mode-card active" type="button" data-production-mode="one"><b>做一张</b><span>做封面或一张内页，用来单独发布、补页或先看效果。</span></button>
-            <button class="production-mode-card" type="button" data-production-mode="set"><b>做一套</b><span>自动按素材拆页，生成独立轮播图、文案和生产记录。</span></button>
-            <button class="production-mode-card" type="button" data-production-mode="batch"><b>批量做</b><span>从当前素材开始，连续用同一模板生产多套作品。</span></button>
-          </div>
           <div class="production-simple-controls">
-            <label id="onePageTypeField"><span>这一张做什么</span><select id="onePageType" class="search-input"><option value="cover">封面</option><option value="inner">内页</option></select></label>
-            <label id="batchWorksField" hidden><span>连续做几套</span><select id="batchWorksCount" class="search-input"><option value="2">2 套</option><option value="3">3 套</option><option value="5">5 套</option></select></label>
             <label><span>页数</span><select id="productionPageCount" class="search-input"><option value="">自动（按素材）</option><option value="3">3 页</option><option value="5">5 页</option><option value="7">7 页</option><option value="9">9 页</option><option value="10">10 页</option></select></label>
             <label><span>质量</span><select id="productionQuality" class="search-input"><option value="严格母版">严格母版（推荐）</option><option value="高质量">高质量</option><option value="标准">标准</option></select></label>
           </div>
@@ -228,11 +216,11 @@
             </div>
           </details>
           <div class="production-actions primary-production-actions">
-            <button id="createProductionPlanBtn" class="primary-button production-main-button" type="button">开始做这一张</button>
+            <button id="createProductionPlanBtn" class="primary-button production-main-button" type="button">开始生产</button>
             <button id="cancelProductionPlanBtn" type="button" hidden>重新选择</button>
           </div>
           <section class="production-plan-panel" id="productionPlanPanel" hidden></section>
-          <div class="production-live-status" id="productionLiveStatus">先从下方选择素材和模板，再点击“开始做这一张”。</div>
+          <div class="production-live-status" id="productionLiveStatus">先选择一个或多个素材文件夹和一个模板，再点击“开始生产”。</div>
           <div class="production-output-grid" id="productionOutputGrid"></div>
         </section>
         <div class="three-pane" id="threePane">

@@ -33,7 +33,6 @@ let deviceCheckState = {
 };
 let deviceScanStarted = false;
 let deviceScanRunning = false;
-let selectedProductionMode = "one";
 let activeProductionPlan = null;
 let activeProductionJobId = "";
 let productionJobPollTimer = null;
@@ -339,6 +338,19 @@ async function loadDashboard(force = false, libraryPath = "") {
   if (libraryPath) params.set("library", libraryPath);
   const query = params.toString();
   dashboard = await api(`/api/dashboard${query ? `?${query}` : ""}`);
+  if (!libraryPath) {
+    const saved = getSavedState();
+    const loadedCategory = dashboard?.materials?.categories?.find((category) => category.loaded !== false);
+    const namedCategory = dashboard?.materials?.categories?.find((category) => category.name === saved.selectedMaterialCategory);
+    if (loadedCategory?.count === 0 && namedCategory && namedCategory.path !== loadedCategory.path) {
+      saveLocalState({
+        selectedMaterialCategory: namedCategory.name,
+        selectedMaterialCategoryPath: namedCategory.path,
+        selectedMaterial: ""
+      });
+      return loadDashboard(force, namedCategory.path);
+    }
+  }
   productsRendered = false;
   logsRendered = false;
   materialRenderLimit = 12;
@@ -471,9 +483,13 @@ function workbenchStorageKey(kind, templateId = selectedTemplate?.id || "default
 function defaultTemplatePrompt(template) {
   if (!template) return "";
   const isGame = template.type === "game";
+  const recipe = template.productionRecipe;
+  const masterRule = recipe
+    ? `\n当前母版配方：${recipe.name}\n封面骨架：${recipe.cover}\n内页骨架：${recipe.inner}\n标题与配色：${recipe.titleStyle}`
+    : "";
   return isGame
-    ? `你正在使用「${template.name}」生产团建游戏内容。\n保留母版封面、内页、字体、配色和信息层级；图上必须完整表达游戏名称、适合人数、所需道具、玩法步骤和注意事项。新素材只提供游戏内容，不得覆盖模板视觉。每页文字可以多，但必须分组清楚、手机端可读。输出独立 3:4 图片和一份可直接发布的小红书文案，生成后检查规则是否完整、是否漏项、是否出现事实编造。`
-    : `你正在使用「${template.name}」生产团建转化内容。\n永久锁定母版的封面结构、内页结构、字体气质、配色、标题位置和拼图比例；新素材只提供地点、项目、路线和文案事实。图上文字少而准，优先地点词、项目词和路线词；不得虚构价格、场地、车程或项目。所有页面输出为独立 3:4 图片，人物与道具按规则去重，保留真实场景，避免广告感和 AI 味。每套作品同时生成小红书文案、出图计划和生产记录。`;
+    ? `你正在使用「${template.name}」生产团建游戏内容。${masterRule}\n保留母版封面、内页、字体、配色和信息层级；图上必须完整表达游戏名称、适合人数、所需道具、玩法步骤和注意事项。新素材只提供游戏内容，不得覆盖模板视觉。每页文字可以多，但必须分组清楚、手机端可读。输出独立 3:4 图片和一份可直接发布的小红书文案，生成后检查规则是否完整、是否漏项、是否出现事实编造。`
+    : `你正在使用「${template.name}」生产团建转化内容。${masterRule}\n永久锁定母版的封面结构、内页结构、字体气质、配色、标题位置和拼图比例；新素材只提供地点、项目、路线和文案事实。图上文字少而准，优先地点词、项目词和路线词；不得虚构价格、场地、车程或项目。所有页面输出为独立 3:4 图片，人物与道具按规则去重，保留真实场景，避免广告感和 AI 味。每套作品同时生成小红书文案、出图计划和生产记录。`;
 }
 
 function readTemplateConversation(templateId = selectedTemplate?.id || "default") {
@@ -517,7 +533,7 @@ function renderWorkbenchMaterials() {
   if (categorySelect) {
     const savedPath = getSavedState().selectedMaterialCategoryPath || selectedMaterialCategory?.path || "";
     categorySelect.innerHTML = categories
-      .map((category) => `<option value="${escapeHtml(category.path)}">${escapeHtml(category.name)}（${category.count || 0}）</option>`)
+      .map((category) => `<option value="${escapeHtml(category.path)}">${escapeHtml(category.name)}（${escapeHtml(window.MaterialWorkspace.categoryCountLabel(category))}）</option>`)
       .join("");
     if (categories.some((category) => category.path === savedPath)) categorySelect.value = savedPath;
   }
@@ -534,6 +550,7 @@ function renderWorkbenchMaterials() {
     </label>`;
   }).join("") : `<div class="empty-state"><strong>当前没有可选帖子</strong><p>切换分类目录或取消筛选后再试。</p></div>`;
   $("#workbenchMaterialCount").textContent = `${workbenchSelectedMaterials.size} 个已选`;
+  renderProductionMode();
 }
 
 function renderWorkbenchTemplates() {
@@ -635,7 +652,6 @@ async function renderProductionWorkbench() {
 function syncWorkbenchProductionSettings() {
   if ($("#productionPageCount")) $("#productionPageCount").value = $("#workbenchPageCount")?.value || "";
   if ($("#productionQuality")) $("#productionQuality").value = $("#workbenchQuality")?.value || "严格母版";
-  if ($("#batchWorksCount")) $("#batchWorksCount").value = $("#workbenchBatchCount")?.value || "2";
   const conversation = readTemplateConversation().filter((item) => item.role === "user").map((item) => item.text);
   const prompt = [
     $("#workbenchPromptEditor")?.value || "",
@@ -734,21 +750,21 @@ function renderProductionOutputs(result) {
   });
 }
 
-function productionModeLabel(mode = selectedProductionMode) {
-  return ({ one: "做一张", set: "做一套", batch: "批量做" })[mode] || "做一套";
+function selectedProductionMaterials() {
+  const paths = workbenchSelectedMaterials.size
+    ? [...workbenchSelectedMaterials]
+    : (selectedMaterial?.path ? [selectedMaterial.path] : []);
+  return [...new Set(paths.filter(Boolean))];
 }
 
 function renderProductionMode() {
-  $$("[data-production-mode]").forEach((button) => button.classList.toggle("active", button.dataset.productionMode === selectedProductionMode));
-  if ($("#onePageTypeField")) $("#onePageTypeField").hidden = selectedProductionMode !== "one";
-  if ($("#batchWorksField")) $("#batchWorksField").hidden = selectedProductionMode !== "batch";
-  if ($("#productionPageCount")) $("#productionPageCount").disabled = selectedProductionMode === "one";
-  const button = $("#createProductionPlanBtn");
-  if (button) button.textContent = selectedProductionMode === "one"
-    ? "开始做这一张"
-    : selectedProductionMode === "set"
-    ? "生成整套作品"
-    : "开始批量生产";
+  const inferred = window.MaterialWorkspace.inferSelectionMode(selectedProductionMaterials());
+  const label = inferred.workCount ? inferred.label : "开始生产";
+  if ($("#createProductionPlanBtn")) $("#createProductionPlanBtn").textContent = label;
+  if ($("#workbenchStartProductionBtn")) $("#workbenchStartProductionBtn").textContent = label;
+  if ($("#workbenchSelectionMode")) $("#workbenchSelectionMode").textContent = inferred.workCount
+    ? `已选 ${inferred.workCount} 个素材文件夹：${inferred.workCount === 1 ? "生成 1 套作品" : `批量生成 ${inferred.workCount} 套作品`}`
+    : "选择 1 个素材文件夹生成 1 套；选择多个则批量生成多套";
 }
 
 function invalidateProductionPlan() {
@@ -765,19 +781,10 @@ function invalidateProductionPlan() {
   if ($("#cancelProductionPlanBtn")) $("#cancelProductionPlanBtn").hidden = true;
 }
 
-function currentBatchMaterialPaths() {
-  if (workbenchSelectedMaterials.size) return [...workbenchSelectedMaterials];
-  const count = Number($("#batchWorksCount")?.value || 2);
-  const entries = getVisibleMaterialEntries().map(({ item }) => item);
-  const selectedIndex = entries.findIndex((item) => item.id === selectedMaterial?.id);
-  if (selectedIndex < 0) return selectedMaterial?.path ? [selectedMaterial.path] : [];
-  return entries.slice(selectedIndex, selectedIndex + count).map((item) => item.path);
-}
-
 function renderProductionPlan(planBundle) {
   const workSections = planBundle.plans.map((plan) => `
     <article class="production-plan-work">
-      <header><strong>${escapeHtml(plan.materialName)}</strong><span>${plan.pageCount} 张独立图片${planBundle.mode === "one" ? "" : " + 文案"}</span></header>
+      <header><strong>${escapeHtml(plan.materialName)}</strong><span>${plan.pageCount} 张独立图片 + 文案</span></header>
       <p>套用：${escapeHtml(plan.recipe.name)}</p>
       <div class="production-plan-pages">${plan.pages.map((page) => `<span><b>${escapeHtml(page.code)}</b>${escapeHtml(page.title)} · ${escapeHtml(page.roleLabel)}</span>`).join("")}</div>
     </article>
@@ -810,20 +817,12 @@ function renderProductionPlan(planBundle) {
 }
 
 async function createProductionPlan() {
-  if (!selectedMaterial || !selectedTemplate) {
-    setProductionLiveStatus("请先从素材库和模板库各选择一项。", "error");
+  const materialPaths = selectedProductionMaterials();
+  if (!materialPaths.length || !selectedTemplate) {
+    setProductionLiveStatus("请先选择一个或多个素材文件夹，再选择一个模板。", "error");
     return;
   }
-  const materialPaths = selectedProductionMode === "batch" || workbenchSelectedMaterials.size > 1
-    ? currentBatchMaterialPaths()
-    : [selectedMaterial.path];
-  const expectedBatch = workbenchSelectedMaterials.size > 1
-    ? workbenchSelectedMaterials.size
-    : Number($("#batchWorksCount")?.value || 2);
-  if (selectedProductionMode === "batch" && materialPaths.length < expectedBatch) {
-    setProductionLiveStatus(`当前筛选从这条开始只剩 ${materialPaths.length} 套素材，请调小批量数量或换一条起点。`, "error");
-    return;
-  }
+  const inferred = window.MaterialWorkspace.inferSelectionMode(materialPaths);
   setProductionLiveStatus("正在读取素材、模板和事实，生成可确认的出图计划……", "running");
   if ($("#createProductionPlanBtn")) $("#createProductionPlanBtn").disabled = true;
   if ($("#workbenchStartProductionBtn")) $("#workbenchStartProductionBtn").disabled = true;
@@ -832,11 +831,10 @@ async function createProductionPlan() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        mode: selectedProductionMode,
-        materialPath: selectedMaterial.path,
+        mode: inferred.mode,
+        materialPath: materialPaths[0],
         materialPaths,
         templatePath: selectedTemplate.path,
-        onePageType: $("#onePageType")?.value || "cover",
         requestedPages: $("#productionPageCount")?.value || "",
         textModel: $("#productionTextModel")?.value || "gpt-5.6-terra"
       })
@@ -2805,7 +2803,7 @@ const PAGE_HELP = {
     details: [
       ["开发背景", "网页对话的优势是能根据口述调整，但素材、模板、结果和历史容易分散。这里把稳定生产规则固化，同时保留本批次的对话调整能力。"],
       ["左侧怎么用", "选择素材库后递归读取帖子文件夹；可跨分类多选，卡片直接显示图片数、文案、母标签和使用次数。下面先选游戏/转化类型，再看缩略图选择具体模板。"],
-      ["中间怎么用", "每个模板保存自己的长期规则和对话历史。只需补充本次变化，例如“图上文字少一点”或“只做前10套”，再选择做一张、做一套或批量做。"],
+      ["中间怎么用", "每个模板保存自己的长期规则和对话历史。只需补充本次变化，例如“图上文字少一点”或“只做前10套”。选择1个素材文件夹就生产1套；选择多个素材文件夹就自动批量生产多套。"],
       ["右侧怎么用", "生产完成后会显示待审作品及正式成品。勾选合格作品，点击“打包到抖音小红书待发”，系统会复制完整作品文件夹并写入操作记录。"],
       ["合格结果", "每个作品文件夹至少包含多张独立3:4成品图和一份小红书文案，并保留出图计划、模板来源和生产记录。"],
       ["安全边界", "素材和成品文件夹是真实依据；打包不覆盖同名作品、不删除唯一成品；没有明确价格就不生成价格，不虚构场地、项目和车程。"]
@@ -3355,17 +3353,6 @@ function bindEvents() {
         renderWorkbenchTemplates();
       }
     }
-    const workbenchMode = event.target.closest("[data-workbench-mode]");
-    if (workbenchMode) {
-      selectedProductionMode = workbenchMode.dataset.workbenchMode;
-      $$("[data-workbench-mode]").forEach((button) => button.classList.toggle("active", button === workbenchMode));
-      $("#workbenchStartProductionBtn").textContent = selectedProductionMode === "one"
-        ? "开始生产这一张"
-        : selectedProductionMode === "batch"
-          ? "开始批量生产"
-          : "开始生产整套作品";
-      invalidateProductionPlan();
-    }
     const outputFilter = event.target.closest("[data-workbench-output-filter]");
     if (outputFilter) {
       workbenchOutputFilter = outputFilter.dataset.workbenchOutputFilter;
@@ -3389,7 +3376,7 @@ function bindEvents() {
       } else {
         expandedMaterialPaths.add(categoryPath);
         if (category && category.loaded === false) {
-          saveLocalState({ selectedMaterialCategoryPath: categoryPath, selectedMaterial: "" });
+          saveLocalState({ selectedMaterialCategory: category.name, selectedMaterialCategoryPath: categoryPath, selectedMaterial: "" });
           await loadDashboard(false, categoryPath);
         }
       }
@@ -3666,16 +3653,6 @@ function bindEvents() {
   });
   $("#saveProductionApiBtn")?.addEventListener("click", () => saveProductionApi().catch((error) => setProductionLiveStatus(error.message, "error")));
   $("#testProductionApiBtn")?.addEventListener("click", testProductionApi);
-  $$("[data-production-mode]").forEach((button) => button.addEventListener("click", () => {
-    if (activeProductionJobId) {
-      setProductionLiveStatus("当前生产还在进行，完成后再切换生产方式。", "error");
-      return;
-    }
-    selectedProductionMode = button.dataset.productionMode;
-    invalidateProductionPlan();
-    renderProductionMode();
-    setProductionLiveStatus(`${productionModeLabel()}已选好。选择素材和模板后点击主按钮。`);
-  }));
   $("#createProductionPlanBtn")?.addEventListener("click", createProductionPlan);
   $("#cancelProductionPlanBtn")?.addEventListener("click", () => {
     invalidateProductionPlan();
@@ -3734,7 +3711,8 @@ function bindEvents() {
   });
   $("#workbenchMaterialCategory")?.addEventListener("change", async (event) => {
     const categoryPath = event.target.value;
-    saveLocalState({ selectedMaterialCategoryPath: categoryPath, selectedMaterial: "" });
+    const category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
+    saveLocalState({ selectedMaterialCategory: category?.name || "", selectedMaterialCategoryPath: categoryPath, selectedMaterial: "" });
     await loadDashboard(false, categoryPath);
     renderWorkbenchMaterials();
     toast("已切换素材分类");

@@ -19,7 +19,42 @@ $err = Join-Path $runtime 'dashboard-server.err.log'
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
 
 $existing = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-if (-not $existing) {
+$shouldStart = -not $existing
+
+if ($existing) {
+    $ownerPid = @($existing)[0].OwningProcess
+    $owner = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+    $sourceFiles = @(
+        Get-Item (Join-Path $app 'server.js') -ErrorAction SilentlyContinue
+        Get-ChildItem (Join-Path $app 'lib') -Recurse -File -ErrorAction SilentlyContinue
+        Get-ChildItem (Join-Path $app 'public') -Recurse -File -ErrorAction SilentlyContinue
+    )
+    $latestSource = $sourceFiles |
+        Where-Object { $_.Extension -in @('.js', '.html', '.css', '.json') } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+
+    $sourceChanged = $owner -and $latestSource -and ($latestSource.LastWriteTime -gt $owner.StartTime)
+    if ($sourceChanged) {
+        $busy = $false
+        try {
+            $distribution = Invoke-RestMethod "http://127.0.0.1:$port/api/distribution/tasks" -TimeoutSec 3
+            $busy = @($distribution | Where-Object { $_.state -notin @('completed', 'failed') }).Count -gt 0
+        } catch {}
+        try {
+            $production = Invoke-RestMethod "http://127.0.0.1:$port/api/production/tasks" -TimeoutSec 3
+            $busy = $busy -or (@($production.tasks | Where-Object { $_.status -eq 'running' }).Count -gt 0)
+        } catch {}
+
+        if (-not $busy) {
+            Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 800
+            $shouldStart = $true
+        }
+    }
+}
+
+if ($shouldStart) {
     Start-Process -FilePath 'node' `
         -ArgumentList 'server.js' `
         -WorkingDirectory $app `

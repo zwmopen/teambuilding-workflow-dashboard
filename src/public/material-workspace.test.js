@@ -3,9 +3,30 @@ const assert = require("node:assert/strict");
 
 const {
   resolveInitialTab,
+  inferSelectionMode,
+  categoryCountLabel,
   buildMaterialTree,
   buildChatGptInstruction
 } = require("./material-workspace");
+
+test("production mode is inferred only from selected material folders", () => {
+  assert.deepEqual(inferSelectionMode(["D:\\posts\\a"]), {
+    mode: "set",
+    workCount: 1,
+    label: "生产 1 套"
+  });
+  assert.deepEqual(inferSelectionMode(["D:\\posts\\a", "D:\\posts\\b", "D:\\posts\\a"]), {
+    mode: "batch",
+    workCount: 2,
+    label: "批量生产 2 套"
+  });
+});
+
+test("unloaded material categories are not presented as zero", () => {
+  assert.equal(categoryCountLabel({ loaded: false, countKnown: false, count: 0 }), "未读取");
+  assert.equal(categoryCountLabel({ loaded: true, countKnown: true, count: 0 }), "0");
+  assert.equal(categoryCountLabel({ loaded: false, countKnown: true, count: 12 }), "12");
+});
 
 test("旧版总览状态会迁移到素材生产", () => {
   assert.equal(resolveInitialTab("overview"), "dashboard");

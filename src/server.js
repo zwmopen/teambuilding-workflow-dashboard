@@ -10,7 +10,8 @@ const {
   applySuggestedTitles,
   buildCopyPrompt,
   buildPagePrompt,
-  buildProductionPlan
+  buildProductionPlan,
+  recipeForTemplate
 } = require("./lib/production-recipes");
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
 const {
@@ -800,21 +801,21 @@ function productionPlanId(plans, mode) {
 }
 
 async function createProductionPlans(body) {
-  const mode = ["one", "set", "batch"].includes(body.mode) ? body.mode : "set";
   const templatePath = path.resolve(String(body.templatePath || ""));
   if (!isAllowedFile(templatePath) || !exists(templatePath)) throw new Error("请选择真实存在的模板文件夹");
-  const requested = mode === "batch"
-    ? (Array.isArray(body.materialPaths) ? body.materialPaths : [])
+  const requested = Array.isArray(body.materialPaths) && body.materialPaths.length
+    ? body.materialPaths
     : [body.materialPath];
   const materialPaths = [...new Set(requested.map((item) => path.resolve(String(item || ""))).filter(Boolean))]
-    .slice(0, mode === "batch" ? 5 : 1);
+    .slice(0, 50);
   if (!materialPaths.length) throw new Error("请选择要生产的素材");
+  const mode = materialPaths.length > 1 ? "batch" : "set";
   let plans = materialPaths.map((materialPath, index) => {
     if (!isAllowedFile(materialPath) || !exists(materialPath)) throw new Error(`素材文件夹不存在：${materialPath}`);
     const materialImages = collectReferenceImages(materialPath, 10);
     if (!materialImages.length) throw new Error(`素材文件夹中没有可用图片：${path.basename(materialPath)}`);
     const plan = buildProductionPlan({
-      mode: mode === "batch" ? "set" : mode,
+      mode: "set",
       materialPath,
       templatePath,
       materialImages,
@@ -822,15 +823,6 @@ async function createProductionPlans(body) {
       requestedPages: body.requestedPages,
       batchIndex: index
     });
-    if (mode === "one" && body.onePageType === "inner") {
-      plan.pages[0] = {
-        ...plan.pages[0],
-        role: "inner",
-        roleLabel: "内页",
-        title: plan.pages[0].title || "项目内页",
-        rule: plan.recipe.inner
-      };
-    }
     return plan;
   });
   const savedImageApi = readJson(APP_SETTINGS_FILE, {}).imageApi || {};
@@ -871,7 +863,7 @@ async function createProductionPlans(body) {
     totals: {
       works: plans.length,
       images: plans.reduce((sum, plan) => sum + plan.pageCount, 0),
-      copyFiles: mode === "one" ? 0 : plans.length
+      copyFiles: plans.length
     }
   };
   pendingProductionPlans.set(id, planBundle);
@@ -970,28 +962,26 @@ async function runProductionJob(job, planBundle, options) {
       completed += 1;
       updateProductionJob(job, { progress: completed });
     }
-    if (planBundle.mode !== "one") {
-      updateProductionJob(job, {
-        phase: "generating-copy",
-        message: `正在写 ${plan.materialName} 的小红书文案`
-      });
-      const copy = await generateText({
-        config: textConnection.config,
-        apiKey: textConnection.apiKey,
-        prompt: buildCopyPrompt(plan, facts),
-        model: String(options.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
-      });
-      const copyFile = path.join(outputRoot, "小红书文案.txt");
-      fs.writeFileSync(copyFile, `${copy}\n`, "utf8");
-      job.results.push({ type: "copy", work: plan.materialName, outputFile: copyFile, bytes: Buffer.byteLength(copy) });
-    }
+    updateProductionJob(job, {
+      phase: "generating-copy",
+      message: `正在写 ${plan.materialName} 的小红书文案`
+    });
+    const copy = await generateText({
+      config: textConnection.config,
+      apiKey: textConnection.apiKey,
+      prompt: buildCopyPrompt(plan, facts),
+      model: String(options.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
+    });
+    const copyFile = path.join(outputRoot, "小红书文案.txt");
+    fs.writeFileSync(copyFile, `${copy}\n`, "utf8");
+    job.results.push({ type: "copy", work: plan.materialName, outputFile: copyFile, bytes: Buffer.byteLength(copy) });
     writeJson(path.join(outputRoot, "生产记录.json"), {
       status: "review-ready",
       createdAt: new Date().toISOString(),
       plan,
       provider: config.provider,
       imageModel: config.model,
-      textModel: planBundle.mode === "one" ? "" : (options.textModel || "gpt-5.6-terra"),
+      textModel: options.textModel || "gpt-5.6-terra",
       officialLibraryWritten: false,
       files: job.results.filter((item) => item.work === plan.materialName).map((item) => item.outputFile)
     });
@@ -1000,9 +990,7 @@ async function runProductionJob(job, planBundle, options) {
     status: "review-ready",
     phase: "completed",
     progress: job.total,
-    message: planBundle.mode === "one"
-      ? "这一张已经生成，已放入待审区。"
-      : `${planBundle.plans.length} 套作品已经生成；每套都包含独立图片、文案和生产记录。`
+    message: `${planBundle.plans.length} 套作品已经生成；每套都包含独立图片、文案和生产记录。`
   });
 }
 
@@ -1457,12 +1445,15 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "", options = {
   }
 
   function categoryFromPosts(descriptor, posts, loaded) {
+    const cachedPosts = materialCategoryCache.get(descriptor.path)?.posts;
+    const countKnown = loaded || Array.isArray(cachedPosts);
     const items = posts
       .slice(0, PREVIEW_LIMITS.materialItemsPerCategory)
       .map((post, itemIndex) => materialItem(post, descriptor.name, itemIndex));
     return {
       ...descriptor,
-      count: loaded ? posts.length : Number(materialCategoryCache.get(descriptor.path)?.posts?.length || 0),
+      count: loaded ? posts.length : Number(cachedPosts?.length || 0),
+      countKnown,
       visibleCount: items.length,
       loaded,
       items: loaded ? items : []
@@ -1520,6 +1511,7 @@ function compactMaterialIndex(library, categoryId = "") {
     name: category.name,
     path: category.path,
     count: category.count,
+    countKnown: category.countKnown !== false,
     loaded: category.id === categoryId && category.loaded !== false,
     items: category.id === categoryId && category.loaded !== false
       ? (category.items || []).map((item) => {
@@ -1853,6 +1845,7 @@ function getTemplateLibrary() {
     const images = listImages(full, PREVIEW_LIMITS.templateImages);
     const imageCount = listImageEntries(full).length;
     const descriptor = `${row["模板名称"] || ""} ${row["适用内容"] || ""} ${full}`;
+    const productionRecipe = recipeForTemplate(`${descriptor} ${row["备注"] || ""}`);
     const type = /团建小游戏|聚会游戏|破冰游戏|真心话|大冒险|游戏规则|玩法清单/.test(descriptor)
       ? "game"
       : "conversion";
@@ -1865,6 +1858,7 @@ function getTemplateLibrary() {
       defaultPages: row["默认页数"] || "",
       status: row["状态"] || "",
       note: row["备注"] || "",
+      productionRecipe,
       path: full,
       images,
       imageCount
@@ -2256,9 +2250,10 @@ function getDashboard(force = false, selectedLibraryPath = "") {
     appInfo: {
       name: "团建内容工作台",
       version: APP_VERSION,
-      channel: "公开便携版",
+      channel: process.env.TB_WORKBENCH_CHANNEL || (process.versions.electron ? "便携版" : "本地开发版（热更新）"),
       runtimeRoot: DATA_ROOT,
       releaseRoot: RELEASE_ROOT,
+      sourceRoot: __dirname,
       desktop: Boolean(process.versions.electron)
     },
     projectRoot: PROJECT_ROOT,
@@ -3152,6 +3147,13 @@ async function route(req, res) {
 
   if (pathname === "/api/production/workspace" && req.method === "GET") {
     return sendJson(res, { ok: true, workspace: productionWorkbenchProducts() });
+  }
+
+  if (pathname === "/api/production/tasks" && req.method === "GET") {
+    return sendJson(res, {
+      ok: true,
+      tasks: [...productionJobs.values()].map(publicProductionJob)
+    });
   }
 
   if (pathname === "/api/production/pack" && req.method === "POST") {
