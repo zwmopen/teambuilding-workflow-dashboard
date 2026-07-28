@@ -58,3 +58,11 @@ AI/skills/技能包/技能
 作品包防重采用三层互锁：发送前在 `.distribution-claims/` 原子创建独占 JSON 占用；接收成功后写入 `device-usage-log.csv`；最后删除对应活动 Junction。任何一层显示已占用/已使用，随机与指定分发都拒绝再次发送。
 
 平台资格分为两个使用组：小红书与抖音是同一手机组，候选必须同时存在两个有效同源入口，使用一次后整组退出；公众号是独立组，其入口与手机组互不消耗。
+# 0.9.6 本地生产任务
+
+- `lib/production-recipes.js`：把长期会话规则变为模板配方、页面计划、逐页生图提示和文案提示。
+- `POST /api/production/plan`：只读素材、模板和事实文件，生成有时效的待确认计划。
+- `POST /api/production/run`：只接受已存在的计划 ID，创建后台任务，不在 HTTP 请求中阻塞整套生成。
+- `GET /api/production/jobs/:id`：返回阶段、进度、待审目录和已生成文件，不返回密钥。
+- `lib/image-generation.js`：统一调用兼容生图接口和文本模型。
+- 运行数据：任务状态写入 `production-jobs`；作品写入 `API生产待审`。正式成品库仍需人工质检批准后进入。

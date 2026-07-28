@@ -32,6 +32,10 @@ let deviceCheckState = {
 };
 let deviceScanStarted = false;
 let deviceScanRunning = false;
+let selectedProductionMode = "one";
+let activeProductionPlan = null;
+let activeProductionJobId = "";
+let productionJobPollTimer = null;
 const expandedMaterialPaths = new Set();
 const expandedCollectionNames = new Set();
 let materialTreeInitialized = false;
@@ -441,7 +445,7 @@ function renderWorkspaceSettings() {
   if ($("#productionApiModel")) $("#productionApiModel").value = settings.imageApi?.model || "gpt-image-2";
   const imageApiReady = Boolean(settings.imageApi?.baseUrl && settings.imageApi?.model && settings.imageApi?.credentialConfigured);
   if ($("#settingsImageApiStatus")) $("#settingsImageApiStatus").textContent = imageApiReady ? "凭据已连接" : settings.imageApi?.baseUrl ? "等待本机密钥" : "待接入";
-  if ($("#imageApiStatus")) $("#imageApiStatus").textContent = imageApiReady ? `${settings.imageApi.model} · 已连接` : settings.imageApi?.baseUrl ? "接口已保存，等待密钥" : "API 待接入";
+  if ($("#imageApiStatus")) $("#imageApiStatus").textContent = imageApiReady ? "生产引擎已就绪" : settings.imageApi?.baseUrl ? "等待本机密钥" : "生产引擎待连接";
   const appInfo = dashboard?.appInfo || {};
   if ($("#settingsVersion")) $("#settingsVersion").textContent = `v${appInfo.version || "未知"}`;
   if ($("#settingsVersionChannel")) $("#settingsVersionChannel").textContent = appInfo.channel || "本地便携版";
@@ -498,48 +502,187 @@ function renderProductionOutputs(result) {
   const grid = $("#productionOutputGrid");
   if (!grid) return;
   grid.innerHTML = (result.results || []).map((item, index) => `
-    <button class="production-output-card" type="button" data-output-path="${escapeHtml(item.outputFile)}">
-      <img src="${escapeHtml(item.previewUrl)}" alt="待审图 ${index + 1}" />
-      <span>${item.width || "?"}×${item.height || "?"} · ${(item.bytes / 1024 / 1024).toFixed(1)} MB</span>
+    <button class="production-output-card${item.type === "copy" ? " copy-output-card" : ""}" type="button" data-output-path="${escapeHtml(item.outputFile)}">
+      ${item.type === "copy"
+        ? `<div class="copy-output-icon">文案</div>`
+        : `<img src="${escapeHtml(item.previewUrl)}" alt="待审图 ${index + 1}" />`}
+      <span>${escapeHtml(item.page || item.work || "结果")} · ${item.type === "copy" ? "小红书文案" : `${item.width || "?"}×${item.height || "?"}`}</span>
     </button>
   `).join("");
   grid.querySelectorAll("[data-output-path]").forEach((button) => button.addEventListener("click", () => openPath(button.dataset.outputPath)));
 }
 
-async function generateCalibration(stage) {
+function productionModeLabel(mode = selectedProductionMode) {
+  return ({ one: "做一张", set: "做一套", batch: "批量做" })[mode] || "做一套";
+}
+
+function renderProductionMode() {
+  $$("[data-production-mode]").forEach((button) => button.classList.toggle("active", button.dataset.productionMode === selectedProductionMode));
+  if ($("#onePageTypeField")) $("#onePageTypeField").hidden = selectedProductionMode !== "one";
+  if ($("#batchWorksField")) $("#batchWorksField").hidden = selectedProductionMode !== "batch";
+  if ($("#productionPageCount")) $("#productionPageCount").disabled = selectedProductionMode === "one";
+  const button = $("#createProductionPlanBtn");
+  if (button) button.textContent = selectedProductionMode === "one"
+    ? "开始做这一张"
+    : selectedProductionMode === "set"
+    ? "生成整套作品"
+    : "开始批量生产";
+}
+
+function invalidateProductionPlan() {
+  if (activeProductionJobId) return;
+  activeProductionPlan = null;
+  if ($("#productionPlanPanel")) {
+    $("#productionPlanPanel").hidden = true;
+    $("#productionPlanPanel").innerHTML = "";
+  }
+  if ($("#cancelProductionPlanBtn")) $("#cancelProductionPlanBtn").hidden = true;
+}
+
+function currentBatchMaterialPaths() {
+  const count = Number($("#batchWorksCount")?.value || 2);
+  const entries = getVisibleMaterialEntries().map(({ item }) => item);
+  const selectedIndex = entries.findIndex((item) => item.id === selectedMaterial?.id);
+  if (selectedIndex < 0) return selectedMaterial?.path ? [selectedMaterial.path] : [];
+  return entries.slice(selectedIndex, selectedIndex + count).map((item) => item.path);
+}
+
+function renderProductionPlan(planBundle) {
+  const panel = $("#productionPlanPanel");
+  if (!panel) return;
+  const workSections = planBundle.plans.map((plan) => `
+    <article class="production-plan-work">
+      <header><strong>${escapeHtml(plan.materialName)}</strong><span>${plan.pageCount} 张独立图片${planBundle.mode === "one" ? "" : " + 文案"}</span></header>
+      <p>套用：${escapeHtml(plan.recipe.name)}</p>
+      <div class="production-plan-pages">${plan.pages.map((page) => `<span><b>${escapeHtml(page.code)}</b>${escapeHtml(page.title)} · ${escapeHtml(page.roleLabel)}</span>`).join("")}</div>
+    </article>
+  `).join("");
+  panel.hidden = false;
+  panel.innerHTML = `
+    <div class="production-plan-title">
+      <div><small>系统已经按聊天记录中的规则拆好</small><h3>确认这次生产计划</h3></div>
+      <strong>${planBundle.totals.works} 套 · ${planBundle.totals.images} 张图 · ${planBundle.totals.copyFiles} 份文案</strong>
+    </div>
+    ${workSections}
+    <div class="production-plan-safeguards">
+      ${(planBundle.plans[0]?.safeguards || []).map((item) => `<span>✓ ${escapeHtml(item)}</span>`).join("")}
+    </div>
+    <div class="production-actions">
+      <button id="confirmProductionPlanBtn" class="primary-button production-main-button" type="button">确认，开始生产</button>
+      <button id="editProductionPlanBtn" type="button">返回修改</button>
+    </div>
+  `;
+  $("#confirmProductionPlanBtn")?.addEventListener("click", confirmProductionPlan);
+  $("#editProductionPlanBtn")?.addEventListener("click", () => {
+    invalidateProductionPlan();
+    setProductionLiveStatus("已返回选择。修改生产方式、页数或额外要求后，再点击开始。");
+  });
+}
+
+async function createProductionPlan() {
   if (!selectedMaterial || !selectedTemplate) {
     setProductionLiveStatus("请先从素材库和模板库各选择一项。", "error");
     return;
   }
-  if (!$("#productionPlanConfirmed")?.checked) {
-    setProductionLiveStatus("先确认出图计划。系统不会绕过确认直接批量生产。", "error");
+  const materialPaths = selectedProductionMode === "batch" ? currentBatchMaterialPaths() : [selectedMaterial.path];
+  const expectedBatch = Number($("#batchWorksCount")?.value || 2);
+  if (selectedProductionMode === "batch" && materialPaths.length < expectedBatch) {
+    setProductionLiveStatus(`当前筛选从这条开始只剩 ${materialPaths.length} 套素材，请调小批量数量或换一条起点。`, "error");
     return;
   }
-  const count = Number($("#productionBatchCount")?.value || 1);
-  setProductionLiveStatus(`正在生成${stage === "inner" ? "内页" : "封面"}校准图（${count}张）；结果只进入待审区……`, "running");
-  ["#generateCoverCalibrationBtn", "#generateInnerCalibrationBtn"].forEach((selector) => { if ($(selector)) $(selector).disabled = true; });
+  setProductionLiveStatus("正在读取素材、模板和事实，生成可确认的出图计划……", "running");
+  $("#createProductionPlanBtn").disabled = true;
   try {
-    const result = await api("/api/image-api/generate", {
+    const result = await api("/api/production/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: selectedProductionMode,
+        materialPath: selectedMaterial.path,
+        materialPaths,
+        templatePath: selectedTemplate.path,
+        onePageType: $("#onePageType")?.value || "cover",
+        requestedPages: $("#productionPageCount")?.value || "",
+        textModel: $("#productionTextModel")?.value || "gpt-5.6-terra"
+      })
+    });
+    activeProductionPlan = result.plan;
+    renderProductionPlan(result.plan);
+    if ($("#cancelProductionPlanBtn")) $("#cancelProductionPlanBtn").hidden = false;
+    setProductionLiveStatus(`计划已生成：${result.plan.totals.works} 套、${result.plan.totals.images} 张独立图片。请看清页面清单后确认。`);
+  } catch (error) {
+    setProductionLiveStatus(error.message, "error");
+  } finally {
+    $("#createProductionPlanBtn").disabled = false;
+  }
+}
+
+async function confirmProductionPlan() {
+  if (!activeProductionPlan) {
+    setProductionLiveStatus("计划已经失效，请重新生成。", "error");
+    return;
+  }
+  $("#confirmProductionPlanBtn").disabled = true;
+  setProductionLiveStatus("已确认计划，正在启动生产任务……", "running");
+  try {
+    const result = await api("/api/production/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...currentImageApiPayload(),
-        materialPath: selectedMaterial.path,
-        templatePath: selectedTemplate.path,
+        planId: activeProductionPlan.id,
+        confirmed: true,
+        quality: $("#productionQuality")?.value || "严格母版",
         prompt: $("#productionPrompt")?.value || "",
-        quality: $("#productionQuality")?.value || "标准",
-        count,
-        stage,
-        confirmed: true
+        textModel: $("#productionTextModel")?.value || "gpt-5.6-terra"
       })
     });
-    renderProductionOutputs(result);
-    setProductionLiveStatus(`已生成 ${result.results.length} 张待审校准图。请检查风格、事实和中文，再决定是否继续。`);
+    activeProductionJobId = result.job.id;
+    renderProductionJob(result.job);
+    startProductionJobPolling();
   } catch (error) {
+    $("#confirmProductionPlanBtn").disabled = false;
     setProductionLiveStatus(error.message, "error");
-  } finally {
-    ["#generateCoverCalibrationBtn", "#generateInnerCalibrationBtn"].forEach((selector) => { if ($(selector)) $(selector).disabled = false; });
   }
+}
+
+function renderProductionJob(job) {
+  const percent = job.total ? Math.round((job.progress / job.total) * 100) : 0;
+  const suffix = job.status === "running" ? ` · ${job.progress}/${job.total} 张（${percent}%）` : "";
+  setProductionLiveStatus(`${job.message || "正在生产"}${suffix}`, job.status === "failed" ? "error" : job.status === "running" ? "running" : "");
+  renderProductionOutputs(job);
+  if (job.status === "review-ready") {
+    activeProductionJobId = "";
+    activeProductionPlan = null;
+    if ($("#productionPlanPanel")) $("#productionPlanPanel").hidden = true;
+    if ($("#cancelProductionPlanBtn")) $("#cancelProductionPlanBtn").hidden = true;
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.textContent = "打开待审作品文件夹";
+    openButton.addEventListener("click", () => openPath(job.outputRoots?.[0]));
+    $("#productionLiveStatus")?.append(" ", openButton);
+  }
+  if (job.status === "failed") {
+    activeProductionJobId = "";
+    setProductionLiveStatus(`${job.message} ${job.error || ""}`, "error");
+  }
+}
+
+function startProductionJobPolling() {
+  if (productionJobPollTimer) window.clearInterval(productionJobPollTimer);
+  productionJobPollTimer = window.setInterval(async () => {
+    if (!activeProductionJobId) {
+      window.clearInterval(productionJobPollTimer);
+      productionJobPollTimer = null;
+      return;
+    }
+    try {
+      const result = await api(`/api/production/jobs/${encodeURIComponent(activeProductionJobId)}`);
+      renderProductionJob(result.job);
+    } catch (error) {
+      setProductionLiveStatus(`读取生产进度失败：${error.message}`, "error");
+    }
+  }, 2500);
 }
 
 let dedupInfo = null;
@@ -984,6 +1127,7 @@ function renderTemplateLibraryFeed(container, template) {
 }
 
 function selectMaterial(item, category, options = {}) {
+  if (selectedMaterial?.id !== item.id) invalidateProductionPlan();
   selectedMaterial = item;
   selectedMaterialCategory = category;
   expandedMaterialPaths.add(category.path);
@@ -1010,6 +1154,7 @@ function selectMaterial(item, category, options = {}) {
 }
 
 function selectTemplate(template) {
+  if (selectedTemplate?.id !== template.id) invalidateProductionPlan();
   selectedTemplate = template;
   $$(".template-item").forEach((el) => el.classList.toggle("active", el.dataset.id === template.id));
   if ($("#templateQuickSelect")) {
@@ -2613,14 +2758,28 @@ function bindEvents() {
   });
   $("#saveProductionApiBtn")?.addEventListener("click", () => saveProductionApi().catch((error) => setProductionLiveStatus(error.message, "error")));
   $("#testProductionApiBtn")?.addEventListener("click", testProductionApi);
-  $("#generateCoverCalibrationBtn")?.addEventListener("click", () => generateCalibration("cover"));
-  $("#generateInnerCalibrationBtn")?.addEventListener("click", () => generateCalibration("inner"));
+  $$("[data-production-mode]").forEach((button) => button.addEventListener("click", () => {
+    if (activeProductionJobId) {
+      setProductionLiveStatus("当前生产还在进行，完成后再切换生产方式。", "error");
+      return;
+    }
+    selectedProductionMode = button.dataset.productionMode;
+    invalidateProductionPlan();
+    renderProductionMode();
+    setProductionLiveStatus(`${productionModeLabel()}已选好。选择素材和模板后点击主按钮。`);
+  }));
+  $("#createProductionPlanBtn")?.addEventListener("click", createProductionPlan);
+  $("#cancelProductionPlanBtn")?.addEventListener("click", () => {
+    invalidateProductionPlan();
+    setProductionLiveStatus("已取消当前计划，可以重新选择。");
+  });
   $("#productionApiProvider")?.addEventListener("change", () => {
     const minimax = $("#productionApiProvider").value === "minimax";
     $("#productionApiBaseUrl").value = minimax ? "https://api.minimaxi.com/v1" : "http://localhost:62104/v1";
     $("#productionApiModel").value = minimax ? "image-01" : "gpt-image-2";
     setProductionLiveStatus(minimax ? "已切换 MiniMax；请测试当前密钥是否有效。" : "已切换本地 GPT 生图。");
   });
+  renderProductionMode();
   $("#checkAppUpdateBtn")?.addEventListener("click", async () => {
     const previousVersion = dashboard?.appInfo?.version || "未知";
     await loadDashboard(true);

@@ -66,39 +66,54 @@
       <section class="view" id="dashboardView">
         <section class="production-api-flow" aria-label="API 内容生产流程">
           <div class="production-api-intro">
-            <span class="api-mode-badge">生图 API 模式</span>
+            <span class="api-mode-badge">本地作品生产</span>
             <strong>模板定样，素材换内容</strong>
             <small>先锁定视觉模板，再选择素材，生成同风格作品与配套文案。</small>
           </div>
           <div class="production-api-steps">
             <label class="production-api-step"><b>01</b><span><strong>选择模板</strong><select id="templateQuickSelect" class="search-input compact-select"></select></span></label>
             <div class="production-api-step"><b>02</b><span><strong>选择素材</strong><small id="pipelineMaterialName">从下方素材库选择</small></span></div>
-            <div class="production-api-step"><b>03</b><span><strong>生图迁移</strong><small id="imageApiStatus">API 待接入</small></span></div>
-            <div class="production-api-step"><b>04</b><span><strong>作品 + 文案</strong><small>落盘后进入作品集</small></span></div>
+            <div class="production-api-step"><b>03</b><span><strong>按模板制作</strong><small id="imageApiStatus">生产引擎待连接</small></span></div>
+            <div class="production-api-step"><b>04</b><span><strong>作品 + 文案</strong><small>先进入待审区，确认后再入库</small></span></div>
           </div>
         </section>
-        <section class="production-console glass" aria-label="本地 API 生产设置">
+        <section class="production-console glass" aria-label="作品生产">
           <div class="production-console-head">
-            <div><p class="label">当前模板的生产配方</p><h2>校准出图</h2><p>素材和模板从下方三个库选择；结果只进入待审区，通过质检后才进成品库。</p></div>
-            <span class="review-only-badge">先校准 · 后批量</span>
+            <div><p class="label">选好素材和模板，直接得到结果</p><h2>这次要怎么做？</h2><p>生产规则已从实际对话流程写进系统；你只需要选择要做一张、一套还是连续做多套。</p></div>
+            <span class="review-only-badge">结果先进入待审区</span>
           </div>
-          <div class="production-controls">
-            <label><span>生图平台</span><select id="productionApiProvider" class="search-input"><option value="local-openai">本地 GPT 生图</option><option value="minimax">MiniMax 生图</option></select></label>
-            <label><span>接口地址</span><input id="productionApiBaseUrl" class="search-input" type="url" /></label>
-            <label><span>模型</span><input id="productionApiModel" class="search-input" type="text" /></label>
-            <label><span>本机密钥</span><input id="productionApiKey" class="search-input" type="password" autocomplete="off" placeholder="已保存时可留空" /></label>
-            <label><span>本次数量</span><select id="productionBatchCount" class="search-input"><option value="1">1 张（校准）</option><option value="2">2 张（对比）</option><option value="6">6 张（批量）</option></select></label>
-            <label><span>质量</span><select id="productionQuality" class="search-input"><option value="标准">标准</option><option value="高质量">高质量</option><option value="严格母版">严格母版</option></select></label>
+          <div class="production-mode-grid" role="radiogroup" aria-label="生产方式">
+            <button class="production-mode-card active" type="button" data-production-mode="one"><b>做一张</b><span>做封面或一张内页，用来单独发布、补页或先看效果。</span></button>
+            <button class="production-mode-card" type="button" data-production-mode="set"><b>做一套</b><span>自动按素材拆页，生成独立轮播图、文案和生产记录。</span></button>
+            <button class="production-mode-card" type="button" data-production-mode="batch"><b>批量做</b><span>从当前素材开始，连续用同一模板生产多套作品。</span></button>
           </div>
-          <label class="production-prompt-field"><span>提示词 / 本批补充要求</span><textarea id="productionPrompt" rows="4" placeholder="系统已自动加入 A/B/C 身份、事实锁、江浙沪、10人起接、无价格不写价格、独立3:4等规则。这里仅补充本批要求。"></textarea></label>
-          <label class="production-confirm"><input id="productionPlanConfirmed" type="checkbox" /><span>出图计划已经确认；先生成校准图，不直接写入正式成品库</span></label>
-          <div class="production-actions">
-            <button id="saveProductionApiBtn" type="button">保存本机接口</button>
-            <button id="testProductionApiBtn" type="button">测试连接</button>
-            <button id="generateCoverCalibrationBtn" class="primary-button" type="button">生成封面校准</button>
-            <button id="generateInnerCalibrationBtn" type="button">生成内页校准</button>
+          <div class="production-simple-controls">
+            <label id="onePageTypeField"><span>这一张做什么</span><select id="onePageType" class="search-input"><option value="cover">封面</option><option value="inner">内页</option></select></label>
+            <label id="batchWorksField" hidden><span>连续做几套</span><select id="batchWorksCount" class="search-input"><option value="2">2 套</option><option value="3">3 套</option><option value="5">5 套</option></select></label>
+            <label><span>页数</span><select id="productionPageCount" class="search-input"><option value="">自动（按素材）</option><option value="3">3 页</option><option value="5">5 页</option><option value="7">7 页</option><option value="9">9 页</option><option value="10">10 页</option></select></label>
+            <label><span>质量</span><select id="productionQuality" class="search-input"><option value="严格母版">严格母版（推荐）</option><option value="高质量">高质量</option><option value="标准">标准</option></select></label>
           </div>
-          <div class="production-live-status" id="productionLiveStatus">请选择素材与模板，然后确认出图计划。</div>
+          <label class="production-prompt-field"><span>额外要求（可以不填）</span><textarea id="productionPrompt" rows="3" placeholder="例如：本次标题更克制；不要出现篝火。模板规则、事实锁、页数和文案规则已经自动加入，不需要自己写提示词。"></textarea></label>
+          <details class="production-advanced">
+            <summary>接口设置（平时不用动）</summary>
+            <div class="production-controls">
+              <label><span>生图平台</span><select id="productionApiProvider" class="search-input"><option value="local-openai">本地 GPT 生图</option><option value="minimax">MiniMax 生图</option></select></label>
+              <label><span>接口地址</span><input id="productionApiBaseUrl" class="search-input" type="url" /></label>
+              <label><span>生图模型</span><input id="productionApiModel" class="search-input" type="text" /></label>
+              <label><span>文案模型</span><input id="productionTextModel" class="search-input" type="text" value="gpt-5.6-terra" /></label>
+              <label><span>本机密钥</span><input id="productionApiKey" class="search-input" type="password" autocomplete="off" placeholder="已保存时可留空" /></label>
+            </div>
+            <div class="production-actions compact-actions">
+              <button id="saveProductionApiBtn" type="button">保存接口</button>
+              <button id="testProductionApiBtn" type="button">测试连接</button>
+            </div>
+          </details>
+          <div class="production-actions primary-production-actions">
+            <button id="createProductionPlanBtn" class="primary-button production-main-button" type="button">开始做这一张</button>
+            <button id="cancelProductionPlanBtn" type="button" hidden>重新选择</button>
+          </div>
+          <section class="production-plan-panel" id="productionPlanPanel" hidden></section>
+          <div class="production-live-status" id="productionLiveStatus">先从下方选择素材和模板，再点击“开始做这一张”。</div>
           <div class="production-output-grid" id="productionOutputGrid"></div>
         </section>
         <div class="three-pane" id="threePane">

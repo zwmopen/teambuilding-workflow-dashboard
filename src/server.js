@@ -4,7 +4,13 @@ const path = require("path");
 const url = require("url");
 const childProcess = require("child_process");
 const crypto = require("crypto");
-const { generateImages, normalizeImageApiConfig } = require("./lib/image-generation");
+const { generateImages, generateText, normalizeImageApiConfig } = require("./lib/image-generation");
+const {
+  applySuggestedTitles,
+  buildCopyPrompt,
+  buildPagePrompt,
+  buildProductionPlan
+} = require("./lib/production-recipes");
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
 const {
   confirmOfficialUpload,
@@ -42,6 +48,7 @@ const TASK_INDEX_FILE = path.join(DATA_ROOT, "production-task-index.json");
 const APP_SETTINGS_FILE = path.join(DATA_ROOT, "app-settings.json");
 const IMAGE_API_SECRET_FILE = path.join(DATA_ROOT, "secrets", "image-api.local.env");
 const IMAGE_REVIEW_ROOT = path.join(DATA_ROOT, "API生产待审");
+const PRODUCTION_JOB_ROOT = path.join(DATA_ROOT, "production-jobs");
 const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
 const DEVICE_PRESENCE_FILE = path.join(DATA_ROOT, "device-presence.json");
 const DEVICE_NOTES_FILE = path.join(DATA_ROOT, "device-notes.json");
@@ -90,6 +97,8 @@ let deviceStatusCache = {
 let deviceStatusPromise = null;
 const genericTransferTasks = new Map();
 const distributionTasks = new Map();
+const pendingProductionPlans = new Map();
+const productionJobs = new Map();
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_ROOT, { recursive: true });
@@ -702,6 +711,224 @@ function buildProductionPrompt(body, facts) {
     userPrompt ? `用户补充要求：\n${userPrompt}` : "",
     facts ? `素材事实（只能从这里取业务事实）：\n${facts}` : ""
   ].filter(Boolean).join("\n\n");
+}
+
+function productionPlanId(plans, mode) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify({ mode, plans: plans.map((plan) => ({
+      materialPath: plan.materialPath,
+      templatePath: plan.templatePath,
+      pageCount: plan.pageCount,
+      pages: plan.pages.map((page) => ({ role: page.role, title: page.title, sourceImage: page.sourceImage }))
+    })) }))
+    .digest("hex")
+    .slice(0, 20);
+}
+
+async function createProductionPlans(body) {
+  const mode = ["one", "set", "batch"].includes(body.mode) ? body.mode : "set";
+  const templatePath = path.resolve(String(body.templatePath || ""));
+  if (!isAllowedFile(templatePath) || !exists(templatePath)) throw new Error("请选择真实存在的模板文件夹");
+  const requested = mode === "batch"
+    ? (Array.isArray(body.materialPaths) ? body.materialPaths : [])
+    : [body.materialPath];
+  const materialPaths = [...new Set(requested.map((item) => path.resolve(String(item || ""))).filter(Boolean))]
+    .slice(0, mode === "batch" ? 5 : 1);
+  if (!materialPaths.length) throw new Error("请选择要生产的素材");
+  let plans = materialPaths.map((materialPath, index) => {
+    if (!isAllowedFile(materialPath) || !exists(materialPath)) throw new Error(`素材文件夹不存在：${materialPath}`);
+    const materialImages = collectReferenceImages(materialPath, 10);
+    if (!materialImages.length) throw new Error(`素材文件夹中没有可用图片：${path.basename(materialPath)}`);
+    const plan = buildProductionPlan({
+      mode: mode === "batch" ? "set" : mode,
+      materialPath,
+      templatePath,
+      materialImages,
+      facts: materialFacts(materialPath),
+      requestedPages: body.requestedPages,
+      batchIndex: index
+    });
+    if (mode === "one" && body.onePageType === "inner") {
+      plan.pages[0] = {
+        ...plan.pages[0],
+        role: "inner",
+        roleLabel: "内页",
+        title: plan.pages[0].title || "项目内页",
+        rule: plan.recipe.inner
+      };
+    }
+    return plan;
+  });
+  const savedImageApi = readJson(APP_SETTINGS_FILE, {}).imageApi || {};
+  const titleConfig = normalizeImageApiConfig(savedImageApi);
+  const titleApiKey = imageApiCredential(titleConfig.provider);
+  if (titleConfig.provider === "local-openai" && titleApiKey) {
+    plans = await Promise.all(plans.map(async (plan) => {
+      try {
+        const titlePrompt = [
+          "请根据团建素材事实为轮播出图计划提炼短标题。只返回严格 JSON，不要 Markdown。",
+          `格式：{"workTitle":"作品总标题","pages":[{"title":"P1标题"},{"title":"P2标题"}]}`,
+          `必须正好返回 ${plan.pageCount} 个 pages。workTitle 4—12 个中文字符；内页标题 2—8 个中文字符。`,
+          "不得使用 emoji、括号、序号、夸张词、HR话术、无限、必看、快收藏、咨询、报价、全包。",
+          "只能提取素材明确出现的地点和项目，不得虚构。P1是作品主题；后续每页各自一个不同项目。",
+          `原文件夹名：${path.basename(plan.materialPath)}`,
+          `素材事实：\n${materialFacts(plan.materialPath)}`
+        ].join("\n\n");
+        const raw = await generateText({
+          config: titleConfig,
+          apiKey: titleApiKey,
+          prompt: titlePrompt,
+          model: String(body.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
+        });
+        const jsonText = raw.replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+        return applySuggestedTitles(plan, JSON.parse(jsonText));
+      } catch {
+        return plan;
+      }
+    }));
+  }
+  const id = productionPlanId(plans, mode);
+  const planBundle = {
+    id,
+    mode,
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+    plans,
+    totals: {
+      works: plans.length,
+      images: plans.reduce((sum, plan) => sum + plan.pageCount, 0),
+      copyFiles: mode === "one" ? 0 : plans.length
+    }
+  };
+  pendingProductionPlans.set(id, planBundle);
+  return planBundle;
+}
+
+function publicProductionJob(job) {
+  return {
+    id: job.id,
+    planId: job.planId,
+    mode: job.mode,
+    status: job.status,
+    phase: job.phase,
+    message: job.message,
+    progress: job.progress,
+    total: job.total,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    outputRoots: job.outputRoots || [],
+    results: (job.results || []).map((item) => ({
+      ...item,
+      previewUrl: item.outputFile ? `/file?path=${encodeURIComponent(item.outputFile)}` : ""
+    })),
+    error: job.error || ""
+  };
+}
+
+function saveProductionJob(job) {
+  fs.mkdirSync(PRODUCTION_JOB_ROOT, { recursive: true });
+  writeJson(path.join(PRODUCTION_JOB_ROOT, `${job.id}.json`), publicProductionJob(job));
+}
+
+function updateProductionJob(job, patch) {
+  Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+  productionJobs.set(job.id, job);
+  saveProductionJob(job);
+}
+
+async function runProductionJob(job, planBundle, options) {
+  const config = normalizeImageApiConfig(options);
+  const apiKey = imageApiCredential(config.provider, options.apiKey);
+  if (!apiKey) throw new Error("没有找到这个平台的本机密钥");
+  let completed = 0;
+  for (const plan of planBundle.plans) {
+    const facts = materialFacts(plan.materialPath);
+    const templateImages = collectReferenceImages(plan.templatePath, 5);
+    const materialImages = collectReferenceImages(plan.materialPath, 10);
+    if (!templateImages.length) throw new Error(`模板中没有可用参考图：${plan.templateName}`);
+    const folderName = `${new Date().toISOString().slice(0, 10).replaceAll("-", "")}_${safeOutputName(plan.materialName)}_${safeOutputName(plan.recipe.name)}_${job.id.slice(-6)}`;
+    const outputRoot = path.join(IMAGE_REVIEW_ROOT, folderName);
+    fs.mkdirSync(outputRoot, { recursive: true });
+    job.outputRoots.push(outputRoot);
+    writeJson(path.join(outputRoot, "出图计划.json"), plan);
+    for (const page of plan.pages) {
+      updateProductionJob(job, {
+        phase: "generating-images",
+        message: `正在做 ${plan.materialName} · ${page.code} ${page.title}`,
+        progress: completed
+      });
+      const templateRef = page.role === "cover"
+        ? templateImages[0]
+        : (templateImages[Math.min(1, templateImages.length - 1)] || templateImages[0]);
+      const pageMaterial = page.sourceImage && exists(page.sourceImage)
+        ? page.sourceImage
+        : materialImages[Math.min(page.index - 1, materialImages.length - 1)];
+      const referencePaths = page.role === "cover"
+        ? [templateRef, ...materialImages.slice(0, 4)]
+        : [templateRef, pageMaterial];
+      const prompt = buildPagePrompt(plan, page, facts, options.prompt, options.quality);
+      const generated = await generateImages({
+        config,
+        apiKey,
+        prompt,
+        referencePaths: [...new Set(referencePaths.filter(Boolean))].slice(0, 8),
+        outputRoot,
+        count: 1
+      });
+      const original = generated[0];
+      const extension = path.extname(original.outputFile);
+      const finalFile = path.join(outputRoot, `${page.code}_${safeOutputName(page.title)}${extension}`);
+      if (exists(finalFile)) throw new Error(`待审目录已存在同名页面：${path.basename(finalFile)}`);
+      fs.renameSync(original.outputFile, finalFile);
+      job.results.push({
+        type: "image",
+        work: plan.materialName,
+        page: page.code,
+        title: page.title,
+        outputFile: finalFile,
+        bytes: original.bytes,
+        width: original.width,
+        height: original.height,
+        provider: original.provider,
+        model: original.model
+      });
+      completed += 1;
+      updateProductionJob(job, { progress: completed });
+    }
+    if (planBundle.mode !== "one") {
+      updateProductionJob(job, {
+        phase: "generating-copy",
+        message: `正在写 ${plan.materialName} 的小红书文案`
+      });
+      const copy = await generateText({
+        config,
+        apiKey,
+        prompt: buildCopyPrompt(plan, facts),
+        model: String(options.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
+      });
+      const copyFile = path.join(outputRoot, "小红书文案.txt");
+      fs.writeFileSync(copyFile, `${copy}\n`, "utf8");
+      job.results.push({ type: "copy", work: plan.materialName, outputFile: copyFile, bytes: Buffer.byteLength(copy) });
+    }
+    writeJson(path.join(outputRoot, "生产记录.json"), {
+      status: "review-ready",
+      createdAt: new Date().toISOString(),
+      plan,
+      provider: config.provider,
+      imageModel: config.model,
+      textModel: planBundle.mode === "one" ? "" : (options.textModel || "gpt-5.6-terra"),
+      officialLibraryWritten: false,
+      files: job.results.filter((item) => item.work === plan.materialName).map((item) => item.outputFile)
+    });
+  }
+  updateProductionJob(job, {
+    status: "review-ready",
+    phase: "completed",
+    progress: job.total,
+    message: planBundle.mode === "one"
+      ? "这一张已经生成，已放入待审区。"
+      : `${planBundle.plans.length} 套作品已经生成；每套都包含独立图片、文案和生产记录。`
+  });
 }
 
 function mergeCollectionLedger(collections) {
@@ -2714,6 +2941,56 @@ async function route(req, res) {
   if (pathname === "/api/settings/paths" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     return sendJson(res, { ok: true, settings: saveWorkspaceSettings(body) });
+  }
+
+  if (pathname === "/api/production/plan" && req.method === "POST") {
+    try {
+      const body = JSON.parse(await getBody(req, 256_000) || "{}");
+      return sendJson(res, { ok: true, plan: await createProductionPlans(body) });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
+  }
+
+  if (pathname === "/api/production/run" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 256_000) || "{}");
+    const planBundle = pendingProductionPlans.get(String(body.planId || ""));
+    if (!planBundle) return send(res, 409, JSON.stringify({ error: "出图计划已失效，请重新点击生成计划" }));
+    if (!body.confirmed) return send(res, 409, JSON.stringify({ error: "请先查看并确认出图计划" }));
+    const job = {
+      id: `${Date.now().toString(36)}-${crypto.randomBytes(4).toString("hex")}`,
+      planId: planBundle.id,
+      mode: planBundle.mode,
+      status: "running",
+      phase: "starting",
+      message: "已确认计划，正在准备生产",
+      progress: 0,
+      total: planBundle.totals.images,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      outputRoots: [],
+      results: [],
+      error: ""
+    };
+    productionJobs.set(job.id, job);
+    saveProductionJob(job);
+    pendingProductionPlans.delete(planBundle.id);
+    runProductionJob(job, planBundle, body).catch((error) => {
+      updateProductionJob(job, {
+        status: "failed",
+        phase: "failed",
+        message: "生产中断，已生成的文件仍保留在待审区。",
+        error: String(error?.message || error).slice(0, 1000)
+      });
+    });
+    return sendJson(res, { ok: true, job: publicProductionJob(job) });
+  }
+
+  const productionJobMatch = pathname.match(/^\/api\/production\/jobs\/([^/]+)$/);
+  if (productionJobMatch && req.method === "GET") {
+    const job = productionJobs.get(decodeURIComponent(productionJobMatch[1]));
+    if (!job) return send(res, 404, JSON.stringify({ error: "没有找到这次生产任务" }));
+    return sendJson(res, { ok: true, job: publicProductionJob(job) });
   }
 
   if (pathname === "/api/image-api/config" && req.method === "POST") {

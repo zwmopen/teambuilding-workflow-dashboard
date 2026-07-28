@@ -106,7 +106,13 @@ async function main() {
 
     await evaluate(`document.querySelector('.tab[data-tab="dashboard"]').click(); true`);
     await wait(250);
-    await check("素材生产四步 API 流程存在", `(() => { const text = document.querySelector('.production-api-flow')?.textContent || ''; return ['选择模板','选择素材','生图迁移','作品 + 文案'].every((label) => text.includes(label)); })()`);
+    await check("素材生产四步结果流程存在", `(() => { const text = document.querySelector('.production-api-flow')?.textContent || ''; return ['选择模板','选择素材','按模板制作','作品 + 文案'].every((label) => text.includes(label)); })()`);
+    await check("普通用户三种生产入口存在", `(() => {
+      const modes = [...document.querySelectorAll('[data-production-mode]')].map((button) => button.textContent.trim());
+      return modes.length === 3 && ['做一张','做一套','批量做'].every((label) => modes.some((text) => text.includes(label)));
+    })()`);
+    await check("接口设置默认收起", `Boolean(document.querySelector('.production-advanced:not([open])'))`);
+    await check("生产主按钮真实可见", `Boolean(document.querySelector('#createProductionPlanBtn') && document.querySelector('#createProductionPlanBtn').offsetParent)`);
     await check("素材库与模板库已载入", `Number(document.querySelector('#statMaterialCategories')?.textContent) > 0 && document.querySelector('#materialLibraryFilter')?.options.length > 0 && document.querySelector('#templateQuickSelect')?.options.length > 0`);
     const materialInteraction = await evaluate(`(() => {
       const library = document.querySelector('#materialLibraryFilter');

@@ -132,6 +132,26 @@ async function generateMinimax({ config, apiKey, prompt, fetchImpl = fetch }) {
   return fetchImageBytes(imageUrl, fetchImpl);
 }
 
+async function generateText({ config, apiKey, prompt, model = "gpt-5.6-terra", fetchImpl = fetch }) {
+  if (!apiKey) throw new Error("没有找到本机 API 密钥");
+  if (config.provider !== "local-openai") throw new Error("当前文案生成只支持本地 GPT 兼容接口");
+  const endpoint = `${config.baseUrl}/chat/completions`;
+  assertSafeUrl(endpoint);
+  const response = await fetchImpl(endpoint, {
+    method: "POST",
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7
+    })
+  });
+  const data = await readJsonResponse(response);
+  const content = data.choices?.[0]?.message?.content;
+  if (!String(content || "").trim()) throw new Error("文案接口没有返回正文");
+  return String(content).trim();
+}
+
 async function generateImages(options) {
   const config = normalizeImageApiConfig(options.config);
   if (!options.apiKey) throw new Error("没有找到本机生图 API 密钥");
@@ -155,6 +175,7 @@ module.exports = {
   generateImages,
   generateMinimax,
   generateOpenAiCompatible,
+  generateText,
   imageDimensions,
   normalizeImageApiConfig
 };

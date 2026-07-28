@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { generateMinimax, generateOpenAiCompatible, normalizeImageApiConfig } = require("./image-generation");
+const { generateMinimax, generateOpenAiCompatible, generateText, normalizeImageApiConfig } = require("./image-generation");
 
 test("image API defaults to the verified local image gateway", () => {
   assert.deepEqual(normalizeImageApiConfig({}), {
@@ -30,4 +30,12 @@ test("MiniMax uses a 3:4 request and returns downloaded bytes", async () => {
   });
   assert.equal(JSON.parse(requests[0].options.body).aspect_ratio, "3:4");
   assert.equal(result.bytes.length, 4);
+});
+
+test("local compatible text generation returns copy", async () => {
+  const result = await generateText({
+    config: normalizeImageApiConfig({}), apiKey: "secret", prompt: "写文案",
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: "团建文案" } }] }), { status: 200 })
+  });
+  assert.equal(result, "团建文案");
 });
