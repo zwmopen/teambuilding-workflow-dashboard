@@ -3,7 +3,7 @@ const path = require("node:path");
 
 const PROVIDER_DEFAULTS = {
   "local-openai": { baseUrl: "http://localhost:62104/v1", model: "gpt-image-2" },
-  bytecat: { baseUrl: "https://codecdn.bytecatcode.org/v1", model: "gemini-3-pro-image-preview" },
+  bytecat: { baseUrl: "https://codecdn.bytecatcode.org/v1", model: "gpt-image-2" },
   minimax: { baseUrl: "https://api.minimaxi.com/v1", model: "image-01" }
 };
 

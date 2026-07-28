@@ -704,6 +704,20 @@ function imageApiCredential(provider, suppliedKey = "") {
   return saved.LOCAL_IMAGE_API_KEY || process.env.TEAMBUILDING_IMAGE_API_KEY || "";
 }
 
+function textGenerationConnection(imageConfig, suppliedKey = "") {
+  const localApiKey = imageApiCredential("local-openai");
+  if (localApiKey) {
+    return {
+      config: normalizeImageApiConfig({ provider: "local-openai" }),
+      apiKey: localApiKey
+    };
+  }
+  return {
+    config: imageConfig,
+    apiKey: imageApiCredential(imageConfig.provider, suppliedKey)
+  };
+}
+
 function publicImageApiSettings(value = {}) {
   const saved = readEnvFile(IMAGE_API_SECRET_FILE);
   const config = normalizeImageApiConfig({
@@ -820,9 +834,9 @@ async function createProductionPlans(body) {
     return plan;
   });
   const savedImageApi = readJson(APP_SETTINGS_FILE, {}).imageApi || {};
-  const titleConfig = normalizeImageApiConfig(savedImageApi);
-  const titleApiKey = imageApiCredential(titleConfig.provider);
-  if (titleConfig.provider === "local-openai" && titleApiKey) {
+  const titleImageConfig = normalizeImageApiConfig(savedImageApi);
+  const titleConnection = textGenerationConnection(titleImageConfig);
+  if (titleConnection.apiKey) {
     plans = await Promise.all(plans.map(async (plan) => {
       try {
         const titlePrompt = [
@@ -835,8 +849,8 @@ async function createProductionPlans(body) {
           `素材事实：\n${materialFacts(plan.materialPath)}`
         ].join("\n\n");
         const raw = await generateText({
-          config: titleConfig,
-          apiKey: titleApiKey,
+          config: titleConnection.config,
+          apiKey: titleConnection.apiKey,
           prompt: titlePrompt,
           model: String(body.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
         });
@@ -900,6 +914,7 @@ async function runProductionJob(job, planBundle, options) {
   const config = normalizeImageApiConfig(options);
   const apiKey = imageApiCredential(config.provider, options.apiKey);
   if (!apiKey) throw new Error("没有找到这个平台的本机密钥");
+  const textConnection = textGenerationConnection(config, options.apiKey);
   let completed = 0;
   for (const plan of planBundle.plans) {
     const facts = materialFacts(plan.materialPath);
@@ -961,8 +976,8 @@ async function runProductionJob(job, planBundle, options) {
         message: `正在写 ${plan.materialName} 的小红书文案`
       });
       const copy = await generateText({
-        config,
-        apiKey,
+        config: textConnection.config,
+        apiKey: textConnection.apiKey,
         prompt: buildCopyPrompt(plan, facts),
         model: String(options.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
       });

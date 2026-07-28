@@ -14,7 +14,7 @@ test("ByteCat Image 2.0 uses the official OpenAI-compatible gateway", () => {
   assert.deepEqual(normalizeImageApiConfig({ provider: "bytecat" }), {
     provider: "bytecat",
     baseUrl: "https://codecdn.bytecatcode.org/v1",
-    model: "gemini-3-pro-image-preview"
+    model: "gpt-image-2"
   });
 });
 

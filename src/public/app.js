@@ -3692,9 +3692,9 @@ function bindEvents() {
       },
       bytecat: {
         baseUrl: "https://codecdn.bytecatcode.org/v1",
-        model: "gemini-3-pro-image-preview",
-        textModel: "gemini-3-flash-preview",
-        message: "已切换 ByteCat Image 2.0；密钥仅保存在本机。"
+        model: "gpt-image-2",
+        textModel: "gpt-5.6-terra",
+        message: "已切换 ByteCat Image 2.0；图片走 ByteCat，文案自动走本地接口。"
       },
       minimax: {
         baseUrl: "https://api.minimaxi.com/v1",
