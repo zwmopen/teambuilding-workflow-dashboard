@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.9.5",
-  "source_commit": "d5d5667",
+  "version": "0.9.6",
+  "source_commit": "92c463b",
   "artifacts": [
+    {
+      "file": "0.9.6/团建内容工作台-0.9.6-便携版.exe",
+      "sha256": "6D6FC7EE72BD6B46EC052A622DE51267ED78CF657AD948CDE3E7CE31BD288D7D",
+      "size": 89543147,
+      "platform": "Windows x64",
+      "built_at": "2026-07-28",
+      "known_limits": "长任务在应用进程内执行，退出应用会中断未完成页面；结果先进入待审区，仍需人工质检后进入正式成品库。MiniMax 当前本机密钥仍被官方接口拒绝。"
+    },
     {
       "file": "0.9.5/团建内容工作台-0.9.5-便携版.exe",
       "sha256": "898FC55FB6B2C9271D7E03423DB805FF16493BA04C37DF174B834BC7ED7385F2",
