@@ -24,6 +24,38 @@ test("page settings keep safe defaults and clamp DIY values", () => {
   assert.equal(settings.distribution.autoSendCount, 20);
   assert.equal(settings.distribution.autoDistributionEnabled, true);
   assert.equal(settings.distribution.requireSendConfirmation, false);
+  assert.equal(settings.backup.scheduleEnabled, true);
+  assert.equal(settings.backup.frequency, "daily");
+  assert.equal(settings.backup.intervalHours, 24);
+  assert.equal(settings.backup.monthlyLargeFileLimitMb, 2560);
+});
+
+test("backup settings keep a practical schedule and clamp the monthly upload budget", () => {
+  const settings = normalizePageSettings({
+    backup: {
+      scheduleEnabled: false,
+      frequency: "weekly",
+      intervalHours: 999,
+      monthlyLargeFileLimitMb: 999999,
+      sourceRoot: "D:\\团建方案库"
+    }
+  });
+  assert.equal(settings.backup.scheduleEnabled, false);
+  assert.equal(settings.backup.frequency, "weekly");
+  assert.equal(settings.backup.intervalHours, 168);
+  assert.equal(settings.backup.monthlyLargeFileLimitMb, 10240);
+  assert.equal(settings.backup.sourceRoot, "D:\\团建方案库");
+});
+
+test("production page settings preserve the optional packed-library path", () => {
+  const settings = normalizePageSettings({
+    production: {
+      packedRoot: "D:\\作品库\\抖音小红书",
+      folderBindings: { "material-traffic": "D:\\素材库\\泛流量贴" }
+    }
+  });
+  assert.equal(settings.production.packedRoot, "D:\\作品库\\抖音小红书");
+  assert.equal(settings.production.folderBindings["material-traffic"], "D:\\素材库\\泛流量贴");
 });
 
 test("reserve count uses real mobile-stage sendable folders and category", () => {

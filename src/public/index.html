@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.11.5" />
+    <link rel="stylesheet" href="/styles.css?v=0.11.6" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -85,10 +85,9 @@
                 </header>
                 <div class="workbench-filter-row" id="workbenchMaterialFilters">
                   <button class="active" type="button" data-workbench-material-filter="all">全部</button>
-                  <button type="button" data-workbench-material-filter="conversion">精准流量</button>
-                  <button type="button" data-workbench-material-filter="game">团建游戏</button>
-                  <button type="button" data-workbench-material-filter="guide">合集攻略</button>
-                  <button type="button" data-workbench-material-filter="unused">已使用0次</button>
+                  <button type="button" data-workbench-material-filter="conversion">精准流量贴</button>
+                  <button type="button" data-workbench-material-filter="traffic">泛流量贴</button>
+                  <button type="button" data-workbench-material-filter="unclassified">未分类</button>
                 </div>
                 <input id="workbenchMaterialSearch" class="workbench-search" type="search" placeholder="搜索地点、玩法或文件夹名称" />
                 <div class="workbench-asset-browser" aria-label="素材目录与帖子">
@@ -161,14 +160,13 @@
             <aside class="production-output-column">
               <section class="workbench-card output-library-card">
                 <header class="workbench-card-head">
-                  <div><span class="workbench-step">04</span><strong>成品与待发</strong><small id="workbenchProductCount">0 个成品</small></div>
+                  <div><span class="workbench-step">04</span><strong>成品待审区</strong><small id="workbenchProductCount">0 个帖子</small></div>
                   <button id="workbenchRefreshProductsBtn" type="button">刷新</button>
                 </header>
                 <div class="workbench-output-tabs">
-                  <button class="active" type="button" data-workbench-output-filter="all">全部成品</button>
-                  <button type="button" data-workbench-output-filter="review">今日/待审</button>
-                  <button type="button" data-workbench-output-filter="unpacked">待打包</button>
+                  <button class="active" type="button" data-workbench-output-filter="unpacked">未打包</button>
                   <button type="button" data-workbench-output-filter="packed">已打包</button>
+                  <button type="button" data-workbench-output-filter="history">打包记录</button>
                 </div>
                 <div class="workbench-output-path" id="workbenchOutputPath"></div>
                 <div class="workbench-product-list" id="workbenchProductList"></div>
@@ -363,7 +361,7 @@
         <section class="distribution-layout">
           <header class="page-heading">
             <div><p class="label">真实执行入口</p><h2>内容分发</h2><p>检测电脑与手机作品储备，只向已确认设备安全分发，并保留完整进度和记录。</p></div>
-            <div class="detail-button-row"><button id="reconcileDistributionFoldersBtn" type="button">按历史记录整理</button><button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button><button class="page-settings-button" type="button" data-open-page-settings="distribution" title="内容分发设置" aria-label="打开内容分发设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button><button class="page-help-button" type="button" data-page-help="distributionView" title="查看分发流程的使用说明" aria-label="查看内容分发说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button></div>
+            <div class="detail-button-row"><button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button><button class="page-settings-button" type="button" data-open-page-settings="distribution" title="内容分发设置" aria-label="打开内容分发设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button><button class="page-help-button" type="button" data-page-help="distributionView" title="查看分发流程的使用说明" aria-label="查看内容分发说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button></div>
           </header>
           <section id="distributionReserveAlert" class="reserve-floating-alert" hidden aria-live="polite"></section>
           <div class="segment-tabs distribution-stage-tabs" id="distributionTabs"></div>
@@ -372,11 +370,6 @@
           <section class="distribution-panel" id="distributionOfficial"></section>
           <section class="distribution-panel" id="distributionUsed"></section>
           <section class="distribution-panel" id="distributionHistory"></section>
-          <section class="codex-command-bar">
-            <strong>Codex</strong>
-            <input id="distributionCommand" placeholder="例如：给5号补一个泛流量" />
-            <button id="copyDistributionCommand" type="button">复制指令</button>
-          </section>
         </section>
       </section>
 
@@ -476,8 +469,20 @@
               <button id="importLifeGameCloudBtn" type="button">读取本机配置</button>
               <button id="testCloudBackupBtn" type="button">测试连接</button>
               <button id="runCloudBackupBtn" class="primary-button" type="button">立即备份</button>
+              <button id="runLargeCloudBackupBtn" type="button">备份方案文件</button>
+            </div>
+            <div class="backup-schedule-grid">
+              <label class="switch-setting"><span><b>自动备份</b><small>默认每天检查一次</small></span><input id="cloudBackupScheduleEnabled" type="checkbox" checked /></label>
+              <label><span>频率</span><select id="cloudBackupFrequency"><option value="daily">每天</option><option value="weekly">每周</option><option value="interval">按小时</option></select></label>
+              <label><span>间隔小时</span><input id="cloudBackupIntervalHours" type="number" min="1" max="744" value="24" /></label>
+              <label><span>每月大文件上限（MB）</span><input id="cloudBackupMonthlyLimitMb" type="number" min="0" max="10240" value="2560" /></label>
+              <label class="backup-source-field"><span>方案/大文件来源</span><span class="path-input-row"><input id="cloudBackupSourceRoot" type="text" placeholder="可粘贴本地方案文件夹；留空只备份设置与记录" /><button id="chooseCloudBackupSourceBtn" type="button">选择</button></span></label>
             </div>
             <p class="settings-message" id="cloudBackupMessage">正在读取备份状态…</p>
+            <div class="backup-task-progress" id="largeCloudBackupProgress" hidden>
+              <div><strong id="largeCloudBackupLabel">方案文件备份</strong><span id="largeCloudBackupPercent">0%</span></div>
+              <progress id="largeCloudBackupBar" max="100" value="0"></progress>
+            </div>
           </section>
           <section class="settings-card dedup-card">
             <div class="settings-card-heading">
@@ -569,6 +574,7 @@
             <label><span>素材库</span><div class="inline-setting-control"><input id="workbenchMaterialRoot" type="text" placeholder="粘贴后回车或点到别处自动保存" /><button id="workbenchChooseMaterialRootBtn" type="button">选择</button></div></label>
             <label><span>模板库</span><div class="inline-setting-control"><input id="productionTemplateRoot" type="text" placeholder="当前模板来源目录" /><button id="chooseProductionTemplateRootBtn" type="button">选择</button></div></label>
             <label><span>成品库</span><div class="inline-setting-control"><input id="workbenchProductRoot" type="text" placeholder="粘贴后自动保存" /><button id="workbenchChooseProductRootBtn" type="button">选择</button></div></label>
+            <label><span>已打包库</span><div class="inline-setting-control"><input id="productionPackedRoot" type="text" placeholder="留空则使用成品库内的抖音小红书文件夹" /><button id="chooseProductionPackedRootBtn" type="button">选择</button></div></label>
           </div>
           <div class="settings-group">
             <h3>提示词与作品集</h3>
@@ -611,15 +617,26 @@
       </aside>
     </div>
 
+    <button class="workbench-assistant-launcher" id="workbenchAssistantLauncher" type="button" aria-label="打开团建中控助手" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8.5h10a4 4 0 0 1 4 4v2a4 4 0 0 1-4 4h-5l-4 2v-2H7a4 4 0 0 1-4-4v-2a4 4 0 0 1 4-4Z"/><path d="M9 8.5V6a3 3 0 0 1 6 0v2.5M8 13h.01M12 13h.01M16 13h.01"/></svg>
+    </button>
+    <aside class="workbench-assistant-panel" id="workbenchAssistantPanel" hidden aria-label="团建中控助手">
+      <header><div><strong>团建中控助手</strong><span>本地安全执行</span></div><button id="closeWorkbenchAssistant" type="button" aria-label="关闭">×</button></header>
+      <div class="workbench-assistant-messages" id="workbenchAssistantMessages">
+        <article class="assistant-message">我能理解自然语言，也会在执行前核对设备和作品。可以直接问“你能干嘛”，或说“检测在线设备”“给4号发一个精准流量作品”。</article>
+      </div>
+      <div class="workbench-assistant-input"><input id="workbenchAssistantCommand" type="text" placeholder="输入要执行的工作…" /><button id="runWorkbenchAssistantCommand" type="button">执行</button></div>
+    </aside>
     <div class="toast" id="toast"></div>
     <div class="context-menu" id="contextMenu">
       <button id="contextOpenFolder" type="button">打开当前目录</button>
+      <button id="contextSetFolder" type="button">设置关联文件夹</button>
       <button id="contextCopyPath" type="button">复制目录地址</button>
       <button id="contextRename" type="button">重命名</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.11.5"></script>
-    <script src="/material-workspace.js?v=0.11.5"></script>
-    <script src="/app.js?v=0.11.5"></script>
+    <script src="/distribution-ui.js?v=0.11.6"></script>
+    <script src="/material-workspace.js?v=0.11.6"></script>
+    <script src="/app.js?v=0.11.6"></script>
   </body>
 </html>

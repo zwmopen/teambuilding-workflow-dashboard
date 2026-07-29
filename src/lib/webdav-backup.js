@@ -3,10 +3,18 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { EnvHttpProxyAgent, fetch: undiciFetch } = require("undici");
 
 const LIFE_GAME_EXE = "D:\\AICode\\工具开发\\projects\\人生游戏管理系统\\electron\\release\\win-unpacked\\人生游戏系统.exe";
 const LIFE_GAME_DEBUG_URL = "http://127.0.0.1:9334/json";
 const DEFAULT_URL = "https://dav.jianguoyun.com/dav/";
+const proxyDispatcher = (process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY)
+  ? new EnvHttpProxyAgent()
+  : null;
+
+function networkFetch(input, options = {}) {
+  return undiciFetch(input, proxyDispatcher ? { ...options, dispatcher: proxyDispatcher } : options);
+}
 
 const dpapiProtectScript = [
   "Add-Type -AssemblyName System.Security",
@@ -79,7 +87,7 @@ function decryptCryptoJs(cipherText, password) {
 async function waitForDebugTarget() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
-      const targets = await fetch(LIFE_GAME_DEBUG_URL).then((response) => response.json());
+      const targets = await networkFetch(LIFE_GAME_DEBUG_URL).then((response) => response.json());
       const target = targets.find((item) => item.type === "page" && item.webSocketDebuggerUrl);
       if (target) return target;
     } catch {
@@ -180,7 +188,7 @@ function authHeaders(config, extra = {}) {
 }
 
 async function testConnection(config) {
-  const response = await fetch(config.url || DEFAULT_URL, {
+  const response = await networkFetch(config.url || DEFAULT_URL, {
     method: "PROPFIND",
     headers: authHeaders(config, { Depth: "0" })
   });
@@ -189,7 +197,11 @@ async function testConnection(config) {
 }
 
 async function ensureRemoteCollections(config) {
-  const parts = [config.basePath || "", "团建内容工作台"]
+  return ensureRemotePath(config, "");
+}
+
+async function ensureRemotePath(config, remotePath = "") {
+  const parts = [config.basePath || "", "团建内容工作台", remotePath]
     .join("/")
     .replace(/\\/g, "/")
     .split("/")
@@ -199,18 +211,37 @@ async function ensureRemoteCollections(config) {
     current += `/${part}`;
     const base = new URL(config.url || DEFAULT_URL);
     base.pathname = `${base.pathname.replace(/\/+$/, "")}${current}`;
-    const response = await fetch(base, { method: "MKCOL", headers: authHeaders(config) });
+    const response = await networkFetch(base, { method: "MKCOL", headers: authHeaders(config) });
     if (![200, 201, 204, 301, 405].includes(response.status)) {
       throw new Error(`无法建立坚果云备份目录（${response.status}）`);
     }
   }
 }
 
+async function uploadFile(config, localPath, remotePath) {
+  const stats = fs.statSync(localPath);
+  if (!stats.isFile()) throw new Error("大文件备份来源不是文件");
+  await ensureRemotePath(config, path.posix.dirname(String(remotePath).replace(/\\/g, "/")));
+  const response = await networkFetch(webdavUrl(config, remotePath), {
+    method: "PUT",
+    headers: authHeaders(config, {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(stats.size)
+    }),
+    body: fs.createReadStream(localPath),
+    duplex: "half"
+  });
+  if (![200, 201, 204].includes(response.status)) {
+    throw new Error(`坚果云大文件上传失败（${response.status}）`);
+  }
+  return { size: stats.size, remotePath };
+}
+
 async function uploadBackup(config, payload, fileName) {
   await ensureRemoteCollections(config);
   const body = JSON.stringify(payload, null, 2);
   for (const target of [fileName, "latest.json"]) {
-    const response = await fetch(webdavUrl(config, target), {
+    const response = await networkFetch(webdavUrl(config, target), {
       method: "PUT",
       headers: authHeaders(config, { "Content-Type": "application/json; charset=utf-8" }),
       body
@@ -234,10 +265,12 @@ function publicStatus(config, metadata = {}) {
 }
 
 module.exports = {
+  ensureRemotePath,
   importLifeGameConfig,
   publicStatus,
   readSecureConfig,
   saveSecureConfig,
   testConnection,
-  uploadBackup
+  uploadBackup,
+  uploadFile
 };

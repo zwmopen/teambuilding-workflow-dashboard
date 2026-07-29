@@ -3,6 +3,8 @@ const DISTRIBUTION_CATEGORIES = new Set(["all", "traffic", "conversion", "unclas
 const DEFAULT_PAGE_SETTINGS = Object.freeze({
   production: {
     templateRoot: "",
+    packedRoot: "",
+    folderBindings: {},
     promptRules: "",
     scheduleEnabled: false,
     scheduleTime: "09:00",
@@ -23,6 +25,13 @@ const DEFAULT_PAGE_SETTINGS = Object.freeze({
     phoneReserveThreshold: 10,
     autoCategory: "conversion",
     autoSendCount: 1
+  },
+  backup: {
+    scheduleEnabled: true,
+    frequency: "daily",
+    intervalHours: 24,
+    monthlyLargeFileLimitMb: 2560,
+    sourceRoot: ""
   }
 });
 
@@ -40,9 +49,18 @@ function normalizeCategory(value, fallback = "conversion") {
 function normalizePageSettings(value = {}) {
   const production = value.production || {};
   const distribution = value.distribution || {};
+  const backup = value.backup || {};
+  const backupFrequency = ["daily", "weekly", "interval"].includes(backup.frequency)
+    ? backup.frequency : DEFAULT_PAGE_SETTINGS.backup.frequency;
+  const defaultInterval = backupFrequency === "weekly" ? 168 : 24;
   return {
     production: {
       templateRoot: String(production.templateRoot || "").trim().slice(0, 1000),
+      packedRoot: String(production.packedRoot || "").trim().slice(0, 1000),
+      folderBindings: Object.fromEntries(Object.entries(production.folderBindings || {})
+        .filter(([key, value]) => /^[a-z-]{3,40}$/.test(key) && typeof value === "string")
+        .slice(0, 20)
+        .map(([key, value]) => [key, value.trim().slice(0, 1000)])),
       promptRules: String(production.promptRules || "").trim().slice(0, 24000),
       scheduleEnabled: production.scheduleEnabled === true,
       scheduleTime: /^\d{2}:\d{2}$/.test(String(production.scheduleTime || ""))
@@ -64,6 +82,15 @@ function normalizePageSettings(value = {}) {
       phoneReserveThreshold: clampInteger(distribution.phoneReserveThreshold, 10, 1, 500),
       autoCategory: normalizeCategory(distribution.autoCategory),
       autoSendCount: clampInteger(distribution.autoSendCount, 1, 1, 20)
+    },
+    backup: {
+      scheduleEnabled: backup.scheduleEnabled !== false,
+      frequency: backupFrequency,
+      intervalHours: backupFrequency === "interval"
+        ? clampInteger(backup.intervalHours, defaultInterval, 1, 24 * 31)
+        : defaultInterval,
+      monthlyLargeFileLimitMb: clampInteger(backup.monthlyLargeFileLimitMb, 2560, 0, 10240),
+      sourceRoot: String(backup.sourceRoot || "").trim().slice(0, 1000)
     }
   };
 }

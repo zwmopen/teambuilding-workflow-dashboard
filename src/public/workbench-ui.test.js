@@ -65,3 +65,71 @@ test("settings cards and compact production layout cannot collapse into narrow c
   assert.match(css, /@media \(max-width: 1050px\)[\s\S]*grid-template-columns: minmax\(250px, \.9fr\) minmax\(420px, 1\.4fr\)/);
   assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.production-workbench-grid\s*\{\s*grid-template-columns: minmax\(0, 1fr\)/);
 });
+
+test("finished products use the same expandable image and TXT folder interaction as materials", () => {
+  assert.match(html, /data-workbench-output-filter="unpacked">未打包/);
+  assert.match(html, /data-workbench-output-filter="packed">已打包/);
+  assert.match(html, /data-workbench-output-filter="history">打包记录/);
+  assert.match(html, /data-workbench-material-filter="conversion">精准流量贴/);
+  assert.match(html, /data-workbench-material-filter="traffic">泛流量贴/);
+  assert.match(html, /data-workbench-material-filter="unclassified">未分类/);
+  assert.doesNotMatch(html, /data-workbench-output-type=/);
+  assert.match(app, /data-workbench-product-folder=/);
+  assert.match(app, /data-workbench-product-check=/);
+  assert.match(app, /data-workbench-text-path=/);
+  assert.match(app, /workbenchExpandedProductPath === work\.path/);
+  assert.match(css, /\.workbench-output-folder \.workbench-post-assets/);
+});
+
+test("production settings expose a separate packed-library path", () => {
+  assert.match(html, /id="productionPackedRoot"/);
+  assert.match(html, /id="chooseProductionPackedRootBtn"[^>]*>选择<\/button>/);
+  assert.match(app, /packedRoot: \$\("#productionPackedRoot"\)\?\.value/);
+});
+
+test("material and output tabs support persistent folder bindings from the context menu", () => {
+  assert.match(html, /id="contextSetFolder"[^>]*>设置关联文件夹<\/button>/);
+  assert.match(app, /function effectiveWorkbenchFolderBindings\(/);
+  assert.match(app, /material-\$\{materialButton\.dataset\.workbenchMaterialFilter\}/);
+  assert.match(app, /output-\$\{outputButton\.dataset\.workbenchOutputFilter\}/);
+  assert.match(app, /folderBindings: effectiveWorkbenchFolderBindings\(\)/);
+});
+
+test("distribution uses a floating command assistant and no longer exposes migration maintenance", () => {
+  assert.doesNotMatch(html, /id="reconcileDistributionFoldersBtn"/);
+  assert.doesNotMatch(html, /class="codex-command-bar"/);
+  assert.match(html, /id="workbenchAssistantLauncher"/);
+  assert.match(html, /id="workbenchAssistantPanel"/);
+  assert.match(html, /团建中控助手/);
+  assert.match(app, /function executeWorkbenchAssistantCommand\(/);
+  assert.match(css, /\.workbench-assistant-launcher/);
+});
+
+test("workbench assistant explains its capabilities and safely falls back to model intent understanding", () => {
+  assert.match(html, /我能理解自然语言/);
+  assert.match(app, /function workbenchAssistantCapabilities\(/);
+  assert.match(app, /function executeInterpretedWorkbenchAssistant\(/);
+  assert.match(app, /\/api\/workbench-assistant\/interpret/);
+  assert.match(app, /options\.allowModel === false/);
+});
+
+test("distribution package selection lifts the whole row and actions share one height", () => {
+  assert.match(css, /\.distribution-package-row\.active[\s\S]*transform: translateY\(-3px\)/);
+  assert.match(css, /\.distribution-package-row \.device-actions > :is\(button, label\)/);
+  assert.match(app, /const issueBadge = sendable \? ""/);
+  assert.doesNotMatch(app, /\["good", "可发送到手机"\]/);
+});
+
+test("finished transfer tasks can be dismissed and expire from the live surface", () => {
+  assert.match(app, /data-dismiss-transfer=/);
+  assert.match(app, /TRANSFER_TASK_VISIBLE_MS\s*=\s*3 \* 60 \* 1000/);
+  assert.match(app, /dismissTransferTask\(/);
+});
+
+test("cloud backup exposes automatic schedule and monthly upload budget controls", () => {
+  assert.match(html, /id="cloudBackupScheduleEnabled"/);
+  assert.match(html, /id="cloudBackupFrequency"/);
+  assert.match(html, /id="cloudBackupIntervalHours"/);
+  assert.match(html, /id="cloudBackupMonthlyLimitMb"/);
+  assert.match(html, /id="cloudBackupSourceRoot"/);
+});

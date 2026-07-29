@@ -46,7 +46,9 @@ const workbenchSelectedMaterials = new Set();
 const workbenchSelectedProducts = new Set();
 let workbenchTemplateType = "conversion";
 let workbenchMaterialFilter = "all";
-let workbenchOutputFilter = "all";
+let workbenchOutputFilter = "unpacked";
+let workbenchExpandedProductPath = "";
+let workbenchFolderBindings = {};
 let workbenchActiveMaterialCategoryPath = "";
 let workbenchExpandedMaterialCategoryPath = "";
 let workbenchExpandedMaterialPath = "";
@@ -59,6 +61,8 @@ let materialTreeView = window.localStorage.getItem("materialTreeView") === "icon
 let collectionViewMode = window.localStorage.getItem("collectionViewMode") === "grid" ? "grid" : "list";
 let activePageSettings = "";
 const notifiedTransferStates = new Map();
+const TRANSFER_TASK_VISIBLE_MS = 3 * 60 * 1000;
+const transferDismissTimers = new Map();
 
 const LOCATION_KEYWORDS = ["上海", "杭州", "安吉", "苏州", "南京", "湖州", "桐庐", "千岛湖", "莫干山", "宁波"];
 const ACTIVITY_KEYWORDS = ["露营", "溯溪", "漂流", "烧烤", "农庄", "采摘", "徒步", "越野", "轰趴", "玩水"];
@@ -256,6 +260,10 @@ function syncCustomSelect(select) {
 function showContextMenu(x, y) {
   const menu = $("#contextMenu");
   if (!menu || !contextMenuTarget) return;
+  const isFolderBinding = contextMenuTarget.kind === "folder-binding";
+  if ($("#contextSetFolder")) $("#contextSetFolder").hidden = !isFolderBinding;
+  if ($("#contextRename")) $("#contextRename").hidden = isFolderBinding;
+  if ($("#contextCopyTemplateCommand")) $("#contextCopyTemplateCommand").hidden = isFolderBinding;
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
   menu.classList.add("show");
@@ -387,15 +395,35 @@ async function loadDashboard(force = false, libraryPath = "") {
 function pageSettings() {
   return dashboard?.workspaceSettings?.pageSettings || {
     production: {},
-    distribution: {}
+    distribution: {},
+    backup: {}
   };
+}
+
+function effectiveWorkbenchFolderBindings() {
+  const materialRoot = dashboard?.workspaceSettings?.materialRoot || "";
+  const libraryRoot = dashboard?.workspaceSettings?.workPackage?.libraryPath || "";
+  const packedRoot = pageSettings().production?.packedRoot || productionWorkspace?.packedRoot
+    || (libraryRoot ? `${libraryRoot}\\抖音小红书` : "");
+  const defaults = {
+    "material-all": materialRoot,
+    "material-conversion": materialRoot ? `${materialRoot}\\精准流量贴` : "",
+    "material-traffic": materialRoot ? `${materialRoot}\\泛流量贴` : "",
+    "material-unclassified": materialRoot ? `${materialRoot}\\未分类` : "",
+    "output-unpacked": libraryRoot,
+    "output-packed": packedRoot,
+    "output-history": libraryRoot ? `${libraryRoot}\\_portfolio_move_logs` : ""
+  };
+  return { ...defaults, ...(pageSettings().production?.folderBindings || {}), ...workbenchFolderBindings };
 }
 
 function renderPageSettingsValues() {
   const production = pageSettings().production || {};
   const distribution = pageSettings().distribution || {};
+  const backup = pageSettings().backup || {};
   const values = {
     productionTemplateRoot: production.templateRoot || "",
+    productionPackedRoot: production.packedRoot || productionWorkspace?.packedRoot || "",
     productionBasePromptRules: production.promptRules || "",
     productionReserveThreshold: production.reserveThreshold ?? 10,
     productionReserveCategory: production.reserveCategory || "conversion",
@@ -405,7 +433,11 @@ function renderPageSettingsValues() {
     desktopReserveCategory: distribution.desktopReserveCategory || "conversion",
     phoneReserveThreshold: distribution.phoneReserveThreshold ?? 10,
     autoDistributionCategory: distribution.autoCategory || "conversion",
-    autoDistributionCount: distribution.autoSendCount ?? 1
+    autoDistributionCount: distribution.autoSendCount ?? 1,
+    cloudBackupFrequency: backup.frequency || "daily",
+    cloudBackupIntervalHours: backup.intervalHours ?? 24,
+    cloudBackupMonthlyLimitMb: backup.monthlyLargeFileLimitMb ?? 2560,
+    cloudBackupSourceRoot: backup.sourceRoot || ""
   };
   Object.entries(values).forEach(([id, value]) => {
     const input = document.getElementById(id);
@@ -419,7 +451,8 @@ function renderPageSettingsValues() {
     detectOnConnection: distribution.detectOnConnection !== false,
     autoDistributionEnabled: distribution.autoDistributionEnabled === true,
     requireSendConfirmation: distribution.requireSendConfirmation === true,
-    completionNotificationEnabled: distribution.completionNotificationEnabled !== false
+    completionNotificationEnabled: distribution.completionNotificationEnabled !== false,
+    cloudBackupScheduleEnabled: backup.scheduleEnabled !== false
   };
   Object.entries(checks).forEach(([id, checked]) => {
     const input = document.getElementById(id);
@@ -427,11 +460,33 @@ function renderPageSettingsValues() {
   });
 }
 
+async function saveBackupSettingsFromUi() {
+  const payload = {
+    backup: {
+      scheduleEnabled: $("#cloudBackupScheduleEnabled")?.checked !== false,
+      frequency: $("#cloudBackupFrequency")?.value || "daily",
+      intervalHours: Number($("#cloudBackupIntervalHours")?.value || 24),
+      monthlyLargeFileLimitMb: Number($("#cloudBackupMonthlyLimitMb")?.value || 2560),
+      sourceRoot: $("#cloudBackupSourceRoot")?.value || ""
+    }
+  };
+  const result = await api("/api/page-settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  dashboard.workspaceSettings.pageSettings = result.settings;
+  renderPageSettingsValues();
+  toast("备份设置已自动保存");
+}
+
 async function savePageSettingsFromUi(section) {
   const payload = {};
   if (section === "production") {
     payload.production = {
       templateRoot: $("#productionTemplateRoot")?.value || "",
+      packedRoot: $("#productionPackedRoot")?.value || "",
+      folderBindings: effectiveWorkbenchFolderBindings(),
       promptRules: $("#productionBasePromptRules")?.value || "",
       reserveThreshold: Number($("#productionReserveThreshold")?.value || 10),
       reserveCategory: $("#productionReserveCategory")?.value || "conversion",
@@ -694,10 +749,9 @@ function currentWorkbenchMaterials() {
       const text = `${item.name} ${item.preview || ""} ${(item.tags || []).join(" ")}`.toLowerCase();
       const mainTag = item.mainTag || item.metadata?.mainTag || "";
       if (query && !text.includes(query)) return false;
-      if (workbenchMaterialFilter === "conversion" && mainTag && mainTag !== "团建转化") return false;
-      if (workbenchMaterialFilter === "game" && mainTag && mainTag !== "团建游戏") return false;
-      if (workbenchMaterialFilter === "guide" && mainTag && mainTag !== "合集攻略") return false;
-      if (workbenchMaterialFilter === "unused" && Number(item.usageCount || item.metadata?.usageCount || 0) !== 0) return false;
+      if (workbenchMaterialFilter === "conversion" && mainTag !== "团建转化") return false;
+      if (workbenchMaterialFilter === "traffic" && !["团建游戏", "合集攻略"].includes(mainTag)) return false;
+      if (workbenchMaterialFilter === "unclassified" && ["团建转化", "团建游戏", "合集攻略"].includes(mainTag)) return false;
       return true;
     })
     .slice(0, 120);
@@ -823,6 +877,9 @@ function renderWorkbenchConversation() {
 async function loadProductionWorkspace() {
   const result = await api("/api/production/workspace");
   productionWorkspace = result.workspace;
+  if ($("#productionPackedRoot") && !pageSettings().production?.packedRoot) {
+    $("#productionPackedRoot").value = productionWorkspace?.packedRoot || "";
+  }
   renderWorkbenchProducts();
 }
 
@@ -933,30 +990,56 @@ async function saveWorkbenchModels() {
 }
 
 function filteredWorkbenchProducts() {
-  return (productionWorkspace?.works || []).filter((work) => {
-    if (workbenchOutputFilter === "review") return work.source === "待审区";
-    if (workbenchOutputFilter === "unpacked") return !work.packed;
-    if (workbenchOutputFilter === "packed") return work.packed;
-    return true;
-  });
+  const source = workbenchOutputFilter === "packed"
+    ? (productionWorkspace?.packedWorks || [])
+    : (productionWorkspace?.unpackedWorks || productionWorkspace?.works || []);
+  return source;
 }
 
 function renderWorkbenchProducts() {
   const list = $("#workbenchProductList");
   if (!list) return;
+  if (workbenchOutputFilter === "history") {
+    const history = productionWorkspace?.history || [];
+    list.innerHTML = history.length ? history.map((entry) => `<article class="workbench-pack-history">
+      <span class="history-state" aria-hidden="true"></span>
+      <span><strong>${escapeHtml(entry.collection || entry.name || "作品集打包")}</strong><small>${escapeHtml(entry.detail || entry.action || "打包完成")}</small><time>${escapeHtml(entry.time ? new Date(entry.time).toLocaleString("zh-CN", { hour12: false }) : "")}</time></span>
+    </article>`).join("") : `<div class="empty-state"><strong>还没有打包记录</strong><p>完成作品集打包后，时间和目标目录会记录在这里。</p></div>`;
+    $("#workbenchProductCount").textContent = `${history.length} 条记录`;
+    $("#workbenchSelectedProductCount").textContent = "历史打包记录";
+    $("#workbenchOutputPath").textContent = productionWorkspace?.packedRoot ? `记录来源：${productionWorkspace.packedRoot}` : "正在读取打包记录…";
+    if ($("#workbenchPackBtn")) $("#workbenchPackBtn").hidden = true;
+    return;
+  }
+  if ($("#workbenchPackBtn")) $("#workbenchPackBtn").hidden = workbenchOutputFilter !== "unpacked";
   const works = filteredWorkbenchProducts();
   list.innerHTML = works.length ? works.map((work) => {
     const selected = workbenchSelectedProducts.has(work.path);
-    const image = work.images?.[0]?.url || "";
-    return `<label class="workbench-product-item${selected ? " active" : ""}" data-workbench-product="${escapeHtml(work.path)}">
-      <input class="product-check" type="checkbox" ${selected ? "checked" : ""} />
-      ${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy" />` : `<span class="work-placeholder">${work.imageCount || 0}图</span>`}
-      <span><strong>${escapeHtml(work.name)}</strong><small>${escapeHtml(work.templateName || "未识别模板")} · ${work.imageCount} 张图 · ${work.hasCopy ? "有文案" : "无文案"}</small><span class="status-line"><span>${escapeHtml(work.source)}</span><span class="${work.packed ? "packed" : ""}">${work.packed ? "已在待发" : "待打包"}</span></span></span>
-    </label>`;
-  }).join("") : `<div class="empty-state"><strong>这里暂时没有成品</strong><p>生产完成后会自动出现在待审区。</p></div>`;
-  $("#workbenchProductCount").textContent = `${productionWorkspace?.works?.length || 0} 个成品`;
+    const expanded = workbenchExpandedProductPath === work.path;
+    const images = expanded ? (work.images || []).map((image) =>
+      `<button class="asset-thumb-button workbench-material-image" type="button" data-image-preview="${escapeHtml(image.url)}" data-image-caption="${escapeHtml(work.name)}"><img src="${escapeHtml(image.url)}" alt="成品图片预览" loading="lazy" /></button>`
+    ).join("") : "";
+    const texts = expanded ? (work.textFiles || []).map((file) =>
+      `<button class="workbench-text-asset" type="button" data-workbench-text-path="${escapeHtml(file.path)}" data-workbench-text-caption="${escapeHtml(work.name)}"><b>TXT</b><span>${escapeHtml(file.name)}</span><small>${escapeHtml(shortText(work.preview || "点击查看文案", 54))}</small></button>`
+    ).join("") : "";
+    return `<section class="workbench-post-branch workbench-output-folder${expanded ? " active" : ""}">
+      <div class="workbench-post-row${selected ? " selected" : ""}">
+        ${workbenchOutputFilter === "unpacked"
+          ? `<input class="product-check" type="checkbox" data-workbench-product-check="${escapeHtml(work.path)}" aria-label="选择成品帖子" ${selected ? "checked" : ""} />`
+          : `<span class="output-folder-mark" aria-hidden="true"></span>`}
+        <button class="workbench-post-folder" type="button" data-workbench-product-folder="${escapeHtml(work.path)}" title="${escapeHtml(work.name)}">
+          <span class="folder-glyph" aria-hidden="true">▸</span>
+          <span><strong>${escapeHtml(work.name)}</strong><small>${work.imageCount || 0} 张图 · ${work.textCount || 0} 个文本${work.collectionName ? ` · ${escapeHtml(work.collectionName)}` : ""}</small></span>
+        </button>
+      </div>
+      ${expanded ? `<div class="workbench-post-assets">${images}${texts}</div>` : ""}
+    </section>`;
+  }).join("") : `<div class="empty-state"><strong>这里暂时没有帖子文件夹</strong><p>本地目录产生新帖子后会自动显示。</p></div>`;
+  $("#workbenchProductCount").textContent = `${works.length} 个帖子`;
   $("#workbenchSelectedProductCount").textContent = `已选 ${workbenchSelectedProducts.size} 个`;
-  $("#workbenchOutputPath").textContent = productionWorkspace?.pendingRoot ? `待发目录：${productionWorkspace.pendingRoot}` : "正在读取待发目录…";
+  $("#workbenchOutputPath").textContent = workbenchOutputFilter === "packed"
+    ? `已打包库：${productionWorkspace?.packedRoot || "未设置"}`
+    : `成品库：${productionWorkspace?.libraryRoot || "正在读取…"}`;
 }
 
 async function renderProductionWorkbench() {
@@ -972,6 +1055,9 @@ async function renderProductionWorkbench() {
   renderWorkbenchModelOptions();
   if (!workbenchSelectedMaterials.size && selectedMaterial?.path) workbenchSelectedMaterials.add(selectedMaterial.path);
   renderWorkbenchMaterials();
+  loadProductionWorkspace().catch((error) => {
+    if ($("#workbenchOutputPath")) $("#workbenchOutputPath").textContent = `成品库读取失败：${error.message}`;
+  });
   const activeCategory = dashboard?.materials?.categories?.find((category) => category.path === workbenchActiveMaterialCategoryPath);
   if (activeCategory?.loaded === false) {
     if ($("#workbenchProductionStatus")) $("#workbenchProductionStatus").textContent = `正在自动扫描 ${activeCategory.name}…`;
@@ -981,11 +1067,6 @@ async function renderProductionWorkbench() {
   if (!selectedTemplate) selectedTemplate = dashboard?.templates?.templates?.find((item) => templateTypeOf(item) === workbenchTemplateType) || null;
   renderWorkbenchTemplates();
   refreshWorkbenchModels().catch(() => {});
-  try {
-    await loadProductionWorkspace();
-  } catch (error) {
-    $("#workbenchOutputPath").textContent = `成品库读取失败：${error.message}`;
-  }
 }
 
 function syncWorkbenchProductionSettings() {
@@ -2559,7 +2640,6 @@ function renderDistribution() {
   `;
   const classificationSelect = (collection) => `
     <label class="classification-select">
-      <span>分类</span>
       <select data-classify-collection="${escapeHtml(collection.name)}">
         <option value="traffic" ${collection.type === "traffic" ? "selected" : ""}>泛流量帖</option>
         <option value="conversion" ${collection.type === "conversion" ? "selected" : ""}>精准流量帖</option>
@@ -2631,13 +2711,18 @@ function renderDistribution() {
     ${renderTransferTasks()}
     <div class="package-list">${visibleMobileCollections.length ? visibleMobileCollections.map((collection) => {
       const sendable = collection.sourceValid && collection.dualPlatformEligible;
-      const state = !collection.sourceValid ? ["bad", "作品为空"] : collection.type === "unclassified" ? ["warn", "待补 [泛] / [转] 标签"] : ["good", "可发送到手机"];
-      return `<article class="distribution-package-row ${selectedDistributionCollectionName === collection.name ? "active" : ""}">
+      const issueBadge = sendable ? ""
+        : !collection.sourceValid
+          ? `<span class="state-badge bad">作品为空</span>`
+          : collection.type === "unclassified"
+            ? `<span class="state-badge warn">待分类</span>`
+            : `<span class="state-badge warn">${escapeHtml(collection.exclusionReasons?.[0] || "当前不可发送")}</span>`;
+      return `<article class="distribution-package-row ${selectedDistributionCollectionName === collection.name ? "active" : ""}" data-package-name="${escapeHtml(collection.name)}">
         <button class="package-select" type="button" data-select-package="${escapeHtml(collection.name)}">
           <span class="package-radio" aria-hidden="true"></span>
           <span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span>
         </button>
-        <div class="badge-line"><span class="state-badge ${state[0]}">${state[1]}</span></div>
+        ${issueBadge ? `<div class="badge-line">${issueBadge}</div>` : ""}
         <div class="device-actions">
           <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品包</button>
           <button type="button" data-send-package="${escapeHtml(collection.name)}" ${sendable ? "" : "disabled"}>选择设备发送</button>
@@ -2709,8 +2794,25 @@ function renderTransferTasks() {
     ...Array.from(distributionTransferUiTasks.values()).map((task) => ({ ...task, taskKind: "distribution" })),
     ...Array.from(genericTransferUiTasks.values()).map((task) => ({ ...task, taskKind: "generic" }))
   ].sort((left, right) => String(right.startedAt || "").localeCompare(String(left.startedAt || "")));
-  if (!tasks.length) return "";
-  return `<section class="transfer-task-list">${tasks.map((task) => `
+  const visibleTasks = tasks.filter((task) => {
+    if (["running", "cancelling"].includes(task.state)) return true;
+    const finishedAt = Date.parse(task.finishedAt || task.startedAt || "");
+    return !Number.isFinite(finishedAt) || Date.now() - finishedAt < TRANSFER_TASK_VISIBLE_MS;
+  });
+  visibleTasks.forEach((task) => {
+    if (["running", "cancelling"].includes(task.state) || transferDismissTimers.has(task.id)) return;
+    const finishedAt = Date.parse(task.finishedAt || task.startedAt || "");
+    const remaining = Number.isFinite(finishedAt)
+      ? Math.max(200, TRANSFER_TASK_VISIBLE_MS - (Date.now() - finishedAt))
+      : TRANSFER_TASK_VISIBLE_MS;
+    transferDismissTimers.set(task.id, window.setTimeout(() => {
+      transferDismissTimers.delete(task.id);
+      (task.taskKind === "distribution" ? distributionTransferUiTasks : genericTransferUiTasks).delete(task.id);
+      renderDistribution();
+    }, remaining));
+  });
+  if (!visibleTasks.length) return "";
+  return `<section class="transfer-task-list">${visibleTasks.map((task) => `
     <article class="transfer-task ${escapeHtml(task.state)}" aria-live="polite">
       <div class="transfer-task-copy">
         <span class="transfer-kind">${task.taskKind === "distribution" ? "作品包分发" : "文件传送"}</span>
@@ -2725,9 +2827,22 @@ function renderTransferTasks() {
       <b>${Number(task.progress) || 0}%</b>
       ${["running", "cancelling"].includes(task.state)
         ? `<button type="button" data-cancel-transfer="${escapeHtml(task.id)}" data-transfer-kind="${task.taskKind}" ${task.state === "cancelling" ? "disabled" : ""}>${task.state === "cancelling" ? "停止中" : "停止"}</button>`
-        : `<span class="state-badge ${task.state === "completed" ? "good" : task.state === "failed" ? "bad" : "warn"}">${task.state === "completed" ? "已完成并记录" : task.state === "cancelled" ? "已停止待核对" : "未完成"}</span>`}
+        : `<div class="transfer-finished-actions"><span class="state-badge ${task.state === "completed" ? "good" : task.state === "failed" ? "bad" : "warn"}">${task.state === "completed" ? "已完成并记录" : task.state === "cancelled" ? "已停止待核对" : "未完成"}</span><button type="button" data-dismiss-transfer="${escapeHtml(task.id)}" data-transfer-kind="${task.taskKind}" title="仅清除当前提示，历史记录仍保留">清除</button></div>`}
     </article>
   `).join("")}</section>`;
+}
+
+async function dismissTransferTask(taskId, taskKind) {
+  const endpoint = taskKind === "distribution"
+    ? `/api/distribution/tasks/${encodeURIComponent(taskId)}`
+    : `/api/transfers/${encodeURIComponent(taskId)}`;
+  try {
+    await api(endpoint, { method: "DELETE" });
+    (taskKind === "distribution" ? distributionTransferUiTasks : genericTransferUiTasks).delete(taskId);
+    renderDistribution();
+  } catch (error) {
+    showSystemNotice("暂时不能清除", error.message, { tone: "danger" });
+  }
 }
 
 async function startGenericTransfer(deviceId, sourcePath) {
@@ -2866,6 +2981,233 @@ function renderDistributionRecords(rows, kind) {
       <div></div>
     </article>
   `).join("")}</div>`;
+}
+
+function appendWorkbenchAssistantMessage(message, role = "assistant") {
+  const container = $("#workbenchAssistantMessages");
+  if (!container) return;
+  const item = document.createElement("article");
+  item.className = `assistant-message ${role === "user" ? "is-user" : ""}`;
+  item.textContent = message;
+  container.appendChild(item);
+  container.scrollTop = container.scrollHeight;
+}
+
+function toggleWorkbenchAssistant(open) {
+  const panel = $("#workbenchAssistantPanel");
+  const launcher = $("#workbenchAssistantLauncher");
+  if (!panel || !launcher) return;
+  const shouldOpen = open ?? panel.hidden;
+  panel.hidden = !shouldOpen;
+  launcher.setAttribute("aria-expanded", String(shouldOpen));
+  if (shouldOpen) window.setTimeout(() => $("#workbenchAssistantCommand")?.focus(), 0);
+}
+
+function assistantDevice(number) {
+  const devices = DistributionUI.decorateDevices(
+    dashboard?.distribution?.devices || [],
+    deviceCheckState.onlineDevices || []
+  );
+  return devices.find((device) => {
+    const text = [device.note, device.displayName, ...(device.aliases || [])].join(" ");
+    return new RegExp(`(^|\\D)${number}\\s*号`).test(text);
+  });
+}
+
+function workbenchAssistantCapabilities() {
+  return [
+    "我现在能做这些事：",
+    "1. 检测在线设备、可信状态和作品库存；",
+    "2. 给已确认的指定设备发送某个作品集，或补精准/泛流量作品；",
+    "3. 打开内容制作、内容分发、流量转化、插件市场和各页设置；",
+    "4. 查看当前作品储备、在线设备和运行任务；",
+    "5. 帮你进入批量生产流程，保留素材和模板的人工确认；",
+    "6. 打开备份设置并说明当前备份状态。",
+    "不明确或有风险的指令我会先追问，不会猜着删除、覆盖或给陌生设备发送。"
+  ].join("\n");
+}
+
+function workbenchAssistantStatus() {
+  const distribution = dashboard?.distribution || {};
+  const devices = DistributionUI.decorateDevices(distribution.devices || [], deviceCheckState.onlineDevices || []);
+  const online = devices.filter((item) => item.online).length;
+  const trustedOnline = devices.filter((item) => item.online && item.trusted !== false).length;
+  const running = [...distributionTransferUiTasks.values(), ...genericTransferUiTasks.values()]
+    .filter((task) => ["running", "cancelling"].includes(task.state)).length;
+  const reserve = distribution.reserve || {};
+  return `当前：${online} 台设备在线，其中 ${trustedOnline} 台可安全发送；电脑待发作品精准 ${reserve.conversion || 0} 个、泛流量 ${reserve.traffic || 0} 个、未分类 ${reserve.unclassified || 0} 个；进行中任务 ${running} 个。`;
+}
+
+async function executeInterpretedWorkbenchAssistant(interpretation) {
+  const intent = interpretation || {};
+  if (intent.action === "capabilities") {
+    appendWorkbenchAssistantMessage(workbenchAssistantCapabilities());
+    return;
+  }
+  if (intent.action === "status") {
+    appendWorkbenchAssistantMessage(workbenchAssistantStatus());
+    return;
+  }
+  if (intent.action === "open_tab" && intent.tab) {
+    activateTab(intent.tab);
+    const labels = { dashboard: "内容制作", distribution: "内容分发", conversion: "流量转化", plugins: "插件市场", settings: "设置" };
+    appendWorkbenchAssistantMessage(`已经打开${labels[intent.tab] || "对应页面"}。`);
+    return;
+  }
+  if (intent.action === "open_settings") {
+    if (["production", "distribution"].includes(intent.settings)) {
+      const tab = intent.settings === "production" ? "dashboard" : "distribution";
+      activateTab(tab);
+      openPageSettings(intent.settings);
+      appendWorkbenchAssistantMessage(`已经打开${intent.settings === "production" ? "内容制作" : "内容分发"}设置。`);
+    } else {
+      activateTab("settings");
+      appendWorkbenchAssistantMessage("已经打开全局设置；备份、API 和软件诊断都在这里。");
+    }
+    return;
+  }
+  if (intent.action === "detect_devices") {
+    activateTab("distribution");
+    appendWorkbenchAssistantMessage("正在检测可信设备和作品库存。");
+    await checkDistributionDevices();
+    appendWorkbenchAssistantMessage(workbenchAssistantStatus());
+    return;
+  }
+  if (intent.action === "produce") {
+    activateTab("dashboard");
+    appendWorkbenchAssistantMessage(`已经进入内容制作。请先选择素材和模板${intent.count ? `，本次目标 ${intent.count} 套` : ""}；确认计划后再开始，避免误用素材。`);
+    return;
+  }
+  if (intent.action === "backup") {
+    activateTab("settings");
+    appendWorkbenchAssistantMessage("已经打开备份设置。这里能查看备份目录、进度、周期和最近结果；真正上传前仍会按当前安全配置执行。");
+    return;
+  }
+  if (intent.action === "restock_device" && intent.deviceNumber && intent.category) {
+    const categoryLabel = intent.category === "conversion" ? "精准流量" : intent.category === "traffic" ? "泛流量" : "";
+    if (categoryLabel) {
+      await executeWorkbenchAssistantCommand(`给${intent.deviceNumber}号发一个${categoryLabel}作品`, { allowModel: false, echo: false });
+      return;
+    }
+  }
+  if (intent.action === "send_collection" && intent.deviceNumber && intent.collection) {
+    const collection = /^作品集/i.test(intent.collection) ? intent.collection : `作品集_${intent.collection}`;
+    await executeWorkbenchAssistantCommand(`给${intent.deviceNumber}号发送${collection}`, { allowModel: false, echo: false });
+    return;
+  }
+  appendWorkbenchAssistantMessage(intent.reply || "我还缺少一点信息。请告诉我具体页面、设备号码、作品集或流量分类。");
+}
+
+async function executeWorkbenchAssistantCommand(rawCommand, options = {}) {
+  const command = String(rawCommand || "").trim();
+  if (!command) return;
+  if (options.echo !== false) appendWorkbenchAssistantMessage(command, "user");
+  if (/你能|能做什么|能干嘛|帮助|怎么用|有哪些功能|支持什么/.test(command)) {
+    appendWorkbenchAssistantMessage(workbenchAssistantCapabilities());
+    return;
+  }
+  if (/检测|刷新/.test(command) && /设备|在线|库存|分发/.test(command)) {
+    activateTab("distribution");
+    appendWorkbenchAssistantMessage("正在检测可信设备和作品库存。");
+    await checkDistributionDevices();
+    const online = deviceCheckState.onlineDevices?.length || 0;
+    appendWorkbenchAssistantMessage(`检测完成：当前发现 ${online} 台在线设备，分发页已经刷新。`);
+    return;
+  }
+  if (/设置/.test(command) && /分发|设备|发送/.test(command)) {
+    activateTab("distribution");
+    openPageSettings("distribution");
+    appendWorkbenchAssistantMessage("已经打开内容分发设置。");
+    return;
+  }
+  if (/内容制作|作品制作|生产界面/.test(command) && !/生产\s*\d+/.test(command)) {
+    activateTab("dashboard");
+    appendWorkbenchAssistantMessage("已经切换到内容制作。");
+    return;
+  }
+  if (/打开|进入|切换/.test(command) && /流量转化/.test(command)) {
+    activateTab("conversion");
+    appendWorkbenchAssistantMessage("已经打开流量转化。");
+    return;
+  }
+  if (/打开|进入|切换/.test(command) && /插件/.test(command)) {
+    activateTab("plugins");
+    appendWorkbenchAssistantMessage("已经打开插件市场。");
+    return;
+  }
+  if (/打开|进入|切换/.test(command) && /全局设置|软件设置|API|备份/.test(command)) {
+    activateTab("settings");
+    appendWorkbenchAssistantMessage("已经打开全局设置；API、备份和软件诊断都在这里。");
+    return;
+  }
+  if (/当前|现在|状态|概况|还有多少|剩多少/.test(command) && /设备|作品|库存|任务|系统|工作台/.test(command)) {
+    appendWorkbenchAssistantMessage(workbenchAssistantStatus());
+    return;
+  }
+
+  const deviceNumber = command.match(/(\d+)\s*号/)?.[1];
+  const collectionToken = command.match(/作品集[_-]?\d+(?:\[(?:泛|转)\])?/i)?.[0];
+  const wantsSend = /发|发送|推送|补/.test(command);
+  if (wantsSend && deviceNumber) {
+    const device = assistantDevice(deviceNumber);
+    if (!device) {
+      appendWorkbenchAssistantMessage(`没有找到已登记的 ${deviceNumber} 号设备。`);
+      return;
+    }
+    if (!device.online || device.trusted === false) {
+      appendWorkbenchAssistantMessage(`${deviceNumber}号当前离线或尚未确认，已阻止发送。`);
+      return;
+    }
+    activateTab("distribution");
+    if (collectionToken) {
+      const collection = (dashboard?.distribution?.collections || []).find((item) =>
+        item.name.toLowerCase().startsWith(collectionToken.toLowerCase())
+      );
+      if (!collection || !collection.sourceValid || !collection.dualPlatformEligible) {
+        appendWorkbenchAssistantMessage(`${collectionToken} 当前不可发送，可能已经使用或不在手机待发阶段。`);
+        return;
+      }
+      selectedDistributionCollectionName = collection.name;
+      selectedDistributionDeviceId = device.id;
+      appendWorkbenchAssistantMessage(`已核对 ${collection.name} 和 ${deviceNumber}号，正在按分发安全规则执行。`);
+      await sendSelectedDistributionPackage();
+      return;
+    }
+    const type = /精准|业务|转化/.test(command) ? "conversion" : /泛流量|游戏/.test(command) ? "traffic" : "";
+    if (!type) {
+      appendWorkbenchAssistantMessage("请补充“精准流量”或“泛流量”，我才能选择正确作品集。");
+      return;
+    }
+    appendWorkbenchAssistantMessage(`正在给${deviceNumber}号补充一个${type === "conversion" ? "精准流量" : "泛流量"}作品集。`);
+    await executeDistributionAction({
+      action: "device-restock",
+      device: device.aliases?.[0] || device.displayName,
+      type
+    }, `给${deviceNumber}号发送一个${type === "conversion" ? "精准流量" : "泛流量"}作品集`);
+    return;
+  }
+
+  const productionCount = Number(command.match(/(?:生产|制作)\s*(\d+)\s*(?:个|套)/)?.[1] || 0);
+  if (productionCount) {
+    activateTab("dashboard");
+    appendWorkbenchAssistantMessage(`已经切到内容制作。请先选素材和模板；确认后会按 ${productionCount} 套执行，避免误用素材。`);
+    return;
+  }
+  if (options.allowModel === false) {
+    appendWorkbenchAssistantMessage("我还缺少必要信息。请补充设备号码、作品集名称或精准/泛流量分类。");
+    return;
+  }
+  appendWorkbenchAssistantMessage("我先理解一下你的意思，再决定是直接执行还是追问。");
+  try {
+    const result = await api("/api/workbench-assistant/interpret", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command })
+    });
+    await executeInterpretedWorkbenchAssistant(result.interpretation);
+  } catch {
+    appendWorkbenchAssistantMessage("智能理解当前没有连上，但常用操作仍可直接执行。你可以说“你能干嘛”查看能力，或补充页面、设备号码、作品集和流量分类。");
+  }
 }
 
 function showDistributionPanel(panel) {
@@ -3963,6 +4305,20 @@ function renderCloudBackupStatus(status = {}) {
     || "备份范围：设置、提示词、生产任务索引、设备备注、分发记录和防重复账本；素材与成品大文件仍以本地文件夹为真源。";
   $("#testCloudBackupBtn").disabled = !status.configured;
   $("#runCloudBackupBtn").disabled = !status.configured;
+  $("#runLargeCloudBackupBtn").disabled = !status.configured;
+  renderLargeCloudBackupProgress(status.largeBackup);
+}
+
+function renderLargeCloudBackupProgress(task) {
+  const container = $("#largeCloudBackupProgress");
+  if (!container) return;
+  container.hidden = !task;
+  if (!task) return;
+  const percent = Math.max(0, Math.min(100, Number(task.percent || 0)));
+  $("#largeCloudBackupBar").value = percent;
+  $("#largeCloudBackupPercent").textContent = `${percent}%`;
+  $("#largeCloudBackupLabel").textContent = task.message || "方案文件备份";
+  $("#runLargeCloudBackupBtn").disabled = task.state === "running" || task.state === "starting";
 }
 
 async function loadCloudBackupStatus() {
@@ -4023,9 +4379,53 @@ async function runCloudBackup() {
   }
 }
 
+async function pollLargeCloudBackup() {
+  const result = await api("/api/cloud-backup/large-status");
+  const task = result.task;
+  renderLargeCloudBackupProgress(task);
+  if (task && ["running", "starting"].includes(task.state)) {
+    window.setTimeout(() => pollLargeCloudBackup().catch(() => {}), 1200);
+  } else if (task?.state === "completed") {
+    toast(task.message || "方案文件备份完成");
+  } else if (task?.state === "failed") {
+    showSystemNotice("方案文件备份没有完成", task.message || "请检查备份设置", { tone: "danger" });
+  }
+}
+
+async function runLargeCloudBackup() {
+  $("#runLargeCloudBackupBtn").disabled = true;
+  $("#cloudBackupMessage").textContent = "正在核对方案文件与本月上传额度…";
+  try {
+    const result = await api("/api/cloud-backup/run-large", { method: "POST" });
+    renderLargeCloudBackupProgress(result.task);
+    await pollLargeCloudBackup();
+  } catch (error) {
+    $("#runLargeCloudBackupBtn").disabled = false;
+    $("#cloudBackupMessage").textContent = error.message;
+    showSystemNotice("方案文件备份没有启动", error.message, { tone: "danger" });
+  }
+}
+
 function bindEvents() {
   $("#dashboardView .work-canvas")?.addEventListener("scroll", maybeLoadMoreMaterials, { passive: true });
   $("#productsView .product-preview-pane")?.addEventListener("scroll", maybeLoadMoreProducts, { passive: true });
+  document.addEventListener("contextmenu", (event) => {
+    const materialButton = event.target.closest("[data-workbench-material-filter]");
+    const outputButton = event.target.closest("[data-workbench-output-filter]");
+    if (!materialButton && !outputButton) return;
+    event.preventDefault();
+    const bindings = effectiveWorkbenchFolderBindings();
+    const key = materialButton
+      ? `material-${materialButton.dataset.workbenchMaterialFilter}`
+      : `output-${outputButton.dataset.workbenchOutputFilter}`;
+    contextMenuTarget = {
+      kind: "folder-binding",
+      bindingKey: key,
+      label: (materialButton || outputButton).textContent.trim(),
+      path: bindings[key] || ""
+    };
+    showContextMenu(event.clientX, event.clientY);
+  });
   document.addEventListener("click", async (event) => {
     if (!event.target.closest(".custom-select")) closeCustomSelects();
     if (!event.target.closest(".context-menu")) hideContextMenu();
@@ -4050,6 +4450,13 @@ function bindEvents() {
       event.preventDefault();
       event.stopPropagation();
       openImageLightbox(imagePreview.dataset.imagePreview, imagePreview.dataset.imageCaption || "图片预览");
+      return;
+    }
+    const workbenchTextPreview = event.target.closest("[data-workbench-text-path]");
+    if (workbenchTextPreview) {
+      event.preventDefault();
+      event.stopPropagation();
+      await openWorkbenchTextAsset(workbenchTextPreview);
       return;
     }
     const jump = event.target.closest("[data-jump]");
@@ -4116,15 +4523,25 @@ function bindEvents() {
     if (outputFilter) {
       workbenchOutputFilter = outputFilter.dataset.workbenchOutputFilter;
       $$("[data-workbench-output-filter]").forEach((button) => button.classList.toggle("active", button === outputFilter));
+      workbenchExpandedProductPath = "";
       renderWorkbenchProducts();
+      return;
     }
-    const productItem = event.target.closest("[data-workbench-product]");
-    if (productItem) {
-      const productPath = productItem.dataset.workbenchProduct;
-      const checked = productItem.querySelector("input")?.checked;
+    const productFolder = event.target.closest("[data-workbench-product-folder]");
+    if (productFolder) {
+      const productPath = productFolder.dataset.workbenchProductFolder;
+      workbenchExpandedProductPath = workbenchExpandedProductPath === productPath ? "" : productPath;
+      renderWorkbenchProducts();
+      return;
+    }
+    const productCheck = event.target.closest("[data-workbench-product-check]");
+    if (productCheck) {
+      const productPath = productCheck.dataset.workbenchProductCheck;
+      const checked = productCheck.checked;
       if (checked) workbenchSelectedProducts.add(productPath);
       else workbenchSelectedProducts.delete(productPath);
       renderWorkbenchProducts();
+      return;
     }
     const treeToggle = event.target.closest("[data-tree-toggle]");
     if (treeToggle) {
@@ -4234,6 +4651,11 @@ function bindEvents() {
         (isDistributionTask ? distributionTransferUiTasks : genericTransferUiTasks).set(task.id, task);
         renderDistribution();
       }).catch((error) => showSystemNotice("无法停止任务", error.message, { tone: "danger" }));
+    }
+    const dismissTransfer = event.target.closest("[data-dismiss-transfer]");
+    if (dismissTransfer) {
+      dismissTransferTask(dismissTransfer.dataset.dismissTransfer, dismissTransfer.dataset.transferKind);
+      return;
     }
     const selectPackage = event.target.closest("[data-select-package]");
     if (selectPackage) {
@@ -4521,6 +4943,18 @@ function bindEvents() {
   });
   $("#workbenchMaterialRoot")?.addEventListener("change", commitWorkbenchMaterialRoot);
   bindCollectionRootControls("#workbenchProductRoot", "#workbenchChooseProductRootBtn", "#workbenchApplyProductRootBtn", "dashboard");
+  $("#chooseProductionPackedRootBtn")?.addEventListener("click", async () => {
+    try {
+      const selectedPath = await chooseFolder("选择已打包作品集目录");
+      if (!selectedPath) return;
+      $("#productionPackedRoot").value = selectedPath;
+      await savePageSettingsFromUi("production");
+      await loadProductionWorkspace();
+      toast("已打包库已切换");
+    } catch (error) {
+      showSystemNotice("已打包库没有保存", error.message, { tone: "danger" });
+    }
+  });
   $("#chooseProductionTemplateRootBtn")?.addEventListener("click", async () => {
     try {
       const selectedPath = await chooseFolder("选择模板库目录");
@@ -4533,12 +4967,15 @@ function bindEvents() {
     }
   });
   [
-    "#productionTemplateRoot", "#productionBasePromptRules", "#productionReserveThreshold",
+    "#productionTemplateRoot", "#productionPackedRoot", "#productionBasePromptRules", "#productionReserveThreshold",
     "#productionReserveCategory", "#productionItemsPerCollection", "#productionScheduleTime",
     "#productionAutoProduceEnabled", "#productionScheduleEnabled", "#productionCompressCollections"
   ].forEach((selector) => {
     $(selector)?.addEventListener("change", () => savePageSettingsFromUi("production")
-      .then(() => toast("内容制作设置已保存"))
+      .then(async () => {
+        if (selector === "#productionPackedRoot") await loadProductionWorkspace();
+        toast("内容制作设置已保存");
+      })
       .catch((error) => showSystemNotice("内容制作设置没有保存", error.message, { tone: "danger" })));
   });
   [
@@ -4644,8 +5081,21 @@ function bindEvents() {
     await checkDistributionDevices();
   });
   $("#openPublishRootBtn")?.addEventListener("click", () => openPath(dashboard?.distribution?.workflowRoot || dashboard?.distribution?.libraryRoot));
-  $("#reconcileDistributionFoldersBtn")?.addEventListener("click", reconcileDistributionFolders);
-  $("#copyDistributionCommand")?.addEventListener("click", () => copyText($("#distributionCommand").value, "分发指令已复制"));
+  $("#workbenchAssistantLauncher")?.addEventListener("click", () => toggleWorkbenchAssistant());
+  $("#closeWorkbenchAssistant")?.addEventListener("click", () => toggleWorkbenchAssistant(false));
+  $("#runWorkbenchAssistantCommand")?.addEventListener("click", async () => {
+    const input = $("#workbenchAssistantCommand");
+    const command = input?.value || "";
+    if (input) input.value = "";
+    await executeWorkbenchAssistantCommand(command);
+  });
+  $("#workbenchAssistantCommand")?.addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const command = event.currentTarget.value;
+    event.currentTarget.value = "";
+    await executeWorkbenchAssistantCommand(command);
+  });
   $("#refreshJuguangBtn")?.addEventListener("click", async () => {
     await loadJuguang(true);
     toast("聚光数据已刷新");
@@ -4655,6 +5105,29 @@ function bindEvents() {
   $("#importLifeGameCloudBtn")?.addEventListener("click", importLifeGameCloudConfig);
   $("#testCloudBackupBtn")?.addEventListener("click", testCloudBackup);
   $("#runCloudBackupBtn")?.addEventListener("click", runCloudBackup);
+  $("#runLargeCloudBackupBtn")?.addEventListener("click", runLargeCloudBackup);
+  $("#chooseCloudBackupSourceBtn")?.addEventListener("click", async () => {
+    try {
+      const selectedPath = await chooseFolder("选择需要增量备份的方案文件夹");
+      if (!selectedPath) return;
+      $("#cloudBackupSourceRoot").value = selectedPath;
+      await saveBackupSettingsFromUi();
+    } catch (error) {
+      showSystemNotice("备份来源没有保存", error.message, { tone: "danger" });
+    }
+  });
+  ["#cloudBackupScheduleEnabled", "#cloudBackupFrequency", "#cloudBackupIntervalHours", "#cloudBackupMonthlyLimitMb"]
+    .forEach((selector) => $(selector)?.addEventListener("change", () =>
+      saveBackupSettingsFromUi().catch((error) => showSystemNotice("备份设置没有保存", error.message, { tone: "danger" }))
+    ));
+  $("#cloudBackupSourceRoot")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    event.currentTarget.blur();
+  });
+  $("#cloudBackupSourceRoot")?.addEventListener("blur", () =>
+    saveBackupSettingsFromUi().catch((error) => showSystemNotice("备份来源没有保存", error.message, { tone: "danger" }))
+  );
 
   $("#materialLibraryFilter").addEventListener("change", async () => {
     const libraryPath = $("#materialLibraryFilter").value;
@@ -4808,4 +5281,22 @@ loadDashboard()
   .catch((error) => {
     console.error(error);
     toast("读取本地库失败");
+  });
+  $("#contextSetFolder")?.addEventListener("click", async () => {
+    const target = contextMenuTarget;
+    hideContextMenu();
+    if (target?.kind !== "folder-binding") return;
+    try {
+      const selectedPath = await chooseFolder(`选择「${target.label}」关联文件夹`);
+      if (!selectedPath) return;
+      workbenchFolderBindings[target.bindingKey] = selectedPath;
+      if (target.bindingKey === "output-packed" && $("#productionPackedRoot")) {
+        $("#productionPackedRoot").value = selectedPath;
+      }
+      await savePageSettingsFromUi("production");
+      if (target.bindingKey === "output-packed") await loadProductionWorkspace();
+      toast(`「${target.label}」关联文件夹已保存`);
+    } catch (error) {
+      showSystemNotice("关联文件夹没有保存", error.message, { tone: "danger" });
+    }
   });

@@ -5,7 +5,8 @@ const path = require("node:path");
 const http = require("node:http");
 const { version: APP_VERSION } = require("../package.json");
 
-const APP_URL = "http://127.0.0.1:4327/";
+const APP_PORT = String(process.env.PORT || "4327").trim() || "4327";
+const APP_URL = `http://127.0.0.1:${APP_PORT}/`;
 const RUNTIME_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运行数据\\江湖有旅人\\图文生产控制台";
 const DESKTOP_LOG_FILE = path.join(RUNTIME_ROOT, "desktop.log");
 let serverProcess = null;
@@ -51,7 +52,7 @@ async function ensureServer() {
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
-      PORT: "4327",
+      PORT: APP_PORT,
       TEAMBUILDING_RELEASE_ROOT: releaseRoot
     },
     windowsHide: true,
@@ -76,6 +77,7 @@ async function createWindow() {
     minWidth: 1120,
     minHeight: 700,
     title: "团建工作台",
+    icon: path.join(__dirname, "团建工作台.ico"),
     show: false,
     backgroundColor: "#e7eee9",
     autoHideMenuBar: true,

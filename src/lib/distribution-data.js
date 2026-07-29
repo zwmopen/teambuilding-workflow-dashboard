@@ -833,5 +833,6 @@ module.exports = {
   moveCollectionSourceToStage,
   renameCollectionType,
   parseCsv,
+  readWorkflowOperations,
   reconcileWorkflowFolders
 };

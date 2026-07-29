@@ -16,12 +16,14 @@ const {
 const { getJuguangSnapshot, queryKeywords } = require("./lib/juguang-data");
 const {
   appendWorkflowOperation,
+  classifyCollectionName,
   confirmOfficialUpload,
   ensureWorkflowCompatibilityLinks,
   getWorkflowStageRoots,
   getDistributionSnapshot,
   markOfficialUsed,
   moveCollectionSourceToStage,
+  readWorkflowOperations,
   renameCollectionType,
   reconcileWorkflowFolders
 } = require("./lib/distribution-data");
@@ -47,7 +49,8 @@ const {
   publicStatus: publicCloudBackupStatus,
   readSecureConfig,
   testConnection: testCloudBackupConnection,
-  uploadBackup
+  uploadBackup,
+  uploadFile
 } = require("./lib/webdav-backup");
 
 const PORT = Number(process.env.PORT || 4327);
@@ -73,6 +76,7 @@ const APP_SETTINGS_FILE = path.join(DATA_ROOT, "app-settings.json");
 const IMAGE_API_SECRET_FILE = path.join(DATA_ROOT, "secrets", "image-api.local.env");
 const WEBDAV_CONFIG_FILE = path.join(DATA_ROOT, "secrets", "webdav-config.dpapi.json");
 const CLOUD_BACKUP_META_FILE = path.join(DATA_ROOT, "cloud-backup-meta.json");
+const CLOUD_LARGE_BACKUP_MANIFEST_FILE = path.join(DATA_ROOT, "cloud-large-backup-manifest.json");
 const IMAGE_REVIEW_ROOT = path.join(DATA_ROOT, "API生产待审");
 const PRODUCTION_JOB_ROOT = path.join(DATA_ROOT, "production-jobs");
 const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
@@ -128,6 +132,8 @@ const distributionTasks = new Map();
 const automaticDistributionSessions = new Set();
 const pendingProductionPlans = new Map();
 const productionJobs = new Map();
+let cloudBackupTimer = null;
+let largeCloudBackupTask = null;
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_ROOT, { recursive: true });
@@ -146,11 +152,14 @@ function ensureDataFiles() {
 function getCloudBackupStatus() {
   let config = null;
   try { config = readSecureConfig(WEBDAV_CONFIG_FILE); } catch { config = null; }
-  return publicCloudBackupStatus(config, readJson(CLOUD_BACKUP_META_FILE, {
+  return publicCloudBackupStatus(config, {
+    ...readJson(CLOUD_BACKUP_META_FILE, {
     lastBackupAt: "",
     lastBackupFile: "",
     lastResult: ""
-  }));
+    }),
+    largeBackup: largeCloudBackupTask || readJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, {}).lastTask || null
+  });
 }
 
 function buildCloudBackupPayload() {
@@ -182,6 +191,184 @@ function buildCloudBackupPayload() {
     scope: "设置、提示词、任务索引、设备备注、分发与防重复记录；不包含素材和成品大文件",
     records
   };
+}
+
+async function runCloudBackupNow() {
+  const config = readSecureConfig(WEBDAV_CONFIG_FILE);
+  if (!config) throw new Error("请先导入人生游戏系统的坚果云配置");
+  const payload = buildCloudBackupPayload();
+  const stamp = payload.createdAt.replace(/[:.]/g, "-");
+  const fileName = `teambuilding-workbench-${stamp}.json`;
+  await uploadBackup(config, payload, fileName);
+  const metadata = {
+    lastBackupAt: payload.createdAt,
+    lastBackupFile: fileName,
+    lastResult: `已备份 ${Object.keys(payload.records).length} 份本地记录`
+  };
+  writeJson(CLOUD_BACKUP_META_FILE, metadata);
+  return publicCloudBackupStatus(config, metadata);
+}
+
+function currentMonthKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function scanLargeBackupFiles(root) {
+  const files = [];
+  const queue = [root];
+  while (queue.length) {
+    const current = queue.shift();
+    for (const entry of safeList(current)) {
+      const fullPath = path.join(current, entry.name);
+      let stats;
+      try {
+        stats = fs.lstatSync(fullPath);
+      } catch {
+        continue;
+      }
+      if (stats.isSymbolicLink()) continue;
+      if (stats.isDirectory()) queue.push(fullPath);
+      else if (stats.isFile()) {
+        files.push({
+          path: fullPath,
+          relative: path.relative(root, fullPath).replace(/\\/g, "/"),
+          size: stats.size,
+          mtimeMs: Math.trunc(stats.mtimeMs)
+        });
+      }
+    }
+  }
+  return files.sort((left, right) => left.mtimeMs - right.mtimeMs || left.relative.localeCompare(right.relative, "zh-CN"));
+}
+
+async function executeLargeCloudBackup() {
+  const settings = getPageSettings().backup || {};
+  const sourceRoot = path.resolve(settings.sourceRoot || "");
+  if (!settings.sourceRoot || !exists(sourceRoot) || !fs.statSync(sourceRoot).isDirectory()) {
+    throw new Error("请先设置有效的方案/大文件来源目录");
+  }
+  const config = readSecureConfig(WEBDAV_CONFIG_FILE);
+  if (!config) throw new Error("请先导入人生游戏系统的坚果云配置");
+  await testCloudBackupConnection(config);
+
+  const manifest = readJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, {
+    schema: "teambuilding-large-backup-v1",
+    files: {},
+    monthlyUsage: {}
+  });
+  const month = currentMonthKey();
+  const limitBytes = Math.max(0, Number(settings.monthlyLargeFileLimitMb || 0)) * 1024 * 1024;
+  let usedBytes = Math.max(0, Number(manifest.monthlyUsage?.[month] || 0));
+  const candidates = scanLargeBackupFiles(sourceRoot).filter((file) => {
+    const previous = manifest.files?.[file.relative];
+    return !previous || previous.size !== file.size || previous.mtimeMs !== file.mtimeMs;
+  });
+  const task = {
+    id: `large-backup-${Date.now()}`,
+    state: "running",
+    sourceRoot,
+    startedAt: new Date().toISOString(),
+    totalFiles: candidates.length,
+    completedFiles: 0,
+    skippedFiles: 0,
+    uploadedBytes: 0,
+    monthlyUsedBytes: usedBytes,
+    monthlyLimitBytes: limitBytes,
+    percent: candidates.length ? 0 : 100,
+    message: candidates.length ? "正在增量备份方案文件" : "没有需要上传的新文件"
+  };
+  largeCloudBackupTask = task;
+  manifest.files ||= {};
+  manifest.monthlyUsage ||= {};
+
+  for (const file of candidates) {
+    if (limitBytes === 0 || usedBytes + file.size > limitBytes) {
+      task.skippedFiles += 1;
+      continue;
+    }
+    await uploadFile(config, file.path, `方案增量/${file.relative}`);
+    usedBytes += file.size;
+    task.completedFiles += 1;
+    task.uploadedBytes += file.size;
+    task.monthlyUsedBytes = usedBytes;
+    task.percent = Math.round(((task.completedFiles + task.skippedFiles) / Math.max(1, candidates.length)) * 100);
+    task.message = `已上传 ${task.completedFiles}/${candidates.length} 个文件`;
+    manifest.files[file.relative] = {
+      size: file.size,
+      mtimeMs: file.mtimeMs,
+      backedUpAt: new Date().toISOString()
+    };
+    manifest.monthlyUsage[month] = usedBytes;
+    manifest.lastTask = { ...task };
+    writeJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, manifest);
+  }
+
+  task.state = "completed";
+  task.finishedAt = new Date().toISOString();
+  task.percent = 100;
+  task.message = task.skippedFiles
+    ? `本月额度内上传 ${task.completedFiles} 个，${task.skippedFiles} 个留待下月`
+    : `增量备份完成，共上传 ${task.completedFiles} 个文件`;
+  manifest.monthlyUsage[month] = usedBytes;
+  manifest.lastTask = { ...task };
+  writeJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, manifest);
+  return task;
+}
+
+function startLargeCloudBackup() {
+  if (largeCloudBackupTask?.state === "running") return largeCloudBackupTask;
+  const task = {
+    id: `large-backup-${Date.now()}`,
+    state: "starting",
+    startedAt: new Date().toISOString(),
+    percent: 0,
+    message: "正在检查方案文件"
+  };
+  largeCloudBackupTask = task;
+  setImmediate(async () => {
+    try {
+      await executeLargeCloudBackup();
+    } catch (error) {
+      largeCloudBackupTask = {
+        ...task,
+        state: "failed",
+        finishedAt: new Date().toISOString(),
+        message: error.message || "大文件备份失败"
+      };
+      const manifest = readJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, {
+        schema: "teambuilding-large-backup-v1",
+        files: {},
+        monthlyUsage: {}
+      });
+      manifest.lastTask = { ...largeCloudBackupTask };
+      writeJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, manifest);
+    }
+  });
+  return task;
+}
+
+function cloudBackupIsDue(now = Date.now()) {
+  const settings = getPageSettings().backup || {};
+  if (settings.scheduleEnabled === false) return false;
+  const metadata = readJson(CLOUD_BACKUP_META_FILE, {});
+  const last = Date.parse(metadata.lastBackupAt || "");
+  if (!Number.isFinite(last)) return true;
+  return now - last >= Math.max(1, Number(settings.intervalHours || 24)) * 60 * 60 * 1000;
+}
+
+async function runScheduledCloudBackup() {
+  if (!cloudBackupIsDue()) return;
+  try {
+    await runCloudBackupNow();
+    if (getPageSettings().backup?.sourceRoot) startLargeCloudBackup();
+  } catch (error) {
+    const metadata = readJson(CLOUD_BACKUP_META_FILE, {});
+    writeJson(CLOUD_BACKUP_META_FILE, {
+      ...metadata,
+      lastAttemptAt: new Date().toISOString(),
+      lastResult: `自动备份未完成：${error.message}`
+    });
+  }
 }
 
 function syncHistoricalDedupLedger() {
@@ -733,6 +920,58 @@ function textGenerationConnection(imageConfig, suppliedKey = "") {
   };
 }
 
+const WORKBENCH_ASSISTANT_ACTIONS = new Set([
+  "capabilities",
+  "status",
+  "open_tab",
+  "open_settings",
+  "detect_devices",
+  "send_collection",
+  "restock_device",
+  "produce",
+  "backup",
+  "unclear"
+]);
+
+async function interpretWorkbenchAssistantCommand(command) {
+  const cleanCommand = String(command || "").trim().slice(0, 500);
+  if (!cleanCommand) return { action: "unclear", reply: "请告诉我想处理哪一步。" };
+  const imageSettings = publicImageApiSettings();
+  const connection = textGenerationConnection(imageSettings);
+  if (!connection.apiKey) throw new Error("当前没有可用的文案模型密钥");
+  const prompt = [
+    "你是团建工作台里的命令理解器，只负责理解意图，不执行操作。",
+    "只返回一个 JSON 对象，不要 Markdown。",
+    "允许的 action：capabilities,status,open_tab,open_settings,detect_devices,send_collection,restock_device,produce,backup,unclear。",
+    "字段：action、tab、settings、deviceNumber、category、collection、count、reply。",
+    "tab 只能是 dashboard、distribution、conversion、plugins、settings。",
+    "settings 只能是 production、distribution、global、backup。",
+    "category 只能是 conversion、traffic、unclassified、all。",
+    "涉及发送但设备编号、作品集或分类不足时，action 必须是 unclear，并在 reply 里只追问缺少的信息。",
+    "涉及删除、覆盖、陌生设备、任意系统命令时，action 必须是 unclear。",
+    `用户原话：${cleanCommand}`
+  ].join("\n");
+  const raw = await generateText({
+    config: connection.config,
+    apiKey: connection.apiKey,
+    prompt,
+    model: "gpt-5.6-terra"
+  });
+  const jsonText = String(raw || "").replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+  const result = JSON.parse(jsonText);
+  const action = WORKBENCH_ASSISTANT_ACTIONS.has(result?.action) ? result.action : "unclear";
+  return {
+    action,
+    tab: ["dashboard", "distribution", "conversion", "plugins", "settings"].includes(result?.tab) ? result.tab : "",
+    settings: ["production", "distribution", "global", "backup"].includes(result?.settings) ? result.settings : "",
+    deviceNumber: String(result?.deviceNumber || "").replace(/\D/g, "").slice(0, 3),
+    category: ["conversion", "traffic", "unclassified", "all"].includes(result?.category) ? result.category : "",
+    collection: String(result?.collection || "").trim().slice(0, 100),
+    count: Math.max(0, Math.min(100, Number(result?.count) || 0)),
+    reply: String(result?.reply || "").trim().slice(0, 300)
+  };
+}
+
 function publicImageApiSettings(value = {}) {
   const saved = readEnvFile(IMAGE_API_SECRET_FILE);
   const config = normalizeImageApiConfig({
@@ -1101,7 +1340,8 @@ function savePageSettings(body = {}) {
     ...getPageSettings(),
     ...body,
     production: { ...getPageSettings().production, ...(body.production || {}) },
-    distribution: { ...getPageSettings().distribution, ...(body.distribution || {}) }
+    distribution: { ...getPageSettings().distribution, ...(body.distribution || {}) },
+    backup: { ...getPageSettings().backup, ...(body.backup || {}) }
   });
   if (pageSettings.production.templateRoot) {
     const templateRoot = path.resolve(pageSettings.production.templateRoot);
@@ -1109,6 +1349,20 @@ function savePageSettings(body = {}) {
       throw new Error("模板库目录不存在或不是文件夹");
     }
     pageSettings.production.templateRoot = templateRoot;
+  }
+  if (pageSettings.production.packedRoot) {
+    const packedRoot = path.resolve(pageSettings.production.packedRoot);
+    if (!exists(packedRoot) || !fs.statSync(packedRoot).isDirectory()) {
+      throw new Error("已打包库目录不存在或不是文件夹");
+    }
+    pageSettings.production.packedRoot = packedRoot;
+  }
+  if (pageSettings.backup.sourceRoot) {
+    const sourceRoot = path.resolve(pageSettings.backup.sourceRoot);
+    if (!exists(sourceRoot) || !fs.statSync(sourceRoot).isDirectory()) {
+      throw new Error("大文件备份来源目录不存在或不是文件夹");
+    }
+    pageSettings.backup.sourceRoot = sourceRoot;
   }
   writeJson(APP_SETTINGS_FILE, { ...current, pageSettings });
   return pageSettings;
@@ -2017,57 +2271,121 @@ function getProductLibrary() {
 
 function productionWorkbenchProducts() {
   const settings = getWorkspaceSettings();
+  const pageSettings = getPageSettings();
   const libraryRoot = path.resolve(settings.workPackage.libraryPath);
   const stageRoots = getWorkflowStageRoots(libraryRoot);
+  const packedRoot = pageSettings.production.packedRoot
+    ? path.resolve(pageSettings.production.packedRoot)
+    : stageRoots.mobile;
   const reservedNames = new Set([
     "_portfolio_move_logs", "_作品历史数据", "发布空间",
     "抖音小红书", "微信公众号", "已发送"
   ]);
+  const textFiles = (workPath) => safeList(workPath)
+    .filter((entry) => entry.isFile() && textExts.has(path.extname(entry.name).toLowerCase()))
+    .map((entry) => {
+      const full = path.join(workPath, entry.name);
+      return { name: entry.name, path: full, url: toUrl(full) };
+    });
+  const readCopyPreview = (files = []) => {
+    const target = files.find((item) => /小红书文案|文案/i.test(item.name)) || files[0];
+    if (!target) return "";
+    try {
+      return fs.readFileSync(target.path, "utf8").trim().slice(0, 420);
+    } catch {
+      return "";
+    }
+  };
+  const inferWorkCategory = (name, preview = "") => (
+    /游戏合集|团建游戏|破冰游戏|真心话|大冒险|小游戏/.test(`${name} ${preview}`)
+      ? { type: "traffic", typeLabel: "泛流量贴" }
+      : { type: "conversion", typeLabel: "精准流量贴" }
+  );
+  const buildWork = (workPath, source, extra = {}) => {
+    const images = listImages(workPath, 30);
+    const attachments = textFiles(workPath);
+    const preview = readCopyPreview(attachments);
+    const planPath = path.join(workPath, "出图计划.json");
+    const plan = exists(planPath) ? readJson(planPath, {}) : {};
+    const recipeName = plan.recipe?.name || plan.templateName || "";
+    const category = extra.type
+      ? { type: extra.type, typeLabel: extra.typeLabel }
+      : inferWorkCategory(path.basename(workPath), preview);
+    return {
+      id: workPath,
+      name: path.basename(workPath),
+      path: workPath,
+      source,
+      templateName: recipeName,
+      images,
+      imageCount: listImageEntries(workPath).length,
+      textFiles: attachments,
+      textCount: attachments.length,
+      preview,
+      hasCopy: attachments.length > 0,
+      copyPath: attachments[0]?.path || "",
+      updatedAt: safeMtime(workPath),
+      packed: source === "已打包",
+      collectionName: extra.collectionName || "",
+      type: category.type,
+      typeLabel: category.typeLabel
+    };
+  };
   const readWorks = (root, source) => safeList(root)
     .filter((entry) => entry.isDirectory() && !reservedNames.has(entry.name))
-    .map((entry) => {
-      const workPath = path.join(root, entry.name);
-      const images = listImages(workPath, 8);
-      const imageCount = listImageEntries(workPath).length;
-      const copyPath = [
-        path.join(workPath, "小红书文案.txt"),
-        path.join(workPath, "文案.txt")
-      ].find(exists) || "";
-      const planPath = path.join(workPath, "出图计划.json");
-      const plan = exists(planPath) ? readJson(planPath, {}) : {};
-      const recipeName = plan.recipe?.name || plan.templateName || "";
-      return {
-        id: workPath,
-        name: entry.name,
-        path: workPath,
-        source,
-        templateName: recipeName,
-        images,
-        imageCount,
-        hasCopy: Boolean(copyPath),
-        copyPath,
-        updatedAt: safeMtime(workPath),
-        packed: exists(path.join(stageRoots.mobile, entry.name))
-      };
-    })
-    .filter((work) => work.imageCount > 0 || work.hasCopy);
-  const works = [
+    .map((entry) => buildWork(path.join(root, entry.name), source))
+    .filter((work) => work.imageCount > 0 || work.textCount > 0);
+  const unpackedWorks = [
     ...readWorks(IMAGE_REVIEW_ROOT, "待审区"),
     ...readWorks(libraryRoot, "成品库")
   ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const packedCollections = safeList(packedRoot)
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("_"))
+    .flatMap((entry) => {
+      const collectionPath = path.join(packedRoot, entry.name);
+      const classification = classifyCollectionName(entry.name);
+      const direct = buildWork(collectionPath, "已打包", {
+        collectionName: entry.name,
+        type: classification.type,
+        typeLabel: classification.type === "traffic" ? "泛流量贴"
+          : classification.type === "conversion" ? "精准流量贴" : "未分类"
+      });
+      if (direct.imageCount > 0 || direct.textCount > 0) return [direct];
+      return safeList(collectionPath)
+        .filter((post) => post.isDirectory())
+        .map((post) => buildWork(path.join(collectionPath, post.name), "已打包", {
+          collectionName: entry.name,
+          type: classification.type,
+          typeLabel: classification.type === "traffic" ? "泛流量贴"
+            : classification.type === "conversion" ? "精准流量贴" : "未分类"
+        }))
+        .filter((work) => work.imageCount > 0 || work.textCount > 0);
+    })
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const history = readWorkflowOperations(stageRoots)
+    .filter((entry) => /pack|作品集|打包/i.test(`${entry.action || ""} ${entry.detail || ""}`))
+    .slice(0, 120);
   return {
     reviewRoot: IMAGE_REVIEW_ROOT,
     libraryRoot,
-    pendingRoot: stageRoots.mobile,
-    works
+    packedRoot,
+    pendingRoot: packedRoot,
+    works: unpackedWorks,
+    unpackedWorks,
+    packedWorks: packedCollections,
+    history
   };
 }
 
 function packProductionWorks(paths = []) {
   const settings = getWorkspaceSettings();
+  const pageSettings = getPageSettings();
   const libraryRoot = path.resolve(settings.workPackage.libraryPath);
   const stageRoots = getWorkflowStageRoots(libraryRoot);
-  fs.mkdirSync(stageRoots.mobile, { recursive: true });
+  const packedRoot = pageSettings.production.packedRoot
+    ? path.resolve(pageSettings.production.packedRoot)
+    : stageRoots.mobile;
+  fs.mkdirSync(packedRoot, { recursive: true });
   const allowedRoots = [path.resolve(IMAGE_REVIEW_ROOT), libraryRoot];
   const selected = [...new Set((Array.isArray(paths) ? paths : []).map((item) => path.resolve(String(item || ""))))];
   if (!selected.length) throw new Error("请先选择至少一个成品文件夹");
@@ -2081,7 +2399,7 @@ function packProductionWorks(paths = []) {
     if (!files.some((entry) => entry.isFile() && imageExts.has(path.extname(entry.name).toLowerCase()))) {
       throw new Error(`作品中没有图片：${path.basename(sourcePath)}`);
     }
-    const targetPath = path.join(stageRoots.mobile, path.basename(sourcePath));
+    const targetPath = path.join(packedRoot, path.basename(sourcePath));
     if (exists(targetPath)) {
       results.push({ name: path.basename(sourcePath), status: "exists", targetPath });
       return;
@@ -2098,7 +2416,7 @@ function packProductionWorks(paths = []) {
   });
   return {
     ok: true,
-    pendingRoot: stageRoots.mobile,
+    pendingRoot: packedRoot,
     packed: results.filter((item) => item.status === "packed").length,
     skipped: results.filter((item) => item.status === "exists").length,
     results
@@ -2539,6 +2857,14 @@ function rewriteIntegratedConversionContent(source) {
     .replaceAll('"/api/', '"/conversion-integrated/api/')
     .replaceAll("`/api/", "`/conversion-integrated/api/")
     .replaceAll(
+      "input.startsWith('/conversion-integrated/api/')",
+      "input.startsWith('/api/')"
+    )
+    .replaceAll(
+      "pathname.startsWith('/conversion-integrated/api/')",
+      "pathname.startsWith('/api/')"
+    )
+    .replaceAll(
       "/conversion-integrated/api/正式SOP",
       "/conversion-integrated/api/正式SOP?workbench-proxy=20260729-2"
     )
@@ -2750,6 +3076,12 @@ function trimCompletedTasks(tasks) {
 }
 
 function recentPublicTasks(tasks, limit = 12) {
+  const cutoff = Date.now() - (3 * 60 * 1000);
+  for (const [id, task] of tasks.entries()) {
+    if (["running", "cancelling"].includes(task.state)) continue;
+    const finishedAt = Date.parse(task.finishedAt || task.startedAt || "");
+    if (Number.isFinite(finishedAt) && finishedAt < cutoff) tasks.delete(id);
+  }
   return Array.from(tasks.values())
     .sort((left, right) => String(right.startedAt || "").localeCompare(String(left.startedAt || "")))
     .slice(0, limit)
@@ -3749,6 +4081,21 @@ async function route(req, res) {
     return sendJson(res, { ok: true, imageApi: publicImageApiSettings(config) });
   }
 
+  if (pathname === "/api/workbench-assistant/interpret" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 16_000) || "{}");
+    try {
+      return sendJson(res, {
+        ok: true,
+        interpretation: await interpretWorkbenchAssistantCommand(body.command)
+      });
+    } catch (error) {
+      return send(res, 503, JSON.stringify({
+        error: "智能理解暂时不可用",
+        detail: String(error?.message || error).slice(0, 300)
+      }));
+    }
+  }
+
   if (pathname === "/api/image-api/test" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     const config = normalizeImageApiConfig(body);
@@ -3845,22 +4192,24 @@ async function route(req, res) {
 
   if (pathname === "/api/cloud-backup/run" && req.method === "POST") {
     try {
-      const config = readSecureConfig(WEBDAV_CONFIG_FILE);
-      if (!config) throw new Error("请先导入人生游戏系统的坚果云配置");
-      const payload = buildCloudBackupPayload();
-      const stamp = payload.createdAt.replace(/[:.]/g, "-");
-      const fileName = `teambuilding-workbench-${stamp}.json`;
-      await uploadBackup(config, payload, fileName);
-      const metadata = {
-        lastBackupAt: payload.createdAt,
-        lastBackupFile: fileName,
-        lastResult: `已备份 ${Object.keys(payload.records).length} 份本地记录`
-      };
-      writeJson(CLOUD_BACKUP_META_FILE, metadata);
-      return sendJson(res, publicCloudBackupStatus(config, metadata));
+      return sendJson(res, await runCloudBackupNow());
     } catch (error) {
       return send(res, 400, JSON.stringify({ error: error.message || "坚果云备份失败" }));
     }
+  }
+  if (pathname === "/api/cloud-backup/run-large" && req.method === "POST") {
+    try {
+      const settings = getPageSettings().backup || {};
+      if (!settings.sourceRoot) throw new Error("请先设置方案/大文件来源目录");
+      return sendJson(res, { ok: true, task: startLargeCloudBackup() });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message || "大文件备份启动失败" }));
+    }
+  }
+  if (pathname === "/api/cloud-backup/large-status" && req.method === "GET") {
+    return sendJson(res, {
+      task: largeCloudBackupTask || readJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, {}).lastTask || null
+    });
   }
 
   if (pathname === "/api/dedup/status" && req.method === "GET") {
@@ -3978,6 +4327,16 @@ async function route(req, res) {
     if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认本次文件传送" }));
     return sendJson(res, startGenericTransfer(body.source, body.device));
   }
+  if (pathname.startsWith("/api/transfers/") && req.method === "DELETE") {
+    const taskId = decodeURIComponent(pathname.slice("/api/transfers/".length));
+    const record = genericTransferTasks.get(taskId);
+    if (!record) return sendJson(res, { ok: true, removed: false });
+    if (["running", "cancelling"].includes(record.state)) {
+      return send(res, 409, JSON.stringify({ error: "进行中的任务不能清除，请先停止" }));
+    }
+    genericTransferTasks.delete(taskId);
+    return sendJson(res, { ok: true, removed: true });
+  }
   if (pathname.startsWith("/api/transfers/") && req.method === "GET") {
     const taskId = decodeURIComponent(pathname.slice("/api/transfers/".length));
     const record = genericTransferTasks.get(taskId);
@@ -3999,6 +4358,16 @@ async function route(req, res) {
       return send(res, 409, JSON.stringify({ error: "需要在界面确认本次真实分发" }));
     }
     return sendJson(res, startDistributionTask(body));
+  }
+  if (pathname.startsWith("/api/distribution/tasks/") && req.method === "DELETE") {
+    const taskId = decodeURIComponent(pathname.slice("/api/distribution/tasks/".length));
+    const record = distributionTasks.get(taskId);
+    if (!record) return sendJson(res, { ok: true, removed: false });
+    if (["running", "cancelling"].includes(record.state)) {
+      return send(res, 409, JSON.stringify({ error: "进行中的任务不能清除，请先停止" }));
+    }
+    distributionTasks.delete(taskId);
+    return sendJson(res, { ok: true, removed: true });
   }
   if (pathname.startsWith("/api/distribution/tasks/") && pathname.endsWith("/cancel") && req.method === "POST") {
     const taskId = decodeURIComponent(
@@ -4140,6 +4509,9 @@ if (require.main === module) {
     console.log(`团建工作台: http://localhost:${PORT}`);
     if (LISTEN_HOST !== "127.0.0.1") console.log(`手机转化入口已开启: ${mobileConversionLink()}`);
     console.log(`项目根目录: ${PROJECT_ROOT}`);
+    cloudBackupTimer = setInterval(runScheduledCloudBackup, 15 * 60 * 1000);
+    cloudBackupTimer.unref?.();
+    setTimeout(runScheduledCloudBackup, 8_000).unref?.();
   });
 }
 

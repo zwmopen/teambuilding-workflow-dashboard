@@ -384,6 +384,18 @@ test('integrated conversion scripts keep API requests inside the workbench proxy
   assert.doesNotMatch(rewritten, /fetch\((['"`])\/api\//);
 });
 
+test('embedded conversion fetch wrapper does not add the workbench prefix twice', () => {
+  const source = [
+    "if(input.startsWith('/api/'))return nativeFetch('/conversion-integrated'+input,init)",
+    "if(new URL(input.url).pathname.startsWith('/api/')){}"
+  ].join(';');
+  const rewritten = server.rewriteIntegratedConversionContent(source);
+  assert.match(rewritten, /input\.startsWith\('\/api\/'\)/);
+  assert.match(rewritten, /pathname\.startsWith\('\/api\/'\)/);
+  assert.match(rewritten, /nativeFetch\('\/conversion-integrated'\+input/);
+  assert.doesNotMatch(rewritten, /startsWith\('\/conversion-integrated\/api\/'\)/);
+});
+
 test('formal SOP enhancement failures degrade without emitting a fatal browser error', () => {
   const rewritten = server.rewriteIntegratedConversionContent(
     "catch(error){console.error('正式SOP加载失败',error)}"
