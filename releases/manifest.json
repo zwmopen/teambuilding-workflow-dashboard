@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.11.5",
-  "source_commit": "aa1153c",
+  "version": "0.11.6",
+  "source_commit": "66b1ac9",
   "artifacts": [
+    {
+      "file": "0.11.6/团建工作台-0.11.6-便携版.exe",
+      "sha256": "10B3FCC6E3B155B4B5FF3D5B11B270F4029FC249CC348C962358A7993CBF13EA",
+      "size": 96062601,
+      "platform": "Windows x64",
+      "built_at": "2026-07-29",
+      "known_limits": "坚果云真实备份需配置有效的应用密码；当前连接测试返回 401。生成质量仍受所选模型和素材质量影响；长任务会在退出应用时中断，已落盘结果会保留。"
+    },
     {
       "file": "0.11.5/团建工作台-0.11.5-便携版.exe",
       "sha256": "4AC6BA8CEF4066CFB5A3CC49521E45C76ED21B75E7E8023D278B9C836024BA8D",
