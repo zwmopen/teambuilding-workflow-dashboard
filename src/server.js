@@ -2879,13 +2879,48 @@ function rewriteIntegratedConversionContent(source) {
 }
 
 function rewriteIntegratedConversionDocument(source) {
-  return rewriteIntegratedConversionContent(source)
+  const seamlessEmbeddedStyle = `
+<style id="workbench-seamless-embed">
+html.embedded-host,
+html.embedded-host body,
+html.embedded-host .app {
+  background: transparent !important;
+  background-image: none !important;
+}
+html.embedded-host .side {
+  padding: 18px 28px 8px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html.embedded-host .main {
+  padding: 8px 28px 28px !important;
+  background: transparent !important;
+}
+html.embedded-host .side-bottom {
+  background: color-mix(in srgb, var(--panel) 74%, transparent) !important;
+}
+@media (max-width: 900px) {
+  html.embedded-host .side {
+    padding: 12px 14px 6px !important;
+  }
+  html.embedded-host .main {
+    padding: 8px 14px 22px !important;
+  }
+}
+</style>`;
+  const rewritten = rewriteIntegratedConversionContent(source)
     .replaceAll(
       "正式SOP增强.js?v=20260718-scrollfix2",
       "正式SOP增强.js?v=20260718-scrollfix2&workbench-proxy=20260729-2"
     )
     .replaceAll('href="/', 'href="/conversion-integrated/')
     .replaceAll('src="/', 'src="/conversion-integrated/');
+  return rewritten.includes("</head>")
+    ? rewritten.replace("</head>", `${seamlessEmbeddedStyle}</head>`)
+    : `${seamlessEmbeddedStyle}${rewritten}`;
 }
 
 function isIntegratedConversionCompatibilityPath(pathname) {

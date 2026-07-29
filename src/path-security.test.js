@@ -409,6 +409,9 @@ test('integrated conversion document cache-busts the rewritten formal SOP script
   const versioned = server.rewriteIntegratedConversionDocument(html);
   assert.match(versioned, /workbench-proxy=20260729-2/);
   assert.match(versioned, /src="\/conversion-integrated\//);
+  assert.match(versioned, /workbench-seamless-embed/);
+  assert.match(versioned, /html\.embedded-host \.app/);
+  assert.match(versioned, /background: transparent !important/);
 });
 
 test('only the known legacy conversion API paths receive compatibility forwarding', () => {

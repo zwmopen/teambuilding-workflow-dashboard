@@ -133,3 +133,10 @@ test("cloud backup exposes automatic schedule and monthly upload budget controls
   assert.match(html, /id="cloudBackupMonthlyLimitMb"/);
   assert.match(html, /id="cloudBackupSourceRoot"/);
 });
+
+test("integrated conversion view shares the workbench background without a nested card shell", () => {
+  assert.match(css, /#conversionView\s*\{[\s\S]*?padding:\s*0;/);
+  assert.match(css, /\.conversion-embedded-shell\s*\{[\s\S]*?border-radius:\s*0;/);
+  assert.match(css, /\.conversion-embedded-shell\s*\{[\s\S]*?box-shadow:\s*none;/);
+  assert.match(css, /\.conversion-embedded-shell iframe\s*\{[\s\S]*?background:\s*transparent;/);
+});
