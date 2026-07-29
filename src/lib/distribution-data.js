@@ -37,7 +37,7 @@ function classifyCollectionName(name) {
     return { type: "traffic", typeLabel: "游戏/泛流量", hidden, labelled: true };
   }
   if (/\[转\]$/.test(value)) {
-    return { type: "conversion", typeLabel: "团建转化", hidden, labelled: true };
+    return { type: "conversion", typeLabel: "精准流量", hidden, labelled: true };
   }
   return { type: "unclassified", typeLabel: "未分类", hidden, labelled: false };
 }

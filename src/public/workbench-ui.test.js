@@ -48,3 +48,20 @@ test("production model and page controls use one compact toolbar", () => {
   assert.match(css, /\.workbench-run-settings\.compact\{grid-template-columns:/);
   assert.match(css, /\.workbench-run-settings\.compact select\{height:30px/);
 });
+
+test("page help and settings actions use fixed round svg icons", () => {
+  assert.match(html, /class="page-help-button"[\s\S]*class="round-action-icon help-icon"/);
+  assert.match(html, /class="page-settings-button"[\s\S]*class="round-action-icon"/);
+  assert.match(app, /const buttonContent = `<svg class="round-action-icon help-icon"/);
+  assert.match(css, /inline-size: 36px !important/);
+  assert.match(css, /block-size: 36px !important/);
+  assert.match(css, /aspect-ratio: 1 \/ 1/);
+});
+
+test("settings cards and compact production layout cannot collapse into narrow columns", () => {
+  assert.match(css, /\.settings-layout > \.api-settings-card\s*\{\s*grid-column: span 5/);
+  assert.match(css, /\.settings-layout > \.version-card\s*\{\s*grid-column: 1 \/ -1/);
+  assert.match(css, /@media \(max-width: 1180px\)[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(css, /@media \(max-width: 1050px\)[\s\S]*grid-template-columns: minmax\(250px, \.9fr\) minmax\(420px, 1\.4fr\)/);
+  assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.production-workbench-grid\s*\{\s*grid-template-columns: minmax\(0, 1fr\)/);
+});

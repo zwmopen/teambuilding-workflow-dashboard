@@ -7,6 +7,21 @@ const { PassThrough } = require('node:stream');
 
 const server = require('./server');
 
+test('mobile conversion access distinguishes loopback from LAN clients', () => {
+  assert.equal(server.isLoopbackAddress('127.0.0.1'), true);
+  assert.equal(server.isLoopbackAddress('::1'), true);
+  assert.equal(server.isLoopbackAddress('::ffff:127.0.0.1'), true);
+  assert.equal(server.isLoopbackAddress('192.168.1.27'), false);
+});
+
+test('mobile conversion link contains a private LAN address, port and access secret', () => {
+  const link = new URL(server.mobileConversionLink());
+  assert.equal(link.pathname, '/mobile-conversion');
+  assert.equal(link.port, String(process.env.PORT || 4327));
+  assert.match(link.searchParams.get('access') || '', /^[a-f0-9]{48}$/);
+  assert.notEqual(link.hostname, '0.0.0.0');
+});
+
 function makeTemp(name) {
   return fs.mkdtempSync(path.join(__dirname, `.test-${name}-`));
 }
@@ -354,6 +369,41 @@ test('public file resolver prevents traversal outside the public directory', () 
   const escaped = server.resolvePublicFile('/../server.js');
   assert.equal(escaped, index);
   assert.equal(path.basename(index), 'index.html');
+});
+
+test('integrated conversion scripts keep API requests inside the workbench proxy', () => {
+  const source = [
+    "fetch('/api/正式SOP')",
+    'fetch("/api/用户状态")',
+    'fetch(`/api/方案?key=${value}`)'
+  ].join(';');
+  const rewritten = server.rewriteIntegratedConversionContent(source);
+  assert.match(rewritten, /fetch\('\/conversion-integrated\/api\/正式SOP\?workbench-proxy=20260729-2'\)/);
+  assert.match(rewritten, /fetch\("\/conversion-integrated\/api\/用户状态\?workbench-proxy=20260729-2"\)/);
+  assert.match(rewritten, /fetch\(`\/conversion-integrated\/api\/方案/);
+  assert.doesNotMatch(rewritten, /fetch\((['"`])\/api\//);
+});
+
+test('formal SOP enhancement failures degrade without emitting a fatal browser error', () => {
+  const rewritten = server.rewriteIntegratedConversionContent(
+    "catch(error){console.error('正式SOP加载失败',error)}"
+  );
+  assert.match(rewritten, /console\.warn\('正式SOP增强层已回退到页面现有数据'/);
+  assert.doesNotMatch(rewritten, /console\.error\('正式SOP加载失败'/);
+});
+
+test('integrated conversion document cache-busts the rewritten formal SOP script', () => {
+  const html = '<script src="/正式SOP增强.js?v=20260718-scrollfix2"></script>';
+  const versioned = server.rewriteIntegratedConversionDocument(html);
+  assert.match(versioned, /workbench-proxy=20260729-2/);
+  assert.match(versioned, /src="\/conversion-integrated\//);
+});
+
+test('only the known legacy conversion API paths receive compatibility forwarding', () => {
+  assert.equal(server.isIntegratedConversionCompatibilityPath('/api/正式SOP'), true);
+  assert.equal(server.isIntegratedConversionCompatibilityPath('/api/用户状态'), true);
+  assert.equal(server.isIntegratedConversionCompatibilityPath('/api/settings'), false);
+  assert.equal(server.isIntegratedConversionCompatibilityPath('/api/unknown'), false);
 });
 
 test('external launcher only allows approved workflow sites and the existing work-package protocol', () => {

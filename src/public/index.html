@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.11.4" />
+    <link rel="stylesheet" href="/styles.css?v=0.11.5" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -19,13 +19,13 @@
           <strong>团建工作台</strong>
           <span>生产 · 分发 · 转化</span>
         </div>
-        <button class="tab rail-tab active" data-tab="dashboard" type="button" title="素材生产">
+        <button class="tab rail-tab active" data-tab="dashboard" type="button" title="内容制作">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z"/><path d="m18.5 16 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/></svg>
-          <span>素材生产</span>
+          <span>内容制作</span>
         </button>
-        <button class="tab rail-tab" data-tab="distribution" type="button" title="分发功能">
+        <button class="tab rail-tab" data-tab="distribution" type="button" title="内容分发">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/><path d="m3 9 2-2 2 2M21 13l-2 2-2-2"/></svg>
-          <span>分发功能</span>
+          <span>内容分发</span>
         </button>
         <button class="tab rail-tab" data-tab="conversion" type="button" title="流量转化">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v12H9l-4 4V4Z"/><path d="M8 8h8M8 12h5"/></svg>
@@ -65,13 +65,14 @@
         <section class="production-workbench-shell">
           <header class="production-workbench-heading">
             <div>
-              <p class="label">团建内容生产</p>
+              <p class="label">内容制作</p>
               <h2>选素材 → 选模板 → 生产 → 打包待发</h2>
               <p>一个页面完成一次作品生产。素材和模板是输入，中间对话负责调整，右侧只看真实成品文件夹。</p>
             </div>
             <div class="detail-button-row">
               <span class="workbench-engine-state" id="workbenchEngineState">正在读取本地生产引擎…</span>
-              <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明">?</button>
+              <button class="page-settings-button" type="button" data-open-page-settings="production" title="内容制作设置" aria-label="打开内容制作设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button>
+              <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明" aria-label="查看内容制作说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
             </div>
           </header>
 
@@ -82,14 +83,9 @@
                   <div><span class="workbench-step">01</span><strong>选择素材</strong><small id="workbenchMaterialCount">0 个已选</small></div>
                   <button id="workbenchSelectAllBtn" type="button">全选当前</button>
                 </header>
-                <div class="workbench-path-row">
-                  <input id="workbenchMaterialRoot" type="text" placeholder="粘贴素材目录，或选择本地文件夹" />
-                  <button id="workbenchChooseMaterialRootBtn" type="button" title="选择素材库">选择</button>
-                  <button id="workbenchApplyMaterialRootBtn" type="button" title="读取填写的素材目录">应用</button>
-                </div>
                 <div class="workbench-filter-row" id="workbenchMaterialFilters">
                   <button class="active" type="button" data-workbench-material-filter="all">全部</button>
-                  <button type="button" data-workbench-material-filter="conversion">团建转化</button>
+                  <button type="button" data-workbench-material-filter="conversion">精准流量</button>
                   <button type="button" data-workbench-material-filter="game">团建游戏</button>
                   <button type="button" data-workbench-material-filter="guide">合集攻略</button>
                   <button type="button" data-workbench-material-filter="unused">已使用0次</button>
@@ -174,16 +170,11 @@
                   <button type="button" data-workbench-output-filter="unpacked">待打包</button>
                   <button type="button" data-workbench-output-filter="packed">已打包</button>
                 </div>
-                <div class="workbench-path-row workbench-output-root-row">
-                  <input id="workbenchProductRoot" type="text" placeholder="粘贴成品目录，或选择本地文件夹" />
-                  <button id="workbenchChooseProductRootBtn" type="button" title="选择成品目录">选择</button>
-                  <button id="workbenchApplyProductRootBtn" type="button" title="读取填写的成品目录">应用</button>
-                </div>
                 <div class="workbench-output-path" id="workbenchOutputPath"></div>
                 <div class="workbench-product-list" id="workbenchProductList"></div>
                 <div class="workbench-pack-bar">
                   <div><strong id="workbenchSelectedProductCount">已选 0 个</strong><small>每个作品保持独立文件夹，图片和文案一起复制。</small></div>
-                  <button id="workbenchPackBtn" class="primary-button" type="button">打包到抖音小红书待发</button>
+                  <button id="workbenchPackBtn" class="primary-button" type="button">打包成作品集</button>
                 </div>
               </section>
             </aside>
@@ -197,7 +188,7 @@
             <span class="api-mode-badge">本地作品生产</span>
             <strong>模板定样，素材换内容</strong>
             <small>先锁定视觉模板，再选择素材，生成同风格作品与配套文案。</small>
-            <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明">?</button>
+            <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明" aria-label="查看内容制作说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
           </div>
           <div class="production-api-steps">
             <label class="production-api-step"><b>01</b><span><strong>选择模板</strong><select id="templateQuickSelect" class="search-input compact-select"></select></span></label>
@@ -344,7 +335,7 @@
         <section class="collection-layout">
           <header class="page-heading">
             <div><p class="label">内容流水线</p><h2>作品集</h2><p>真实文件夹依次流转：抖音小红书 → 微信公众号 → 已发送压缩包。</p></div>
-            <div class="detail-button-row"><button class="primary-button" id="openPublishRootBtn">打开作品集目录</button><button class="page-help-button" type="button" data-page-help="productsView" title="查看作品集的使用说明">?</button></div>
+            <div class="detail-button-row"><button class="primary-button" id="openPublishRootBtn">打开作品集目录</button><button class="page-help-button" type="button" data-page-help="productsView" title="查看作品集的使用说明" aria-label="查看作品集说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button></div>
           </header>
           <section class="folder-source-bar" aria-label="作品集目录设置">
             <input id="collectionRootInput" class="search-input" type="text" placeholder="粘贴作品集目录后按回车" />
@@ -371,14 +362,10 @@
       <section class="view" id="distributionView">
         <section class="distribution-layout">
           <header class="page-heading">
-            <div><p class="label">真实执行入口</p><h2>分发功能</h2><p>自动识别在线设备，完成手机补笔记、公众号上传和分发记录。</p></div>
-            <div class="detail-button-row"><button id="reconcileDistributionFoldersBtn" type="button">按历史记录整理</button><button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button><button class="page-help-button" type="button" data-page-help="distributionView" title="查看分发流程的使用说明">?</button></div>
+            <div><p class="label">真实执行入口</p><h2>内容分发</h2><p>检测电脑与手机作品储备，只向已确认设备安全分发，并保留完整进度和记录。</p></div>
+            <div class="detail-button-row"><button id="reconcileDistributionFoldersBtn" type="button">按历史记录整理</button><button class="primary-button refresh-button" id="distributionRefreshBtn" aria-label="立即刷新设备与库存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg><span>刷新状态</span></button><button class="page-settings-button" type="button" data-open-page-settings="distribution" title="内容分发设置" aria-label="打开内容分发设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button><button class="page-help-button" type="button" data-page-help="distributionView" title="查看分发流程的使用说明" aria-label="查看内容分发说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button></div>
           </header>
-          <section class="folder-source-bar compact" aria-label="分发作品集目录设置">
-            <input id="distributionCollectionRootInput" class="search-input" type="text" placeholder="粘贴分发作品集目录后按回车" />
-            <button id="chooseDistributionCollectionRootBtn" class="ghost-button" type="button">选择</button>
-            <button id="applyDistributionCollectionRootBtn" class="primary-button" type="button">读取</button>
-          </section>
+          <section id="distributionReserveAlert" class="reserve-floating-alert" hidden aria-live="polite"></section>
           <div class="segment-tabs distribution-stage-tabs" id="distributionTabs"></div>
           <section class="distribution-panel active" id="distributionDevices"></section>
           <section class="distribution-panel" id="distributionMobile"></section>
@@ -396,6 +383,9 @@
       <section class="view" id="conversionView">
         <section class="conversion-embedded-shell">
           <div class="conversion-embedded-status" id="conversionEmbeddedStatus">正在加载流量转化…</div>
+          <button class="conversion-mobile-entry" id="conversionMobileEntryBtn" type="button" title="复制安全的手机入口" aria-label="复制安全的手机入口">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/></svg>
+          </button>
           <iframe id="conversionAppFrame" title="流量转化" src="/conversion-integrated/?embedded=1" loading="eager"></iframe>
         </section>
       </section>
@@ -408,13 +398,13 @@
               <h2>插件市场</h2>
               <p>这里不卖插件，只集中管理本机已经存在、正在测试或有开源地址的生产辅助工具。</p>
             </div>
-            <button class="page-help-button" type="button" data-page-help="pluginsView" title="查看插件市场的使用说明">?</button>
+            <button class="page-help-button" type="button" data-page-help="pluginsView" title="查看插件市场的使用说明" aria-label="查看插件市场说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
           </header>
           <section class="plugin-market-hero">
             <div>
               <span class="plugin-market-kicker">江湖有旅人 · 本地工具生态</span>
               <h3>一个入口，找到生产链上的每件工具</h3>
-              <p>从素材采集、GPT 生产、作品打包到团建转化，按真实用途展示；本地工具打开目录，开源项目直达仓库，测试资产明确标注状态。</p>
+                <p>从素材采集、GPT 生产、作品打包到业务转化，按真实用途展示；本地工具打开目录，开源项目直达仓库，测试资产明确标注状态。</p>
             </div>
             <div class="plugin-market-principles">
               <span><b>真实</b>只登记本地存在的资产</span>
@@ -438,7 +428,7 @@
 
       <section class="view" id="settingsView">
         <section class="settings-layout">
-          <header class="page-heading settings-heading"><div><p class="label">本机工作空间</p><h2>设置</h2><p>管理全局接口、默认目录、备份与诊断。各业务页面自己的素材路径，在对应页面单独设置。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置的使用说明">?</button></header>
+          <header class="page-heading settings-heading"><div><p class="label">本机工作空间</p><h2>设置</h2><p>管理全局接口、默认目录、备份与诊断。各业务页面自己的素材路径，在对应页面单独设置。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置的使用说明" aria-label="查看设置说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button></header>
           <section class="settings-card api-settings-card">
             <div class="settings-card-heading"><div><p class="label">全局能力</p><h3>API 与模型</h3></div><span class="version-status">全工作台共用</span></div>
             <p class="path-line">统一配置生图与文案接口。素材生产、流量转化和后续功能都从这里调用；密钥只保存在本机。</p>
@@ -567,6 +557,60 @@
       </section>
     </main>
 
+    <div class="page-settings-backdrop" id="pageSettingsBackdrop" hidden>
+      <aside class="page-settings-drawer" role="dialog" aria-modal="true" aria-labelledby="pageSettingsTitle">
+        <header>
+          <div><p class="label">当前页面专属</p><h2 id="pageSettingsTitle">页面设置</h2></div>
+          <button class="round-close-button" id="closePageSettingsBtn" type="button" aria-label="关闭设置">×</button>
+        </header>
+        <section id="productionPageSettings" class="page-settings-section" hidden>
+          <div class="settings-group">
+            <h3>来源路径</h3>
+            <label><span>素材库</span><div class="inline-setting-control"><input id="workbenchMaterialRoot" type="text" placeholder="粘贴后回车或点到别处自动保存" /><button id="workbenchChooseMaterialRootBtn" type="button">选择</button></div></label>
+            <label><span>模板库</span><div class="inline-setting-control"><input id="productionTemplateRoot" type="text" placeholder="当前模板来源目录" /><button id="chooseProductionTemplateRootBtn" type="button">选择</button></div></label>
+            <label><span>成品库</span><div class="inline-setting-control"><input id="workbenchProductRoot" type="text" placeholder="粘贴后自动保存" /><button id="workbenchChooseProductRootBtn" type="button">选择</button></div></label>
+          </div>
+          <div class="settings-group">
+            <h3>提示词与作品集</h3>
+            <label><span>生产基础规则</span><textarea id="productionBasePromptRules" rows="5" placeholder="会与当前模板规则、本批要求一起参加生产"></textarea></label>
+            <div class="settings-two-columns">
+              <label><span>储备低于</span><input id="productionReserveThreshold" type="number" min="1" max="500" /></label>
+              <label><span>自动检测分类</span><select id="productionReserveCategory"><option value="conversion">精准流量（业务类）</option><option value="traffic">泛流量类</option><option value="unclassified">未分类</option><option value="all">全部</option></select></label>
+              <label><span>每个作品集页数</span><input id="productionItemsPerCollection" type="number" min="1" max="30" /></label>
+              <label><span>定时运行时间</span><input id="productionScheduleTime" type="time" /></label>
+            </div>
+            <label class="switch-setting"><span><b>库存不足自动制作</b><small>默认关闭，开启后才会自动建立生产任务</small></span><input id="productionAutoProduceEnabled" type="checkbox" /></label>
+            <label class="switch-setting"><span><b>定时运行</b><small>按上面的时间检查一次</small></span><input id="productionScheduleEnabled" type="checkbox" /></label>
+            <label class="switch-setting"><span><b>压缩作品集</b><small>默认不压缩，保留正常作品集文件夹</small></span><input id="productionCompressCollections" type="checkbox" /></label>
+          </div>
+        </section>
+        <section id="distributionPageSettings" class="page-settings-section" hidden>
+          <div class="settings-group">
+            <h3>作品集目录与电脑储备</h3>
+            <label><span>作品集目录</span><div class="inline-setting-control"><input id="distributionCollectionRootInput" type="text" placeholder="粘贴后回车或点到别处自动保存" /><button id="chooseDistributionCollectionRootBtn" type="button">选择</button></div></label>
+            <div class="settings-two-columns">
+              <label><span>低于多少提醒</span><input id="desktopReserveThreshold" type="number" min="1" max="500" /></label>
+              <label><span>检测分类</span><select id="desktopReserveCategory"><option value="conversion">精准流量（业务类）</option><option value="traffic">泛流量类</option><option value="unclassified">未分类</option><option value="all">全部</option></select></label>
+            </div>
+            <label class="switch-setting"><span><b>电脑储备悬浮提醒</b><small>达到阈值后自动消失</small></span><input id="desktopReserveAlertEnabled" type="checkbox" /></label>
+          </div>
+          <div class="settings-group">
+            <h3>自动检测与分发</h3>
+            <div class="settings-two-columns">
+              <label><span>手机低于</span><input id="phoneReserveThreshold" type="number" min="1" max="500" /></label>
+              <label><span>自动推送分类</span><select id="autoDistributionCategory"><option value="conversion">精准流量（业务类）</option><option value="traffic">泛流量类</option><option value="unclassified">未分类</option><option value="all">全部</option></select></label>
+              <label><span>每次推送</span><input id="autoDistributionCount" type="number" min="1" max="20" /></label>
+            </div>
+            <label class="switch-setting"><span><b>每次连接自动检测</b><small>只读取手机端真实回报的作品数</small></span><input id="detectOnConnection" type="checkbox" /></label>
+            <label class="switch-setting"><span><b>自动分发作品集</b><small>仅向已确认设备发送，陌生设备始终禁止</small></span><input id="autoDistributionEnabled" type="checkbox" /></label>
+            <label class="switch-setting"><span><b>发送前再次确认</b><small>自动分发不弹窗，手动分发按此设置</small></span><input id="requireSendConfirmation" type="checkbox" /></label>
+            <label class="switch-setting"><span><b>完成后悬浮通知</b><small>开始、进度和完成记录始终保留</small></span><input id="completionNotificationEnabled" type="checkbox" /></label>
+          </div>
+          <p class="settings-footnote">已登记并标记 confirmed 的现有设备已自动加入白名单。新设备第一次出现只会显示“陌生设备”，确认前不能发送。</p>
+        </section>
+      </aside>
+    </div>
+
     <div class="toast" id="toast"></div>
     <div class="context-menu" id="contextMenu">
       <button id="contextOpenFolder" type="button">打开当前目录</button>
@@ -574,8 +618,8 @@
       <button id="contextRename" type="button">重命名</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.11.4"></script>
-    <script src="/material-workspace.js?v=0.11.4"></script>
-    <script src="/app.js?v=0.11.4"></script>
+    <script src="/distribution-ui.js?v=0.11.5"></script>
+    <script src="/material-workspace.js?v=0.11.5"></script>
+    <script src="/app.js?v=0.11.5"></script>
   </body>
 </html>

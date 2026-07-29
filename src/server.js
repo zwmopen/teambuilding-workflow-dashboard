@@ -37,6 +37,12 @@ const {
   updateTransferProgress
 } = require("./lib/transfer-progress");
 const {
+  countReserve,
+  decorateTrustedDevices,
+  findTrustedDevice,
+  normalizePageSettings
+} = require("./lib/workbench-settings");
+const {
   importLifeGameConfig,
   publicStatus: publicCloudBackupStatus,
   readSecureConfig,
@@ -45,6 +51,7 @@ const {
 } = require("./lib/webdav-backup");
 
 const PORT = Number(process.env.PORT || 4327);
+const LISTEN_HOST = process.env.TB_WORKBENCH_HOST || "127.0.0.1";
 const PROJECT_ROOT = process.env.TEAMBUILDING_ROOT || "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目";
 const SKILL_ROOT = process.env.TEAMBUILDING_SKILL_ROOT || "D:\\AICode\\AI\\skills\\图文创作相关技能\\团建相关技能";
 const APP_ROOT = __dirname;
@@ -71,6 +78,8 @@ const PRODUCTION_JOB_ROOT = path.join(DATA_ROOT, "production-jobs");
 const COLLECTION_LEDGER_FILE = path.join(DATA_ROOT, "collection-ledger.json");
 const DEVICE_PRESENCE_FILE = path.join(DATA_ROOT, "device-presence.json");
 const DEVICE_NOTES_FILE = path.join(DATA_ROOT, "device-notes.json");
+const DISTRIBUTION_AUTOMATION_LOG_FILE = path.join(DATA_ROOT, "distribution-automation.jsonl");
+const MOBILE_CONVERSION_TOKEN_FILE = path.join(DATA_ROOT, "secrets", "mobile-conversion.token");
 const MATERIAL_SCAN_CACHE_FILE = path.join(DATA_ROOT, "material-scan-cache.json");
 const MATERIAL_LIBRARY_CACHE_FILE = path.join(DATA_ROOT, "material-library-cache.json");
 const DEDUP_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "dedup-ledger.json");
@@ -79,7 +88,7 @@ const MATERIAL_USAGE_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "mate
 const MATERIAL_METADATA_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "material-metadata-ledger.json");
 const MATERIAL_HASH_CACHE_FILE = path.join(DATA_ROOT, "material-hash-cache.json");
 const MATERIAL_GLOBAL_INDEX_FILE = path.join(DATA_ROOT, "material-global-index.json");
-const WORKPKG_CONFIG_FILE = "D:\\Download\\workpkg_config.json";
+const WORKPKG_CONFIG_FILE = process.env.TEAMBUILDING_WORKPKG_CONFIG_FILE || "D:\\Download\\workpkg_config.json";
 const DOWNLOAD_ROOT = process.env.TEAMBUILDING_DOWNLOAD_ROOT || "D:\\Download";
 const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
   || path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）", "发布空间");
@@ -116,6 +125,7 @@ let deviceStatusCache = {
 let deviceStatusPromise = null;
 const genericTransferTasks = new Map();
 const distributionTasks = new Map();
+const automaticDistributionSessions = new Set();
 const pendingProductionPlans = new Map();
 const productionJobs = new Map();
 
@@ -675,6 +685,7 @@ function getWorkspaceSettings() {
   return {
     materialRoot: path.resolve(local.materialRoot || defaultMaterialRoot),
     imageApi: publicImageApiSettings(local.imageApi),
+    pageSettings: getPageSettings(),
     workPackage: {
       configFile: WORKPKG_CONFIG_FILE,
       scriptDirectory: path.dirname(WORKPKG_CONFIG_FILE),
@@ -1073,10 +1084,67 @@ function updateCollectionLedger(body) {
 function mergeDeviceNotes(devices) {
   const saved = readJson(DEVICE_NOTES_FILE, { version: 1, notes: {} });
   const notes = saved && typeof saved.notes === "object" ? saved.notes : {};
-  return (devices || []).map((device) => ({
+  return decorateTrustedDevices((devices || []).map((device) => ({
     ...device,
     note: String(notes[device.id] ?? device.localRemark ?? "").trim()
-  }));
+  })));
+}
+
+function getPageSettings() {
+  const local = readJson(APP_SETTINGS_FILE, {});
+  return normalizePageSettings(local.pageSettings || {});
+}
+
+function savePageSettings(body = {}) {
+  const current = readJson(APP_SETTINGS_FILE, {});
+  const pageSettings = normalizePageSettings({
+    ...getPageSettings(),
+    ...body,
+    production: { ...getPageSettings().production, ...(body.production || {}) },
+    distribution: { ...getPageSettings().distribution, ...(body.distribution || {}) }
+  });
+  if (pageSettings.production.templateRoot) {
+    const templateRoot = path.resolve(pageSettings.production.templateRoot);
+    if (!exists(templateRoot) || !fs.statSync(templateRoot).isDirectory()) {
+      throw new Error("模板库目录不存在或不是文件夹");
+    }
+    pageSettings.production.templateRoot = templateRoot;
+  }
+  writeJson(APP_SETTINGS_FILE, { ...current, pageSettings });
+  return pageSettings;
+}
+
+function registeredDevices() {
+  return mergeDeviceNotes(readJson(DEVICE_REGISTRY_FILE, { devices: [] }).devices || []);
+}
+
+function assertTrustedDeviceTarget(target) {
+  const device = findTrustedDevice(registeredDevices(), target);
+  if (!device) {
+    throw new Error("陌生设备或尚未确认的设备不允许传送；请先在设备列表确认归属");
+  }
+  return device;
+}
+
+function appendAutomationLog(event) {
+  fs.mkdirSync(path.dirname(DISTRIBUTION_AUTOMATION_LOG_FILE), { recursive: true });
+  fs.appendFileSync(DISTRIBUTION_AUTOMATION_LOG_FILE, `${JSON.stringify({
+    time: new Date().toISOString(),
+    ...event
+  })}\n`, "utf8");
+}
+
+function recentAutomationLogs(limit = 30) {
+  if (!exists(DISTRIBUTION_AUTOMATION_LOG_FILE)) return [];
+  return fs.readFileSync(DISTRIBUTION_AUTOMATION_LOG_FILE, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-Math.max(1, Math.min(100, Number(limit) || 30)))
+    .reverse()
+    .map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    })
+    .filter(Boolean);
 }
 
 function updateDeviceNote(body) {
@@ -1849,13 +1917,19 @@ function getMaterialGlobalIndex(options = {}) {
 }
 
 function getTemplateLibrary() {
-  const csv = path.join(PROJECT_ROOT, "02-模板库", "爆款链接库.csv");
+  const configuredTemplateRoot = getPageSettings().production.templateRoot;
+  const templateRoot = configuredTemplateRoot || path.join(PROJECT_ROOT, "02-模板库");
+  const csv = path.join(templateRoot, "爆款链接库.csv");
   const sourceRoot = path.join(PROJECT_ROOT, "01-素材库", "团建攻略图文素材", "模板素材");
   const rows = exists(csv) ? parseCsv(fs.readFileSync(csv, "utf8")) : [];
   const templates = rows.map((row) => {
     const rel = row["源模板路径"] || "";
     const normalized = rel.replace(/\//g, path.sep);
-    const full = path.isAbsolute(normalized) ? normalized : path.join(PROJECT_ROOT, normalized);
+    const configuredCandidate = path.join(templateRoot, normalized);
+    const projectCandidate = path.join(PROJECT_ROOT, normalized);
+    const full = path.isAbsolute(normalized)
+      ? normalized
+      : (configuredTemplateRoot && exists(configuredCandidate) ? configuredCandidate : projectCandidate);
     const images = listImages(full, PREVIEW_LIMITS.templateImages);
     const imageCount = listImageEntries(full).length;
     const descriptor = `${row["模板名称"] || ""} ${row["适用内容"] || ""} ${full}`;
@@ -1878,7 +1952,7 @@ function getTemplateLibrary() {
       imageCount
     };
   });
-  const customGameRoot = path.join(PROJECT_ROOT, "02-模板库", "定制游模板");
+  const customGameRoot = path.join(templateRoot, "定制游模板");
   safeList(customGameRoot)
     .filter((entry) => entry.isDirectory() && /游戏|破冰|真心话|大冒险/.test(entry.name))
     .forEach((entry, index) => {
@@ -2261,6 +2335,13 @@ function getDashboard(force = false, selectedLibraryPath = "") {
   distribution.devices = mergeDeviceNotes(
     readJson(DEVICE_REGISTRY_FILE, { devices: [] }).devices || []
   );
+  distribution.reserve = {
+    traffic: countReserve(distribution.collections, "traffic"),
+    conversion: countReserve(distribution.collections, "conversion"),
+    unclassified: countReserve(distribution.collections, "unclassified"),
+    all: countReserve(distribution.collections, "all")
+  };
+  distribution.automationHistory = recentAutomationLogs();
   return {
     appInfo: {
       name: "团建工作台",
@@ -2400,6 +2481,91 @@ function sendJson(res, body) {
   send(res, 200, JSON.stringify(body), "application/json; charset=utf-8");
 }
 
+function isLoopbackAddress(address = "") {
+  const normalized = String(address || "").toLowerCase().replace(/^::ffff:/, "");
+  return normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function requestCookies(req) {
+  return String(req.headers.cookie || "").split(";").reduce((cookies, entry) => {
+    const separator = entry.indexOf("=");
+    if (separator < 0) return cookies;
+    const key = entry.slice(0, separator).trim();
+    const value = entry.slice(separator + 1).trim();
+    if (key) cookies[key] = decodeURIComponent(value);
+    return cookies;
+  }, {});
+}
+
+function mobileConversionToken() {
+  try {
+    const existing = fs.readFileSync(MOBILE_CONVERSION_TOKEN_FILE, "utf8").trim();
+    if (/^[a-f0-9]{48}$/i.test(existing)) return existing;
+  } catch {}
+  const token = crypto.randomBytes(24).toString("hex");
+  fs.mkdirSync(path.dirname(MOBILE_CONVERSION_TOKEN_FILE), { recursive: true });
+  fs.writeFileSync(MOBILE_CONVERSION_TOKEN_FILE, token, { encoding: "utf8", mode: 0o600 });
+  return token;
+}
+
+function hasMobileConversionAccess(req, parsed) {
+  const supplied = String(parsed.query.access || requestCookies(req).tb_mobile_access || "");
+  const expected = mobileConversionToken();
+  const suppliedBuffer = Buffer.from(supplied);
+  const expectedBuffer = Buffer.from(expected);
+  return suppliedBuffer.length === expectedBuffer.length
+    && suppliedBuffer.length > 0
+    && crypto.timingSafeEqual(suppliedBuffer, expectedBuffer);
+}
+
+function localIPv4Addresses() {
+  const addresses = [];
+  Object.values(os.networkInterfaces()).flat().forEach((item) => {
+    if (!item || item.internal || item.family !== "IPv4") return;
+    if (String(item.address).startsWith("169.254.")) return;
+    addresses.push(item.address);
+  });
+  return [...new Set(addresses)];
+}
+
+function mobileConversionLink() {
+  const address = localIPv4Addresses()[0] || "127.0.0.1";
+  return `http://${address}:${PORT}/mobile-conversion?access=${mobileConversionToken()}`;
+}
+
+function rewriteIntegratedConversionContent(source) {
+  return String(source || "")
+    .replaceAll("'/api/", "'/conversion-integrated/api/")
+    .replaceAll('"/api/', '"/conversion-integrated/api/')
+    .replaceAll("`/api/", "`/conversion-integrated/api/")
+    .replaceAll(
+      "/conversion-integrated/api/正式SOP",
+      "/conversion-integrated/api/正式SOP?workbench-proxy=20260729-2"
+    )
+    .replaceAll(
+      "/conversion-integrated/api/用户状态",
+      "/conversion-integrated/api/用户状态?workbench-proxy=20260729-2"
+    )
+    .replaceAll(
+      "console.error('正式SOP加载失败',error)",
+      "console.warn('正式SOP增强层已回退到页面现有数据',error?.message||error)"
+    );
+}
+
+function rewriteIntegratedConversionDocument(source) {
+  return rewriteIntegratedConversionContent(source)
+    .replaceAll(
+      "正式SOP增强.js?v=20260718-scrollfix2",
+      "正式SOP增强.js?v=20260718-scrollfix2&workbench-proxy=20260729-2"
+    )
+    .replaceAll('href="/', 'href="/conversion-integrated/')
+    .replaceAll('src="/', 'src="/conversion-integrated/');
+}
+
+function isIntegratedConversionCompatibilityPath(pathname) {
+  return pathname === "/api/正式SOP" || pathname === "/api/用户状态";
+}
+
 function proxyIntegratedConversion(req, res, parsed, pathname) {
   const prefix = "/conversion-integrated";
   const upstreamPath = pathname.slice(prefix.length) || "/";
@@ -2418,7 +2584,9 @@ function proxyIntegratedConversion(req, res, parsed, pathname) {
       const isAppDocument = req.method === "GET"
         && upstreamPath === "/"
         && contentTypeHeader.includes("text/html");
-      if (!isAppDocument) {
+      const isJavascript = req.method === "GET"
+        && (contentTypeHeader.includes("javascript") || upstreamPath.endsWith(".js"));
+      if (!isAppDocument && !isJavascript) {
         const headers = { ...upstreamResponse.headers, "cache-control": "no-store" };
         delete headers["content-security-policy"];
         res.writeHead(upstreamResponse.statusCode || 502, headers);
@@ -2429,17 +2597,18 @@ function proxyIntegratedConversion(req, res, parsed, pathname) {
       const chunks = [];
       upstreamResponse.on("data", (chunk) => chunks.push(chunk));
       upstreamResponse.on("end", () => {
-        const html = Buffer.concat(chunks).toString("utf8")
-          .replaceAll("'/api/", "'/conversion-integrated/api/")
-          .replaceAll('"/api/', '"/conversion-integrated/api/')
-          .replaceAll('href="/', 'href="/conversion-integrated/')
-          .replaceAll('src="/', 'src="/conversion-integrated/');
+        const source = Buffer.concat(chunks).toString("utf8");
+        const content = isAppDocument
+          ? rewriteIntegratedConversionDocument(source)
+          : rewriteIntegratedConversionContent(source);
         res.writeHead(upstreamResponse.statusCode || 200, {
-          "Content-Type": "text/html; charset=utf-8",
-          "Content-Length": Buffer.byteLength(html),
+          "Content-Type": isAppDocument
+            ? "text/html; charset=utf-8"
+            : "application/javascript; charset=utf-8",
+          "Content-Length": Buffer.byteLength(content),
           "Cache-Control": "no-store"
         });
-        res.end(html);
+        res.end(content);
         resolve();
       });
     });
@@ -2592,6 +2761,7 @@ function startDistributionTask(body = {}) {
     throw new Error("这个任务入口只用于手机作品包分发");
   }
   const args = buildDistributionArgs(body);
+  const trustedDevice = assertTrustedDeviceTarget(body.device);
   if (String(body.collection || "").trim()) {
     ensureWorkflowCompatibilityLinks({
       publishRoot: PUBLISH_ROOT,
@@ -2606,8 +2776,9 @@ function startDistributionTask(body = {}) {
     kind: "distribution",
     action: body.action,
     device: String(body.device || "").trim(),
+    deviceId: trustedDevice.id,
     collection: String(body.collection || "").trim(),
-    contentType: body.type === "conversion" ? "团建转化" : "泛流量",
+    contentType: body.type === "conversion" ? "精准流量" : "泛流量",
     state: "running",
     stage: "queued",
     stageLabel: "准备开始发送",
@@ -2709,6 +2880,7 @@ function startGenericTransfer(source, device) {
   if (!rawSource) throw new Error("请选择要传送的文件或文件夹");
   const resolvedSource = path.resolve(rawSource);
   const deviceName = String(device || "").trim();
+  const trustedDevice = assertTrustedDeviceTarget(deviceName);
   if (!resolvedSource || !exists(resolvedSource)) throw new Error("选择的文件或文件夹不存在");
   if (path.parse(resolvedSource).root === resolvedSource) {
     throw new Error("不能直接传送整个磁盘，请选择具体文件或文件夹");
@@ -2721,6 +2893,7 @@ function startGenericTransfer(source, device) {
   const record = {
     id: taskId,
     device: deviceName,
+    deviceId: trustedDevice.id,
     source: resolvedSource,
     state: "running",
     stage: "queued",
@@ -2894,6 +3067,123 @@ function mergeDevicePresence(currentRecords, previousRecords, now = Date.now(), 
     });
   });
   return Array.from(merged.values());
+}
+
+function waitForDistributionTask(taskId) {
+  return new Promise((resolve) => {
+    const timer = setInterval(() => {
+      const record = distributionTasks.get(taskId);
+      if (!record || !["running", "cancelling"].includes(record.state)) {
+        clearInterval(timer);
+        resolve(record || null);
+      }
+    }, 500);
+  });
+}
+
+async function runAutomaticDistributionBatch(device, liveRecord, collections, settings) {
+  const target = device.aliases?.[0] || device.displayName;
+  appendAutomationLog({
+    event: "started",
+    deviceId: device.id,
+    device: device.note || device.displayName,
+    phoneReserve: liveRecord.workCount,
+    category: settings.autoCategory,
+    requested: collections.length,
+    message: "检测到手机作品集储备不足，开始自动分发"
+  });
+  let completed = 0;
+  for (const collection of collections) {
+    try {
+      const task = startDistributionTask({
+        action: "device-restock",
+        device: target,
+        collection: collection.name,
+        type: collection.type === "conversion" ? "conversion" : "traffic",
+        automatic: true
+      });
+      const result = await waitForDistributionTask(task.id);
+      if (!result || result.state !== "completed") {
+        throw new Error(result?.message || "自动分发未完成");
+      }
+      completed += 1;
+      appendAutomationLog({
+        event: "item-completed",
+        deviceId: device.id,
+        device: device.note || device.displayName,
+        collection: collection.name,
+        progress: Math.round((completed / collections.length) * 100),
+        message: "作品集已完成自动分发"
+      });
+    } catch (error) {
+      appendAutomationLog({
+        event: "failed",
+        deviceId: device.id,
+        device: device.note || device.displayName,
+        collection: collection.name,
+        completed,
+        message: error.message
+      });
+      return;
+    }
+  }
+  appendAutomationLog({
+    event: "completed",
+    deviceId: device.id,
+    device: device.note || device.displayName,
+    completed,
+    progress: 100,
+    message: `自动分发完成，共发送 ${completed} 个作品集`
+  });
+}
+
+function maybeStartAutomaticDistribution(onlineDevices = []) {
+  const settings = getPageSettings().distribution;
+  const currentRecords = onlineDevices.filter((record) => record.current !== false);
+  const currentKeys = new Set(currentRecords.map(devicePresenceKey));
+  Array.from(automaticDistributionSessions).forEach((key) => {
+    if (!currentKeys.has(key)) automaticDistributionSessions.delete(key);
+  });
+  if (!settings.autoDistributionEnabled || !settings.detectOnConnection) return [];
+
+  const distribution = getDistributionSnapshot({
+    publishRoot: PUBLISH_ROOT,
+    libraryRoot: getWorkspaceSettings().workPackage.libraryPath
+  });
+  const eligible = mergeCollectionLedger(distribution.collections || []).filter((collection) =>
+    collection.workflowStage === "mobile"
+      && collection.sourceValid !== false
+      && collection.dualPlatformEligible !== false
+      && (settings.autoCategory === "all" || collection.type === settings.autoCategory)
+  );
+  const triggered = [];
+  currentRecords.forEach((liveRecord) => {
+    const key = devicePresenceKey(liveRecord);
+    if (automaticDistributionSessions.has(key)) return;
+    const device = findTrustedDevice(registeredDevices(), liveRecord.name)
+      || findTrustedDevice(registeredDevices(), liveRecord.model);
+    if (!device || !Number.isFinite(Number(liveRecord.workCount))) return;
+    automaticDistributionSessions.add(key);
+    const missing = Math.max(0, settings.phoneReserveThreshold - Number(liveRecord.workCount));
+    const sendCount = Math.min(settings.autoSendCount, missing, eligible.length);
+    if (!sendCount) return;
+    const collections = eligible.splice(0, sendCount);
+    triggered.push({
+      deviceId: device.id,
+      device: device.note || device.displayName,
+      phoneReserve: Number(liveRecord.workCount),
+      count: collections.length
+    });
+    runAutomaticDistributionBatch(device, liveRecord, collections, settings).catch((error) => {
+      appendAutomationLog({
+        event: "failed",
+        deviceId: device.id,
+        device: device.note || device.displayName,
+        message: error.message
+      });
+    });
+  });
+  return triggered;
 }
 
 function parseOnlineDeviceStatus(output) {
@@ -3091,9 +3381,57 @@ function contentType(file) {
 async function route(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
+  const remoteRequest = !isLoopbackAddress(req.socket.remoteAddress);
+
+  if (pathname === "/mobile-conversion") {
+    if (!hasMobileConversionAccess(req, parsed)) {
+      return send(res, 403, "手机入口无效，请回到电脑端重新复制手机入口。", "text/plain; charset=utf-8");
+    }
+    res.writeHead(302, {
+      "Location": "/mobile-conversion/app",
+      "Set-Cookie": `tb_mobile_access=${encodeURIComponent(mobileConversionToken())}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`,
+      "Cache-Control": "no-store"
+    });
+    return res.end();
+  }
+
+  if (pathname.startsWith("/mobile-conversion/")) {
+    if (!hasMobileConversionAccess(req, parsed)) {
+      return send(res, 403, "手机入口无效，请回到电脑端重新复制手机入口。", "text/plain; charset=utf-8");
+    }
+    if (pathname === "/mobile-conversion/app" && req.method === "GET") {
+      const mobileFile = path.join(PUBLIC_ROOT, "mobile-conversion.html");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      return fs.createReadStream(mobileFile).pipe(res);
+    }
+    if (pathname === "/mobile-conversion/api/search" && req.method === "POST") {
+      const body = JSON.parse(await getBody(req, 64_000) || "{}");
+      const question = String(body.question || body.问题 || "").trim();
+      const role = body.role === "后端转化" ? "后端转化" : "前端运营";
+      if (!question) return send(res, 400, JSON.stringify({ error: "请先粘贴客户原话" }), "application/json; charset=utf-8");
+      if (question.length > 3_000) return send(res, 400, JSON.stringify({ error: "客户原话过长，请先精简到 3000 字以内" }), "application/json; charset=utf-8");
+      try {
+        return sendJson(res, await requestConversionService("/api/智能匹配", {
+          method: "POST",
+          body: { 问题: question, 身份: role },
+          timeoutMs: 60_000
+        }));
+      } catch (error) {
+        return send(res, 502, JSON.stringify({ error: error.message }), "application/json; charset=utf-8");
+      }
+    }
+    return send(res, 404, "not found", "text/plain; charset=utf-8");
+  }
+
+  if (remoteRequest) {
+    return send(res, 403, "此入口仅供本机使用。", "text/plain; charset=utf-8");
+  }
 
   if (pathname === "/conversion-integrated" || pathname.startsWith("/conversion-integrated/")) {
     return proxyIntegratedConversion(req, res, parsed, pathname);
+  }
+  if (isIntegratedConversionCompatibilityPath(pathname)) {
+    return proxyIntegratedConversion(req, res, parsed, `/conversion-integrated${pathname}`);
   }
 
   if (req.method === "OPTIONS") {
@@ -3108,6 +3446,16 @@ async function route(req, res) {
 
   if (pathname === "/api/conversion/snapshot" && req.method === "GET") {
     return sendJson(res, await getConversionSnapshot());
+  }
+
+  if (pathname === "/api/conversion/mobile-link" && req.method === "GET") {
+    return sendJson(res, {
+      ok: true,
+      enabled: LISTEN_HOST === "0.0.0.0" || LISTEN_HOST === "::",
+      url: mobileConversionLink(),
+      network: localIPv4Addresses()[0] || "",
+      note: "手机与电脑需连接同一 Wi-Fi；链接只允许进入流量转化。"
+    });
   }
 
   if (pathname === "/api/conversion/proposal" && req.method === "POST") {
@@ -3314,6 +3662,13 @@ async function route(req, res) {
   if (pathname === "/api/settings/paths" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     return sendJson(res, { ok: true, settings: saveWorkspaceSettings(body) });
+  }
+  if (pathname === "/api/page-settings" && req.method === "GET") {
+    return sendJson(res, { ok: true, settings: getPageSettings() });
+  }
+  if (pathname === "/api/page-settings" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    return sendJson(res, { ok: true, settings: savePageSettings(body) });
   }
 
   if (pathname === "/api/production/plan" && req.method === "POST") {
@@ -3686,14 +4041,18 @@ async function route(req, res) {
       getDeviceStatus(body.force === true)
     ]);
     const onlineDevices = deviceStatus.onlineDevices || parseOnlineDeviceStatus(deviceStatus.output);
-    const registry = readJson(DEVICE_REGISTRY_FILE, { devices: [] });
+    const registryDevices = registeredDevices();
+    const automationTriggered = maybeStartAutomaticDistribution(onlineDevices);
     return sendJson(res, {
       ok: true,
       output: inventory.output,
       statusOutput: deviceStatus.output,
-      registered: Array.isArray(registry.devices) ? registry.devices.length : 0,
+      registered: registryDevices.length,
       online: onlineDevices.length,
       onlineDevices,
+      registeredDevices: registryDevices,
+      automationTriggered,
+      automationHistory: recentAutomationLogs(),
       inventoryScanned: includeInventory
     });
   }
@@ -3777,8 +4136,9 @@ const httpServer = http.createServer((req, res) => {
 
 if (require.main === module) {
   ensureDataFiles();
-  httpServer.listen(PORT, "127.0.0.1", () => {
+  httpServer.listen(PORT, LISTEN_HOST, () => {
     console.log(`团建工作台: http://localhost:${PORT}`);
+    if (LISTEN_HOST !== "127.0.0.1") console.log(`手机转化入口已开启: ${mobileConversionLink()}`);
     console.log(`项目根目录: ${PROJECT_ROOT}`);
   });
 }
@@ -3792,7 +4152,11 @@ module.exports = {
   httpServer,
   isAllowedFile,
   isAllowedExternalTarget,
+  isIntegratedConversionCompatibilityPath,
   isPathInside,
+  isLoopbackAddress,
+  localIPv4Addresses,
+  mobileConversionLink,
   materialCategoryIndex,
   materialTreeSignature,
   getMaterialUsageLedger,
@@ -3811,6 +4175,8 @@ module.exports = {
   recordMaterialUsage,
   updateMaterialMetadata,
   resolvePublicFile,
+  rewriteIntegratedConversionContent,
+  rewriteIntegratedConversionDocument,
   parseOnlineDeviceStatus,
   mergeDevicePresence,
   publicDedupStatus,

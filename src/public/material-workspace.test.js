@@ -50,6 +50,9 @@ test("流量转化作为同源模块融入工作台，不暴露独立服务地�
   assert.match(app, /\/conversion-integrated\/\?embedded=1&theme=/);
   assert.doesNotMatch(html, /id="conversionContent"/);
   assert.doesNotMatch(html, /data-conversion-module=/);
+  assert.match(html, /id="conversionMobileEntryBtn"/);
+  assert.match(app, /\/api\/conversion\/mobile-link/);
+  assert.match(app, /手机与电脑连接同一 Wi-Fi/);
 });
 
 test("流量转化状态不再暴露旧版独立助手措辞", () => {

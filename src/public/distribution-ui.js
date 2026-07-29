@@ -79,7 +79,7 @@
         unit: "台"
       },
       { id: "traffic", label: "泛流量合集包", value: summary.traffic || 0, unit: "个" },
-      { id: "conversion", label: "团建转化（精准流量）", value: summary.conversion || 0, unit: "个" }
+      { id: "conversion", label: "精准流量（业务类）", value: summary.conversion || 0, unit: "个" }
     ];
   }
 
@@ -125,7 +125,8 @@
 
   function decorateDevices(devices, onlineRecords) {
     const records = Array.isArray(onlineRecords) ? onlineRecords : [];
-    return (Array.isArray(devices) ? devices : [])
+    const matchedRecords = new Set();
+    const knownDevices = (Array.isArray(devices) ? devices : [])
       .map((device, sourceIndex) => {
         const models = Array.isArray(device.models)
           ? device.models
@@ -136,7 +137,7 @@
           device.label,
           ...(Array.isArray(device.aliases) ? device.aliases : [])
         ].map(normalizeDeviceIdentity).filter(Boolean);
-        const live = records.find((record) => {
+        const liveIndex = records.findIndex((record) => {
           const liveModel = normalizeDeviceIdentity(record.model);
           if (models.some((model) => normalizeDeviceIdentity(model) === liveModel)) return true;
           const liveName = normalizeDeviceIdentity(record.name);
@@ -144,8 +145,12 @@
             alias.length >= 2 && (liveName.includes(alias) || alias.includes(liveName))
           );
         });
+        const live = liveIndex >= 0 ? records[liveIndex] : null;
+        if (liveIndex >= 0) matchedRecords.add(liveIndex);
         return {
           ...device,
+          trusted: device.trusted !== false,
+          trustLabel: device.trusted === false ? "陌生设备" : (device.trustLabel || "已确认设备"),
           online: Boolean(live),
           recentlySeen: Boolean(live?.recentlySeen || live?.current === false),
           transport: live?.transport || "",
@@ -163,8 +168,32 @@
           workCount: live ? live.workCount : null,
           _sourceIndex: sourceIndex
         };
-      })
+      });
+    const unknownDevices = records
+      .map((record, index) => ({ record, index }))
+      .filter(({ record, index }) => !matchedRecords.has(index) && record.current !== false)
+      .map(({ record }, index) => ({
+        id: `unknown-${normalizeDeviceIdentity(record.model || record.name) || index}`,
+        displayName: String(record.name || record.model || "未登记设备").replace(/[（(][^）)]*作品数[^）)]*[）)]/g, "").trim(),
+        note: "",
+        ownerGroup: "未确认归属",
+        platforms: [],
+        models: [record.model].filter(Boolean),
+        aliases: [record.name].filter(Boolean),
+        online: true,
+        recentlySeen: false,
+        transport: record.transport || "wifi",
+        transports: { wifi: true, usb: false, remote: false },
+        usbCapable: false,
+        liveName: record.name || "",
+        workCount: Number.isFinite(Number(record.workCount)) ? Number(record.workCount) : null,
+        trusted: false,
+        trustLabel: "陌生设备",
+        _sourceIndex: knownDevices.length + index
+      }));
+    return [...knownDevices, ...unknownDevices]
       .sort((left, right) => {
+        if (left.trusted !== right.trusted) return left.trusted ? -1 : 1;
         if (left.online !== right.online) return left.online ? -1 : 1;
         const leftNumber = Number(left.number);
         const rightNumber = Number(right.number);

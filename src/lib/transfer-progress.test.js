@@ -31,6 +31,27 @@ test("distribution output becomes human-readable progress stages", () => {
   assert.equal(record.transport, "Wi-Fi");
 });
 
+test("automatic distribution records the collection selected by the transfer script", () => {
+  const record = { progress: 0, output: "", collection: "" };
+  updateTransferProgress(
+    record,
+    '补货完成：{"device":"苹果12","asset":"作品集_050[转]","transport":"Wi-Fi"}\n'
+  );
+
+  assert.equal(record.collection, "作品集_050[转]");
+  assert.equal(record.transport, "Wi-Fi");
+  assert.equal(record.progress, 99);
+});
+
+test("automatic distribution also handles a completion line split across output chunks", () => {
+  const record = { progress: 0, output: "", collection: "" };
+  updateTransferProgress(record, '补货完成：{"device":"苹果12",');
+  updateTransferProgress(record, '"asset":"作品集_051[转]","transport":"Wi-Fi"}\n');
+
+  assert.equal(record.collection, "作品集_051[转]");
+  assert.equal(record.transport, "Wi-Fi");
+});
+
 test("public task never exposes the child process", () => {
   assert.deepEqual(
     publicTransferTask({ id: "task-1", child: { pid: 1 }, progress: 10 }),

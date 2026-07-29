@@ -94,7 +94,7 @@ test("phoneDistributionStats uses the agreed user-facing labels and category cou
     [
       { id: "devices", label: "当前设备在线", value: "0/8", unit: "台" },
       { id: "traffic", label: "泛流量合集包", value: 10, unit: "个" },
-      { id: "conversion", label: "团建转化（精准流量）", value: 2, unit: "个" }
+      { id: "conversion", label: "精准流量（业务类）", value: 2, unit: "个" }
     ]
   );
 });
@@ -155,6 +155,18 @@ test("decorateDevices puts online devices first and disables offline actions", (
   assert.deepEqual(result[0].transports, { wifi: true, usb: false, remote: false });
   assert.equal(result[0].workCount, 20);
   assert.equal(result[2].online, false);
+});
+
+test("decorateDevices exposes unmatched online phones as blocked unknown devices", () => {
+  const result = decorateDevices([
+    { id: "known", displayName: "1号手机", aliases: ["1号"], models: ["Model A"], trusted: true }
+  ], [
+    { name: "临时手机（作品数 2）", model: "Model X", online: true, workCount: 2, current: true }
+  ]);
+  assert.equal(result.length, 2);
+  assert.equal(result[1].trusted, false);
+  assert.equal(result[1].trustLabel, "陌生设备");
+  assert.equal(result[1].workCount, 2);
 });
 
 test("decorateDevices only marks USB and remote active from truthful capability fields", () => {

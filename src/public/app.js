@@ -57,6 +57,8 @@ const expandedCollectionNames = new Set();
 let materialTreeInitialized = false;
 let materialTreeView = window.localStorage.getItem("materialTreeView") === "icons" ? "icons" : "list";
 let collectionViewMode = window.localStorage.getItem("collectionViewMode") === "grid" ? "grid" : "list";
+let activePageSettings = "";
+const notifiedTransferStates = new Map();
 
 const LOCATION_KEYWORDS = ["上海", "杭州", "安吉", "苏州", "南京", "湖州", "桐庐", "千岛湖", "莫干山", "宁波"];
 const ACTIVITY_KEYWORDS = ["露营", "溯溪", "漂流", "烧烤", "农庄", "采摘", "徒步", "越野", "轰趴", "玩水"];
@@ -382,6 +384,123 @@ async function loadDashboard(force = false, libraryPath = "") {
   restoreSelection();
 }
 
+function pageSettings() {
+  return dashboard?.workspaceSettings?.pageSettings || {
+    production: {},
+    distribution: {}
+  };
+}
+
+function renderPageSettingsValues() {
+  const production = pageSettings().production || {};
+  const distribution = pageSettings().distribution || {};
+  const values = {
+    productionTemplateRoot: production.templateRoot || "",
+    productionBasePromptRules: production.promptRules || "",
+    productionReserveThreshold: production.reserveThreshold ?? 10,
+    productionReserveCategory: production.reserveCategory || "conversion",
+    productionItemsPerCollection: production.itemsPerCollection ?? 9,
+    productionScheduleTime: production.scheduleTime || "09:00",
+    desktopReserveThreshold: distribution.desktopReserveThreshold ?? 10,
+    desktopReserveCategory: distribution.desktopReserveCategory || "conversion",
+    phoneReserveThreshold: distribution.phoneReserveThreshold ?? 10,
+    autoDistributionCategory: distribution.autoCategory || "conversion",
+    autoDistributionCount: distribution.autoSendCount ?? 1
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const input = document.getElementById(id);
+    if (input && document.activeElement !== input) input.value = value;
+  });
+  const checks = {
+    productionAutoProduceEnabled: production.autoProduceEnabled === true,
+    productionScheduleEnabled: production.scheduleEnabled === true,
+    productionCompressCollections: production.compressCollections === true,
+    desktopReserveAlertEnabled: distribution.desktopReserveAlertEnabled !== false,
+    detectOnConnection: distribution.detectOnConnection !== false,
+    autoDistributionEnabled: distribution.autoDistributionEnabled === true,
+    requireSendConfirmation: distribution.requireSendConfirmation === true,
+    completionNotificationEnabled: distribution.completionNotificationEnabled !== false
+  };
+  Object.entries(checks).forEach(([id, checked]) => {
+    const input = document.getElementById(id);
+    if (input && document.activeElement !== input) input.checked = checked;
+  });
+}
+
+async function savePageSettingsFromUi(section) {
+  const payload = {};
+  if (section === "production") {
+    payload.production = {
+      templateRoot: $("#productionTemplateRoot")?.value || "",
+      promptRules: $("#productionBasePromptRules")?.value || "",
+      reserveThreshold: Number($("#productionReserveThreshold")?.value || 10),
+      reserveCategory: $("#productionReserveCategory")?.value || "conversion",
+      itemsPerCollection: Number($("#productionItemsPerCollection")?.value || 9),
+      scheduleTime: $("#productionScheduleTime")?.value || "09:00",
+      autoProduceEnabled: $("#productionAutoProduceEnabled")?.checked === true,
+      scheduleEnabled: $("#productionScheduleEnabled")?.checked === true,
+      compressCollections: $("#productionCompressCollections")?.checked === true
+    };
+  } else {
+    payload.distribution = {
+      desktopReserveThreshold: Number($("#desktopReserveThreshold")?.value || 10),
+      desktopReserveCategory: $("#desktopReserveCategory")?.value || "conversion",
+      desktopReserveAlertEnabled: $("#desktopReserveAlertEnabled")?.checked !== false,
+      phoneReserveThreshold: Number($("#phoneReserveThreshold")?.value || 10),
+      autoCategory: $("#autoDistributionCategory")?.value || "conversion",
+      autoSendCount: Number($("#autoDistributionCount")?.value || 1),
+      detectOnConnection: $("#detectOnConnection")?.checked !== false,
+      autoDistributionEnabled: $("#autoDistributionEnabled")?.checked === true,
+      requireSendConfirmation: $("#requireSendConfirmation")?.checked === true,
+      completionNotificationEnabled: $("#completionNotificationEnabled")?.checked !== false
+    };
+  }
+  const result = await api("/api/page-settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  dashboard.workspaceSettings.pageSettings = result.settings;
+  renderPageSettingsValues();
+  renderDistributionReserveAlert();
+}
+
+function openPageSettings(section) {
+  activePageSettings = section;
+  $("#pageSettingsTitle").textContent = section === "production" ? "内容制作设置" : "内容分发设置";
+  $("#productionPageSettings").hidden = section !== "production";
+  $("#distributionPageSettings").hidden = section !== "distribution";
+  $("#pageSettingsBackdrop").hidden = false;
+  document.body.classList.add("page-settings-open");
+  renderPageSettingsValues();
+}
+
+function closePageSettings() {
+  $("#pageSettingsBackdrop").hidden = true;
+  document.body.classList.remove("page-settings-open");
+  activePageSettings = "";
+}
+
+function reserveCategoryLabel(category) {
+  return ({ conversion: "精准流量（业务类）", traffic: "泛流量类", unclassified: "未分类", all: "全部" })[category] || "精准流量（业务类）";
+}
+
+function renderDistributionReserveAlert() {
+  const alert = $("#distributionReserveAlert");
+  if (!alert || !dashboard?.distribution) return;
+  const settings = pageSettings().distribution || {};
+  const category = settings.desktopReserveCategory || "conversion";
+  const reserve = Number(dashboard.distribution.reserve?.[category] || 0);
+  const threshold = Number(settings.desktopReserveThreshold || 10);
+  const dismissedKey = `tb-reserve-dismissed:${category}:${reserve}:${threshold}`;
+  const show = settings.desktopReserveAlertEnabled !== false
+    && reserve < threshold
+    && localStorage.getItem(dismissedKey) !== "1";
+  alert.hidden = !show;
+  if (!show) return;
+  alert.innerHTML = `<span class="reserve-alert-icon">!</span><div><strong>电脑作品集储备不足</strong><p>目前${reserveCategoryLabel(category)}只有 ${reserve} 个，低于安全线 ${threshold} 个，请继续批量制作作品集。</p></div><button type="button" data-dismiss-reserve-alert="${escapeHtml(dismissedKey)}" aria-label="关闭提醒">×</button>`;
+}
+
 function closeImageLightbox() {
   document.querySelector(".image-lightbox")?.remove();
 }
@@ -548,7 +667,7 @@ function defaultTemplatePrompt(template) {
     : "";
   return isGame
     ? `你正在使用「${template.name}」生产团建游戏内容。${masterRule}\n保留母版封面、内页、字体、配色和信息层级；图上必须完整表达游戏名称、适合人数、所需道具、玩法步骤和注意事项。新素材只提供游戏内容，不得覆盖模板视觉。每页文字可以多，但必须分组清楚、手机端可读。输出独立 3:4 图片和一份可直接发布的小红书文案，生成后检查规则是否完整、是否漏项、是否出现事实编造。`
-    : `你正在使用「${template.name}」生产团建转化内容。${masterRule}\n永久锁定母版的封面结构、内页结构、字体气质、配色、标题位置和拼图比例；新素材只提供地点、项目、路线和文案事实。图上文字少而准，优先地点词、项目词和路线词；不得虚构价格、场地、车程或项目。所有页面输出为独立 3:4 图片，人物与道具按规则去重，保留真实场景，避免广告感和 AI 味。每套作品同时生成小红书文案、出图计划和生产记录。`;
+      : `你正在使用「${template.name}」生产精准流量（业务类）内容。${masterRule}\n永久锁定母版的封面结构、内页结构、字体气质、配色、标题位置和拼图比例；新素材只提供地点、项目、路线和文案事实。图上文字少而准，优先地点词、项目词和路线词；不得虚构价格、场地、车程或项目。所有页面输出为独立 3:4 图片，人物与道具按规则去重，保留真实场景，避免广告感和 AI 味。每套作品同时生成小红书文案、出图计划和生产记录。`;
 }
 
 function readTemplateConversation(templateId = selectedTemplate?.id || "default") {
@@ -845,6 +964,7 @@ async function renderProductionWorkbench() {
   const settings = dashboard?.workspaceSettings || {};
   $("#workbenchMaterialRoot").value = settings.materialRoot || "";
   if ($("#workbenchProductRoot")) $("#workbenchProductRoot").value = settings.workPackage?.libraryPath || "";
+  renderPageSettingsValues();
   $("#workbenchEngineState").textContent = settings.imageApi?.credentialConfigured ? `${settings.imageApi.model} 已配置` : "生图引擎待配置";
   if ($("#workbenchImageProvider")) {
     $("#workbenchImageProvider").value = localStorage.getItem("tb-workbench-image-provider") || settings.imageApi?.provider || "local-openai";
@@ -874,6 +994,8 @@ function syncWorkbenchProductionSettings() {
   if ($("#productionTextModel")) $("#productionTextModel").value = $("#workbenchTextModel")?.value || "gpt-5.6-terra";
   const conversation = readTemplateConversation().filter((item) => item.role === "user").map((item) => item.text);
   const prompt = [
+    pageSettings().production?.promptRules
+      ? `工作台生产基础规则：\n${pageSettings().production.promptRules}` : "",
     $("#workbenchPromptEditor")?.value || "",
     conversation.length ? `本次对话补充要求：\n${conversation.map((item) => `- ${item}`).join("\n")}` : ""
   ].filter(Boolean).join("\n\n");
@@ -2318,7 +2440,7 @@ function renderDistributionLegacy() {
       </div>
       <div class="device-actions">
         <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补泛流量</button>
-        <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补团建转化</button>
+        <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补精准流量</button>
         <button type="button" data-upload-other="${escapeHtml(device.id)}" ${device.online ? "" : "disabled"}>上传其他</button>
       </div>
       ${uploadChoiceDeviceId === device.id ? `<div class="upload-choice-panel">
@@ -2388,6 +2510,8 @@ function renderDistribution() {
   const data = dashboard?.distribution || { devices: [], collections: [] };
   const devices = DistributionUI.decorateDevices(data.devices || [], deviceCheckState.onlineDevices || []);
   const onlineDevices = devices.filter((device) => device.online);
+  const trustedOnlineDevices = onlineDevices.filter((device) => device.trusted !== false);
+  const unknownOnlineDevices = onlineDevices.filter((device) => device.trusted === false);
   const collections = data.collections || [];
   const mobileCollections = collections.filter((item) => item.workflowStage === "mobile");
   const officialCollections = collections.filter((item) => item.workflowStage === "official");
@@ -2449,7 +2573,7 @@ function renderDistribution() {
         <header><div><strong>发送作品包</strong><span>${escapeHtml(packageDevicePickerCollectionName)}</span></div><button type="button" data-close-device-picker aria-label="关闭">×</button></header>
         ${renderTransportGuide()}
         <div class="device-picker-list">
-          ${onlineDevices.length ? onlineDevices.map((device) => `
+          ${trustedOnlineDevices.length ? trustedOnlineDevices.map((device) => `
             <button type="button" data-confirm-package-device="${escapeHtml(device.id)}">
               ${renderDevicePlatformIcon(device, "picker-platform-icon")}
               <strong>${escapeHtml(cleanDeviceDisplayName(device.note || device.displayName))}</strong>
@@ -2460,21 +2584,26 @@ function renderDistribution() {
       </section>
     </div>
   ` : "";
-  const deviceRows = devices.map((device) => `
-    <article class="device-row ${device.online ? "is-online" : "is-offline"}" data-device-id="${escapeHtml(device.id)}">
+  const deviceRows = devices.map((device) => {
+    const sendEnabled = device.online && device.trusted !== false;
+    return `
+    <article class="device-row ${device.online ? "is-online" : "is-offline"} ${device.trusted === false ? "is-untrusted" : "is-trusted"}" data-device-id="${escapeHtml(device.id)}">
       ${renderDevicePlatformIcon(device)}
       <div class="device-copy">
-        <button class="editable-device-name" type="button" data-edit-device-note="${escapeHtml(device.id)}" title="点击编辑设备名称或编号">${escapeHtml(cleanDeviceDisplayName(device.note || device.displayName))}</button>
-        <p>${escapeHtml(cleanDeviceDisplayName(device.displayName))} · ${escapeHtml(device.ownerGroup)} · ${device.online ? "在线" : "离线"}</p>
+        ${device.trusted === false
+          ? `<strong class="editable-device-name">${escapeHtml(cleanDeviceDisplayName(device.displayName))}</strong>`
+          : `<button class="editable-device-name" type="button" data-edit-device-note="${escapeHtml(device.id)}" title="点击编辑设备名称或编号">${escapeHtml(cleanDeviceDisplayName(device.note || device.displayName))}</button>`}
+        <p>${escapeHtml(cleanDeviceDisplayName(device.displayName))} · ${escapeHtml(device.ownerGroup || "未确认归属")} · ${device.online ? "在线" : "离线"}${device.workCount == null ? "" : ` · 手机储备 ${device.workCount} 个`}</p>
       </div>
       <div class="badge-line device-status-badges">
         ${renderDeviceTransportTags(device)}
-        <span class="state-badge ${device.online ? "good" : "bad"}">${device.online ? "可发送" : "当前离线"}</span>
+        <span class="state-badge ${device.trusted === false ? "bad" : "good"}">${escapeHtml(device.trustLabel || (device.trusted === false ? "陌生设备" : "已确认设备"))}</span>
+        <span class="state-badge ${sendEnabled ? "good" : "bad"}">${sendEnabled ? "可发送" : device.trusted === false ? "禁止传送" : "当前离线"}</span>
       </div>
       <div class="device-actions">
-        <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补泛流量</button>
-        <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补团建转化</button>
-        <button type="button" data-upload-other="${escapeHtml(device.id)}" ${device.online ? "" : "disabled"}>上传其他</button>
+        <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${sendEnabled ? "" : "disabled"}>补泛流量</button>
+        <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${sendEnabled ? "" : "disabled"}>补精准流量</button>
+        <button type="button" data-upload-other="${escapeHtml(device.id)}" ${sendEnabled ? "" : "disabled"}>上传其他</button>
       </div>
       ${uploadChoiceDeviceId === device.id ? `<div class="upload-choice-panel">
         <span>选择要发送给 ${escapeHtml(device.note || device.displayName)} 的内容</span>
@@ -2483,11 +2612,12 @@ function renderDistribution() {
         <button type="button" data-close-upload-choice>取消</button>
       </div>` : ""}
     </article>
-  `).join("");
+  `; }).join("");
 
   $("#distributionDevices").innerHTML = `
     <div class="distribution-stats">
-      <article class="summary-card"><span>在线设备</span><strong>${onlineDevices.length}<small> / ${devices.length} 台</small></strong></article>
+      <article class="summary-card"><span>可信设备在线</span><strong>${trustedOnlineDevices.length}<small> / ${devices.filter((item) => item.trusted !== false).length} 台</small></strong></article>
+      <article class="summary-card"><span>陌生设备</span><strong>${unknownOnlineDevices.length}<small> 台</small></strong></article>
       <article class="summary-card"><span>待手机分发</span><strong>${mobileCollections.length}<small> 个</small></strong></article>
       <article class="summary-card"><span>进行中任务</span><strong>${[...distributionTransferUiTasks.values(), ...genericTransferUiTasks.values()].filter((task) => ["running", "cancelling"].includes(task.state)).length}<small> 个</small></strong></article>
     </div>
@@ -2560,9 +2690,18 @@ function renderDistribution() {
           <div></div>
         </article>
       `).join("")}</div>` : `<div class="empty-state"><strong>暂无文件夹操作</strong><p>分类改名、阶段移动和归档后会显示在这里。</p></div>`}</section>
+      <section><h4>自动检测与分发记录</h4>${(data.automationHistory || []).length ? `<div class="record-list">${data.automationHistory.map((row) => `
+        <article class="record-row">
+          <div class="device-number">自</div>
+          <div><h3>${escapeHtml(row.message || "自动检测")}</h3><p>${escapeHtml(row.device || "")}${row.collection ? ` · ${escapeHtml(row.collection)}` : ""} · ${escapeHtml(row.time || "")}</p></div>
+          <span class="state-badge ${row.event === "failed" ? "bad" : "good"}">${escapeHtml(row.progress == null ? row.event || "已记录" : `${row.progress}%`)}</span>
+          <div></div>
+        </article>
+      `).join("")}</div>` : `<div class="empty-state"><strong>暂无自动分发记录</strong><p>开启自动分发后，开始、逐项完成与失败都会记录。</p></div>`}</section>
     </div>
   `;
   showDistributionPanel(activeDistributionPanel);
+  renderDistributionReserveAlert();
 }
 
 function renderTransferTasks() {
@@ -2596,10 +2735,11 @@ async function startGenericTransfer(deviceId, sourcePath) {
     dashboard?.distribution?.devices || [],
     deviceCheckState.onlineDevices || []
   );
-  const device = devices.find((item) => item.id === deviceId && item.online);
-  if (!device) return showSystemNotice("目标设备当前不在线", "设备恢复在线后，发送按钮会自动可用。");
+  const device = devices.find((item) => item.id === deviceId && item.online && item.trusted !== false);
+  if (!device) return showSystemNotice("目标设备不可发送", "只有在线且已确认归属的设备可以接收内容。");
   if (!sourcePath) return;
-  const confirmed = await openSystemDialog({
+  const needsConfirmation = pageSettings().distribution?.requireSendConfirmation === true;
+  const confirmed = !needsConfirmation || await openSystemDialog({
     eyebrow: "文件传送",
     title: "确认发送到这台设备？",
     description: "确认后会立即建立传送任务，并在分发页面显示实时进度。",
@@ -2656,7 +2796,16 @@ function ensureTransferPolling() {
       try {
         const next = await api(`/api/distribution/tasks/${encodeURIComponent(task.id)}`);
         distributionTransferUiTasks.set(task.id, next);
-        if (!["running", "cancelling"].includes(next.state)) distributionFinished = true;
+        if (!["running", "cancelling"].includes(next.state)) {
+          distributionFinished = true;
+          if (notifiedTransferStates.get(next.id) !== next.state
+            && pageSettings().distribution?.completionNotificationEnabled !== false) {
+            notifiedTransferStates.set(next.id, next.state);
+            toast(next.state === "completed"
+              ? `作品集已发送完成：${next.collection || "本次任务"}`
+              : `作品集发送未完成：${next.message || "请查看记录"}`);
+          }
+        }
       } catch (error) {
         distributionTransferUiTasks.set(task.id, {
           ...task,
@@ -2777,13 +2926,14 @@ async function startDistributionTransfer(payload) {
 
 async function executeDistributionAction(payload, description) {
   const isOfficial = payload.action === "official-reserve";
-  const confirmed = await openSystemDialog({
+  const needsConfirmation = isOfficial || pageSettings().distribution?.requireSendConfirmation === true;
+  const confirmed = !needsConfirmation || await openSystemDialog({
     eyebrow: isOfficial ? "公众号补笔记" : "手机补笔记",
     title: isOfficial ? "打开一个公众号可用作品包？" : "确认随机补充作品包？",
     description,
     details: isOfficial ? [] : [
       { label: "目标设备", value: payload.device },
-      { label: "内容类型", value: payload.type === "conversion" ? "团建转化" : "泛流量" }
+      { label: "内容类型", value: payload.type === "conversion" ? "精准流量（业务类）" : "泛流量" }
     ],
     warning: isOfficial
       ? "打开文件夹只会登记为“已打开过”，上传完成后还需要回到这里确认。"
@@ -2961,11 +3111,12 @@ async function sendSelectedDistributionPackage() {
     item.name === selectedDistributionCollectionName
   );
   const devices = DistributionUI.decorateDevices(data.devices || [], deviceCheckState.onlineDevices || []);
-  const device = devices.find((item) => item.id === selectedDistributionDeviceId && item.online);
+  const device = devices.find((item) => item.id === selectedDistributionDeviceId && item.online && item.trusted !== false);
   if (!collection) return showSystemNotice("还没有选择作品包", "请先在列表里选择要发送的作品包。");
   if (!device) return showSystemNotice("目标设备已经离线", "返回设备选择列表，选择一台当前在线设备。");
-  const typeLabel = collection.type === "conversion" ? "团建转化" : "泛流量";
-  const confirmed = await openSystemDialog({
+  const typeLabel = collection.type === "conversion" ? "精准流量" : "泛流量";
+  const needsConfirmation = pageSettings().distribution?.requireSendConfirmation === true;
+  const confirmed = !needsConfirmation || await openSystemDialog({
     eyebrow: "发送作品包",
     title: "确认发送到这台设备？",
     description: "确认后会立即开始发送，页面会持续显示百分比、当前阶段和最终结果。",
@@ -3024,6 +3175,12 @@ async function checkDistributionDevices(options = {}) {
     deviceScanStarted = true;
     if (options.refreshInventory !== false) await loadDashboard(true);
     renderDistribution();
+    if ((result.automationTriggered || []).length) {
+      const count = result.automationTriggered.reduce((sum, item) => sum + Number(item.count || 0), 0);
+      toast(`已自动建立 ${count} 个作品集分发任务，可查看实时进度`);
+      ensureTransferPolling();
+      await restoreTransferTasks();
+    }
     if (!options.silent) {
       toast(deviceCheckState.online == null ? "刷新完成，请查看结果" : `已刷新：当前在线 ${deviceCheckState.online} 台`);
     }
@@ -3310,6 +3467,26 @@ async function ensureEmbeddedConversionApp(force = false) {
   }
 }
 
+async function copyMobileConversionEntry() {
+  const button = $("#conversionMobileEntryBtn");
+  const originalTitle = button?.title || "";
+  if (button) button.disabled = true;
+  try {
+    const payload = await api("/api/conversion/mobile-link");
+    if (!payload.enabled) throw new Error("当前版本尚未开启手机入口，请使用开发测试版或更新正式版后再试");
+    await navigator.clipboard.writeText(payload.url);
+    toast("手机入口已复制：手机与电脑连接同一 Wi-Fi 后粘贴打开");
+    if (button) button.title = "已复制，粘贴到手机浏览器打开";
+  } catch (error) {
+    toast(error.message || "手机入口复制失败");
+  } finally {
+    if (button) button.disabled = false;
+    window.setTimeout(() => {
+      if (button) button.title = originalTitle;
+    }, 3200);
+  }
+}
+
 const PAGE_HELP = {
   overviewView: {
     title: "工作流总览说明",
@@ -3542,7 +3719,7 @@ function renderPluginMarket() {
 }
 
 function installPageHelpButtons() {
-  const buttonContent = `<span aria-hidden="true">?</span>`;
+  const buttonContent = `<svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg>`;
   Object.entries(PAGE_HELP).forEach(([viewId, help]) => {
     const view = document.getElementById(viewId);
     const heading = view?.querySelector(".page-heading, .production-workbench-heading, .production-api-flow");
@@ -3852,6 +4029,22 @@ function bindEvents() {
   document.addEventListener("click", async (event) => {
     if (!event.target.closest(".custom-select")) closeCustomSelects();
     if (!event.target.closest(".context-menu")) hideContextMenu();
+    const settingsButton = event.target.closest("[data-open-page-settings]");
+    if (settingsButton) {
+      openPageSettings(settingsButton.dataset.openPageSettings);
+      return;
+    }
+    if (event.target.closest("#closePageSettingsBtn")
+      || (event.target.id === "pageSettingsBackdrop")) {
+      closePageSettings();
+      return;
+    }
+    const dismissReserve = event.target.closest("[data-dismiss-reserve-alert]");
+    if (dismissReserve) {
+      localStorage.setItem(dismissReserve.dataset.dismissReserveAlert, "1");
+      renderDistributionReserveAlert();
+      return;
+    }
     const imagePreview = event.target.closest("[data-image-preview]");
     if (imagePreview) {
       event.preventDefault();
@@ -4074,7 +4267,7 @@ function bindEvents() {
     const deviceAction = event.target.closest("[data-device-action]");
     if (deviceAction) {
       const type = deviceAction.dataset.deviceAction;
-      const typeLabel = type === "conversion" ? "团建转化" : "泛流量";
+      const typeLabel = type === "conversion" ? "精准流量" : "泛流量";
       executeDistributionAction(
         { action: "device-restock", device: deviceAction.dataset.device, type },
         `将给 ${deviceAction.dataset.device} 随机补充一个${typeLabel}作品集。`
@@ -4127,6 +4320,7 @@ function bindEvents() {
     if (event.key === "Escape") {
       closeCustomSelects();
       closeImageLightbox();
+      closePageSettings();
     }
   });
   document.addEventListener("dragover", (event) => {
@@ -4204,25 +4398,32 @@ function bindEvents() {
     }
   });
   const bindCollectionRootControls = (inputSelector, chooseSelector, applySelector, returnTab) => {
+    const commit = () => {
+      const input = $(inputSelector);
+      if (!input?.value.trim()) return;
+      saveWorkspacePaths({
+        portfolioRoot: input.value,
+        returnTab
+      }).catch((error) => showSystemNotice("作品集目录读取失败", error.message, { tone: "danger" }));
+    };
     $(chooseSelector)?.addEventListener("click", async () => {
       try {
         const selectedPath = await chooseFolder("选择作品集存放目录");
-        if (selectedPath) $(inputSelector).value = selectedPath;
+        if (selectedPath) {
+          $(inputSelector).value = selectedPath;
+          commit();
+        }
       } catch (error) {
         showSystemNotice("目录选择失败", error.message, { tone: "danger" });
       }
     });
-    $(applySelector)?.addEventListener("click", () => {
-      saveWorkspacePaths({
-        portfolioRoot: $(inputSelector).value,
-        returnTab
-      }).catch((error) => showSystemNotice("作品集目录读取失败", error.message, { tone: "danger" }));
-    });
+    $(applySelector)?.addEventListener("click", commit);
     $(inputSelector)?.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
-      $(applySelector)?.click();
+      commit();
     });
+    $(inputSelector)?.addEventListener("change", commit);
   };
   bindCollectionRootControls("#collectionRootInput", "#chooseCollectionRootBtn", "#applyCollectionRootBtn", "products");
   bindCollectionRootControls("#distributionCollectionRootInput", "#chooseDistributionCollectionRootBtn", "#applyDistributionCollectionRootBtn", "distribution");
@@ -4305,19 +4506,51 @@ function bindEvents() {
       showSystemNotice("目录选择失败", error.message, { tone: "danger" });
     }
   });
-  $("#workbenchApplyMaterialRootBtn")?.addEventListener("click", () => {
+  const commitWorkbenchMaterialRoot = () => {
     saveWorkspacePaths({
       materialRoot: $("#workbenchMaterialRoot").value,
       materialOnly: true,
       returnTab: "dashboard"
     }).catch((error) => showSystemNotice("素材库没有读取成功", error.message, { tone: "danger" }));
-  });
+  };
+  $("#workbenchApplyMaterialRootBtn")?.addEventListener("click", commitWorkbenchMaterialRoot);
   $("#workbenchMaterialRoot")?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    $("#workbenchApplyMaterialRootBtn")?.click();
+    commitWorkbenchMaterialRoot();
   });
+  $("#workbenchMaterialRoot")?.addEventListener("change", commitWorkbenchMaterialRoot);
   bindCollectionRootControls("#workbenchProductRoot", "#workbenchChooseProductRootBtn", "#workbenchApplyProductRootBtn", "dashboard");
+  $("#chooseProductionTemplateRootBtn")?.addEventListener("click", async () => {
+    try {
+      const selectedPath = await chooseFolder("选择模板库目录");
+      if (!selectedPath) return;
+      $("#productionTemplateRoot").value = selectedPath;
+      await savePageSettingsFromUi("production");
+      toast("模板库设置已保存");
+    } catch (error) {
+      showSystemNotice("模板目录没有保存", error.message, { tone: "danger" });
+    }
+  });
+  [
+    "#productionTemplateRoot", "#productionBasePromptRules", "#productionReserveThreshold",
+    "#productionReserveCategory", "#productionItemsPerCollection", "#productionScheduleTime",
+    "#productionAutoProduceEnabled", "#productionScheduleEnabled", "#productionCompressCollections"
+  ].forEach((selector) => {
+    $(selector)?.addEventListener("change", () => savePageSettingsFromUi("production")
+      .then(() => toast("内容制作设置已保存"))
+      .catch((error) => showSystemNotice("内容制作设置没有保存", error.message, { tone: "danger" })));
+  });
+  [
+    "#desktopReserveThreshold", "#desktopReserveCategory", "#desktopReserveAlertEnabled",
+    "#phoneReserveThreshold", "#autoDistributionCategory", "#autoDistributionCount",
+    "#detectOnConnection", "#autoDistributionEnabled", "#requireSendConfirmation",
+    "#completionNotificationEnabled"
+  ].forEach((selector) => {
+    $(selector)?.addEventListener("change", () => savePageSettingsFromUi("distribution")
+      .then(() => toast("内容分发设置已保存"))
+      .catch((error) => showSystemNotice("内容分发设置没有保存", error.message, { tone: "danger" })));
+  });
   $("#workbenchMaterialCategory")?.addEventListener("change", async (event) => {
     const categoryPath = event.target.value;
     const category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
@@ -4481,6 +4714,7 @@ function bindEvents() {
     conversionResult = null;
     renderConversionHub();
   }));
+  $("#conversionMobileEntryBtn")?.addEventListener("click", copyMobileConversionEntry);
 
   $("#openProjectBtn").addEventListener("click", () => openPath(dashboard.projectRoot));
   $("#openTemplateBtn").addEventListener("click", () => copyText(currentFocusFolder(), "当前路径已复制"));

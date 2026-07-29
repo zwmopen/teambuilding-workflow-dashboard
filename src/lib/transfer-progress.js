@@ -49,15 +49,16 @@ function updateTransferProgress(record, chunk, isError = false) {
     record.stageLabel = "设备已接收，正在确认";
     record.progress = Math.max(record.progress || 0, 97);
   }
-  if (/补货完成：|发送完成：/.test(text)) {
+  if (/补货完成：|发送完成：/.test(record.output)) {
     record.stage = "recording";
     record.stageLabel = "正在写入使用记录";
     record.progress = Math.max(record.progress || 0, 99);
-    const resultMatch = text.match(/(?:补货完成|发送完成)：(\{[^\r\n]+\})/);
+    const resultMatch = record.output.match(/(?:补货完成|发送完成)：(\{[^\r\n]+\})/);
     if (resultMatch) {
       try {
         const result = JSON.parse(resultMatch[1]);
         if (result.transport) record.transport = String(result.transport);
+        if (result.asset) record.collection = String(result.asset).trim();
       } catch {
         // 旧版脚本可能输出非 JSON 文本；不影响任务完成判定。
       }
