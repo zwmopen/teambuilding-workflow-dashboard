@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.10.1",
-  "source_commit": "c284834",
+  "version": "0.11.5",
+  "source_commit": "aa1153c",
   "artifacts": [
+    {
+      "file": "0.11.5/团建工作台-0.11.5-便携版.exe",
+      "sha256": "4AC6BA8CEF4066CFB5A3CC49521E45C76ED21B75E7E8023D278B9C836024BA8D",
+      "size": 95975441,
+      "platform": "Windows x64",
+      "built_at": "2026-07-29",
+      "known_limits": "长任务仍在应用进程内执行，退出应用会中断未完成页面；已落盘页面会保留。真实生成质量仍受所选模型、接口可用性和素材质量影响。"
+    },
     {
       "file": "0.10.1/团建内容工作台-0.10.1-便携版.exe",
       "sha256": "7FD1CB0B42F5023009677655D1C7908FA1CF1C29BC713E75CFD7DF981B99A949",
