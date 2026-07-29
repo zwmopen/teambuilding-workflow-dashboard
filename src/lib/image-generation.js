@@ -1,5 +1,17 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const sharp = require("sharp");
+const { EnvHttpProxyAgent, fetch: undiciFetch } = require("undici");
+
+let environmentProxyAgent;
+
+function networkFetch(url, options = {}, fetchImpl = undiciFetch, dispatcher) {
+  if (!environmentProxyAgent) environmentProxyAgent = new EnvHttpProxyAgent();
+  return fetchImpl(url, {
+    ...options,
+    dispatcher: dispatcher || environmentProxyAgent
+  });
+}
 
 const PROVIDER_DEFAULTS = {
   "local-openai": { baseUrl: "http://localhost:62104/v1", model: "gpt-image-2" },
@@ -31,10 +43,40 @@ async function readJsonResponse(response) {
   let data;
   try { data = JSON.parse(raw); } catch { data = null; }
   if (!response.ok) {
+    if ([408, 429, 500, 502, 503, 504].includes(response.status)) {
+      throw new Error(`生图服务暂时不可用（HTTP ${response.status}），已自动重试；请稍后重试当前任务`);
+    }
     const detail = data?.error?.message || data?.error || data?.base_resp?.status_msg || raw || `HTTP ${response.status}`;
     throw new Error(String(detail).slice(0, 500));
   }
   return data || {};
+}
+
+function isTransientStatus(status) {
+  return [408, 429, 500, 502, 503, 504].includes(Number(status));
+}
+
+async function wait(delayMs) {
+  if (!delayMs) return;
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function fetchWithRetry(url, options, fetchImpl = networkFetch, retryOptions = {}) {
+  const attempts = Math.max(1, Number(retryOptions.attempts || 3));
+  const delays = retryOptions.delays || [1200, 3500];
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(url, options);
+      if (!isTransientStatus(response.status) || attempt === attempts) return response;
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) throw error;
+    }
+    await wait(Number(delays[Math.min(attempt - 1, delays.length - 1)] || 0));
+  }
+  throw lastError || new Error("生图服务连接失败");
 }
 
 function imageExtension(bytes, contentType = "") {
@@ -48,6 +90,12 @@ function imageMimeType(filePath) {
   if (ext === ".png") return "image/png";
   if (ext === ".webp") return "image/webp";
   return "image/jpeg";
+}
+
+function imageDataUrl(filePath) {
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw new Error("参考图不存在或超过 20 MB");
+  return `data:${imageMimeType(filePath)};base64,${fs.readFileSync(filePath).toString("base64")}`;
 }
 
 function imageDimensions(bytes) {
@@ -70,70 +118,96 @@ function imageDimensions(bytes) {
   return { width: 0, height: 0 };
 }
 
-function saveBytes(bytes, outputRoot, index, contentType = "") {
-  if (!bytes.length || bytes.length > 40 * 1024 * 1024) throw new Error("生成图片为空或超过 40 MB");
-  fs.mkdirSync(outputRoot, { recursive: true });
-  const ext = imageExtension(bytes, contentType);
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const outputFile = path.join(outputRoot, `api-image-${stamp}-${String(index + 1).padStart(2, "0")}${ext}`);
-  fs.writeFileSync(outputFile, bytes);
-  return { outputFile, bytes: bytes.length, ...imageDimensions(bytes) };
+async function normalizeToThreeByFour(bytes) {
+  return sharp(bytes, { failOn: "warning" })
+    .rotate()
+    .resize(1200, 1600, { fit: "cover", position: "centre" })
+    .png({ compressionLevel: 8, adaptiveFiltering: true })
+    .toBuffer();
 }
 
-async function fetchImageBytes(imageUrl, fetchImpl = fetch) {
+async function saveBytes(bytes, outputRoot, index, contentType = "") {
+  if (!bytes.length || bytes.length > 40 * 1024 * 1024) throw new Error("生成图片为空或超过 40 MB");
+  fs.mkdirSync(outputRoot, { recursive: true });
+  const normalizedBytes = await normalizeToThreeByFour(bytes);
+  const ext = ".png";
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const outputFile = path.join(outputRoot, `api-image-${stamp}-${String(index + 1).padStart(2, "0")}${ext}`);
+  fs.writeFileSync(outputFile, normalizedBytes);
+  return {
+    outputFile,
+    bytes: normalizedBytes.length,
+    ...imageDimensions(normalizedBytes),
+    sourceDimensions: imageDimensions(bytes)
+  };
+}
+
+async function fetchImageBytes(imageUrl, fetchImpl = networkFetch, retryOptions = {}) {
   assertSafeUrl(imageUrl, "图片下载地址");
-  const response = await fetchImpl(imageUrl, { redirect: "follow" });
+  const response = await fetchWithRetry(imageUrl, { redirect: "follow" }, fetchImpl, retryOptions);
   if (!response.ok) throw new Error(`图片下载失败：HTTP ${response.status}`);
   return { bytes: Buffer.from(await response.arrayBuffer()), contentType: response.headers.get("content-type") || "" };
 }
 
-async function generateOpenAiCompatible({ config, apiKey, prompt, referencePaths = [], fetchImpl = fetch }) {
+async function generateOpenAiCompatible({ config, apiKey, prompt, referencePaths = [], fetchImpl = networkFetch, retryOptions = {} }) {
   const useEdit = referencePaths.length > 0;
   const endpoint = `${config.baseUrl}/images/${useEdit ? "edits" : "generations"}`;
   assertSafeUrl(endpoint);
   let body;
   let headers = { Accept: "application/json", Authorization: `Bearer ${apiKey}` };
   if (useEdit) {
-    body = new FormData();
-    body.append("model", config.model);
-    body.append("prompt", prompt);
-    body.append("n", "1");
-    body.append("size", "1024x1536");
-    for (const filePath of referencePaths.slice(0, 8)) {
-      const stat = fs.statSync(filePath);
-      if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw new Error("参考图不存在或超过 20 MB");
-      body.append("image", new Blob([fs.readFileSync(filePath)], { type: imageMimeType(filePath) }), path.basename(filePath));
+    if (config.provider === "local-openai") {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify({
+        model: config.model,
+        prompt,
+        images: referencePaths.slice(0, 8).map(imageDataUrl),
+        n: 1,
+        size: "1024x1536",
+        response_format: "b64_json"
+      });
+    } else {
+      body = new FormData();
+      body.append("model", config.model);
+      body.append("prompt", prompt);
+      body.append("n", "1");
+      body.append("size", "1024x1536");
+      for (const filePath of referencePaths.slice(0, 8)) {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw new Error("参考图不存在或超过 20 MB");
+        body.append("image", new Blob([fs.readFileSync(filePath)], { type: imageMimeType(filePath) }), path.basename(filePath));
+      }
     }
   } else {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify({ model: config.model, prompt, n: 1, size: "1024x1536", response_format: "b64_json" });
   }
-  const response = await fetchImpl(endpoint, { method: "POST", headers, body });
+  const response = await fetchWithRetry(endpoint, { method: "POST", headers, body }, fetchImpl, retryOptions);
   const data = await readJsonResponse(response);
   const item = data.data?.[0];
   if (!item?.b64_json && !item?.url) throw new Error("接口没有返回图片数据");
   if (item.b64_json) return { bytes: Buffer.from(item.b64_json, "base64"), contentType: "image/png" };
-  return fetchImageBytes(item.url, fetchImpl);
+  return fetchImageBytes(item.url, fetchImpl, retryOptions);
 }
 
-async function generateMinimax({ config, apiKey, prompt, fetchImpl = fetch }) {
+async function generateMinimax({ config, apiKey, prompt, fetchImpl = networkFetch, retryOptions = {} }) {
   const endpoint = `${config.baseUrl}/image_generation`;
   assertSafeUrl(endpoint);
-  const response = await fetchImpl(endpoint, {
+  const response = await fetchWithRetry(endpoint, {
     method: "POST",
     headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: config.model, prompt, aspect_ratio: "3:4", response_format: "url", n: 1, prompt_optimizer: true })
-  });
+  }, fetchImpl, retryOptions);
   const data = await readJsonResponse(response);
   if (data.base_resp && Number(data.base_resp.status_code) !== 0) {
     throw new Error(String(data.base_resp.status_msg || `MiniMax 状态码 ${data.base_resp.status_code}`).slice(0, 500));
   }
   const imageUrl = data.data?.image_urls?.[0];
   if (!imageUrl) throw new Error("MiniMax 没有返回图片地址");
-  return fetchImageBytes(imageUrl, fetchImpl);
+  return fetchImageBytes(imageUrl, fetchImpl, retryOptions);
 }
 
-async function generateText({ config, apiKey, prompt, model = "gpt-5.6-terra", fetchImpl = fetch }) {
+async function generateText({ config, apiKey, prompt, model = "gpt-5.6-terra", fetchImpl = networkFetch }) {
   if (!apiKey) throw new Error("没有找到本机 API 密钥");
   if (!["local-openai", "bytecat"].includes(config.provider)) throw new Error("当前文案生成只支持 OpenAI 兼容接口");
   const endpoint = `${config.baseUrl}/chat/completions`;
@@ -163,7 +237,7 @@ async function generateImages(options) {
       ? await generateMinimax({ ...options, config })
       : await generateOpenAiCompatible({ ...options, config });
     results.push({
-      ...saveBytes(generated.bytes, options.outputRoot, index, generated.contentType),
+      ...await saveBytes(generated.bytes, options.outputRoot, index, generated.contentType),
       provider: config.provider,
       model: config.model
     });
@@ -177,6 +251,9 @@ module.exports = {
   generateMinimax,
   generateOpenAiCompatible,
   generateText,
+  fetchWithRetry,
   imageDimensions,
+  networkFetch,
+  normalizeToThreeByFour,
   normalizeImageApiConfig
 };

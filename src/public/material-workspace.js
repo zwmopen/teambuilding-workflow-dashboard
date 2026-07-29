@@ -3,7 +3,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.MaterialWorkspace = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function createMaterialWorkspace() {
-  const allowedTabs = new Set(["dashboard", "products", "distribution", "plugins", "settings"]);
+  const allowedTabs = new Set(["dashboard", "distribution", "conversion", "plugins", "settings"]);
 
   function resolveInitialTab(savedTab) {
     return allowedTabs.has(savedTab) ? savedTab : "dashboard";
@@ -14,7 +14,7 @@
     return {
       mode: paths.length > 1 ? "batch" : "set",
       workCount: paths.length,
-      label: paths.length > 1 ? `批量生产 ${paths.length} 套` : "生产 1 套"
+      label: paths.length ? `已选 ${paths.length} 个素材文件夹` : "未选择素材"
     };
   }
 
@@ -52,19 +52,8 @@
   }
 
   function installShell() {
-    const overviewTab = document.querySelector('[data-tab="overview"]');
-    const overviewView = document.querySelector("#overviewView");
-    overviewTab?.remove();
-    overviewView?.remove();
-
-    const dashboardTab = document.querySelector('[data-tab="dashboard"]');
-    dashboardTab?.classList.add("active");
-
     document.querySelector('[data-tab="publishing"]')?.remove();
     document.querySelector("#publishingView")?.remove();
-
-    document.querySelector("#dashboardView")?.classList.add("active");
-
   }
 
   return {

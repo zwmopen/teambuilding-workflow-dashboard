@@ -5,7 +5,7 @@ const url = require("url");
 const childProcess = require("child_process");
 const crypto = require("crypto");
 const os = require("os");
-const { generateImages, generateText, normalizeImageApiConfig } = require("./lib/image-generation");
+const { generateImages, generateText, networkFetch, normalizeImageApiConfig } = require("./lib/image-generation");
 const {
   applySuggestedTitles,
   buildCopyPrompt,
@@ -50,6 +50,9 @@ const SKILL_ROOT = process.env.TEAMBUILDING_SKILL_ROOT || "D:\\AICode\\AI\\skill
 const APP_ROOT = __dirname;
 const PUBLIC_ROOT = path.join(APP_ROOT, "public");
 const PROJECT_APP_ROOT = path.resolve(APP_ROOT, "..");
+const CONVERSION_SERVICE_ORIGIN = process.env.JIANGHU_CONVERSION_ORIGIN || "http://127.0.0.1:8765";
+const CONVERSION_ASSISTANT_ROOT = process.env.JIANGHU_CONVERSION_ROOT || "D:\\AICode\\工具开发\\projects\\jianghu-conversion-assistant";
+const CONVERSION_ASSISTANT_LAUNCHER = path.join(CONVERSION_ASSISTANT_ROOT, "start.vbs");
 const APP_VERSION = (() => {
   try { return fs.readFileSync(path.join(PROJECT_APP_ROOT, "VERSION"), "utf8").trim() || "0.0.0"; }
   catch { return require("./package.json").version || "0.0.0"; }
@@ -743,7 +746,7 @@ function saveImageApiSecret({ provider, baseUrl, model, apiKey }) {
   }
   fs.mkdirSync(path.dirname(IMAGE_API_SECRET_FILE), { recursive: true });
   const lines = [
-    "# 团建内容工作台本机生图凭据。禁止提交仓库、日志或导出包。",
+    "# 团建工作台本机生图凭据。禁止提交仓库、日志或导出包。",
     "# 界面只返回是否已配置，不会回传密钥明文。",
     ...Object.entries(next).map(([key, value]) => `${key}=${value}`)
   ];
@@ -781,7 +784,8 @@ function buildProductionPrompt(body, facts) {
     "锁定母版的字体气质、字号比例、配色、标题位置、拼图骨架和页面气质；只从素材提取真实内容。",
     "禁止继承素材自身排版，禁止虚构地点、项目、价格、车程或场景，禁止新增素材和事实中没有的露营、篝火、建筑等内容。",
     "业务口径：江浙沪企业团建，10人起接。没有明确价格则不出现价格。人物、分区和道具应去重，保持真实手机抓拍感。",
-    "每次只生成一张独立3:4图片，不得输出多页合集、长图、缩略图墙或样机展示。中文必须准确。",
+    "每次只生成一张独立3:4图片，所有关键信息与人物必须放在画面中央安全区，便于落盘时统一裁切为1200×1600。不得输出多页合集、长图、缩略图墙或样机展示。中文必须准确。",
+    "校准图禁止自行添加01/08、1/9等页码或总页数；只有正式整套计划明确给出准确页数时才能显示页码。",
     `本次阶段：${body.stage === "inner" ? "典型内页校准" : "封面校准"}。质量档：${body.quality || "标准"}。`,
     userPrompt ? `用户补充要求：\n${userPrompt}` : "",
     facts ? `素材事实（只能从这里取业务事实）：\n${facts}` : ""
@@ -919,6 +923,7 @@ async function runProductionJob(job, planBundle, options) {
     job.outputRoots.push(outputRoot);
     writeJson(path.join(outputRoot, "出图计划.json"), plan);
     for (const page of plan.pages) {
+      const pageStartedAt = Date.now();
       updateProductionJob(job, {
         phase: "generating-images",
         message: `正在做 ${plan.materialName} · ${page.code} ${page.title}`,
@@ -930,9 +935,10 @@ async function runProductionJob(job, planBundle, options) {
       const pageMaterial = page.sourceImage && exists(page.sourceImage)
         ? page.sourceImage
         : materialImages[Math.min(page.index - 1, materialImages.length - 1)];
-      const referencePaths = page.role === "cover"
-        ? [templateRef, ...materialImages.slice(0, 4)]
-        : [templateRef, pageMaterial];
+      // Keep each request small and deterministic. The local image bridge becomes
+      // unreliable with a large multipart payload; one master page plus one source
+      // image is enough to lock the layout while preserving the real scene.
+      const referencePaths = [templateRef, pageMaterial];
       const prompt = buildPagePrompt(plan, page, facts, options.prompt, options.quality);
       const generated = await generateImages({
         config,
@@ -957,7 +963,8 @@ async function runProductionJob(job, planBundle, options) {
         width: original.width,
         height: original.height,
         provider: original.provider,
-        model: original.model
+        model: original.model,
+        durationMs: Date.now() - pageStartedAt
       });
       completed += 1;
       updateProductionJob(job, { progress: completed });
@@ -966,6 +973,7 @@ async function runProductionJob(job, planBundle, options) {
       phase: "generating-copy",
       message: `正在写 ${plan.materialName} 的小红书文案`
     });
+    const copyStartedAt = Date.now();
     const copy = await generateText({
       config: textConnection.config,
       apiKey: textConnection.apiKey,
@@ -974,7 +982,13 @@ async function runProductionJob(job, planBundle, options) {
     });
     const copyFile = path.join(outputRoot, "小红书文案.txt");
     fs.writeFileSync(copyFile, `${copy}\n`, "utf8");
-    job.results.push({ type: "copy", work: plan.materialName, outputFile: copyFile, bytes: Buffer.byteLength(copy) });
+    job.results.push({
+      type: "copy",
+      work: plan.materialName,
+      outputFile: copyFile,
+      bytes: Buffer.byteLength(copy),
+      durationMs: Date.now() - copyStartedAt
+    });
     writeJson(path.join(outputRoot, "生产记录.json"), {
       status: "review-ready",
       createdAt: new Date().toISOString(),
@@ -1961,7 +1975,8 @@ function productionWorkbenchProducts() {
         updatedAt: safeMtime(workPath),
         packed: exists(path.join(stageRoots.mobile, entry.name))
       };
-    });
+    })
+    .filter((work) => work.imageCount > 0 || work.hasCopy);
   const works = [
     ...readWorks(IMAGE_REVIEW_ROOT, "待审区"),
     ...readWorks(libraryRoot, "成品库")
@@ -2248,7 +2263,7 @@ function getDashboard(force = false, selectedLibraryPath = "") {
   );
   return {
     appInfo: {
-      name: "团建内容工作台",
+      name: "团建工作台",
       version: APP_VERSION,
       channel: process.env.TB_WORKBENCH_CHANNEL || (process.versions.electron ? "便携版" : "本地开发版（热更新）"),
       runtimeRoot: DATA_ROOT,
@@ -2383,6 +2398,107 @@ function collectMaterialLinks(libraryPath, items, filterSummary, options = {}) {
 }
 function sendJson(res, body) {
   send(res, 200, JSON.stringify(body), "application/json; charset=utf-8");
+}
+
+function proxyIntegratedConversion(req, res, parsed, pathname) {
+  const prefix = "/conversion-integrated";
+  const upstreamPath = pathname.slice(prefix.length) || "/";
+  const requestPath = `${upstreamPath}${parsed.search || ""}`;
+  return new Promise((resolve, reject) => {
+    const upstream = http.request(`${CONVERSION_SERVICE_ORIGIN}${requestPath}`, {
+      method: req.method,
+      headers: {
+        ...req.headers,
+        host: new URL(CONVERSION_SERVICE_ORIGIN).host,
+        origin: CONVERSION_SERVICE_ORIGIN,
+        referer: `${CONVERSION_SERVICE_ORIGIN}/`
+      }
+    }, (upstreamResponse) => {
+      const contentTypeHeader = String(upstreamResponse.headers["content-type"] || "");
+      const isAppDocument = req.method === "GET"
+        && upstreamPath === "/"
+        && contentTypeHeader.includes("text/html");
+      if (!isAppDocument) {
+        const headers = { ...upstreamResponse.headers, "cache-control": "no-store" };
+        delete headers["content-security-policy"];
+        res.writeHead(upstreamResponse.statusCode || 502, headers);
+        upstreamResponse.pipe(res);
+        upstreamResponse.on("end", resolve);
+        return;
+      }
+      const chunks = [];
+      upstreamResponse.on("data", (chunk) => chunks.push(chunk));
+      upstreamResponse.on("end", () => {
+        const html = Buffer.concat(chunks).toString("utf8")
+          .replaceAll("'/api/", "'/conversion-integrated/api/")
+          .replaceAll('"/api/', '"/conversion-integrated/api/')
+          .replaceAll('href="/', 'href="/conversion-integrated/')
+          .replaceAll('src="/', 'src="/conversion-integrated/');
+        res.writeHead(upstreamResponse.statusCode || 200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Length": Buffer.byteLength(html),
+          "Cache-Control": "no-store"
+        });
+        res.end(html);
+        resolve();
+      });
+    });
+    upstream.on("error", reject);
+    req.pipe(upstream);
+  });
+}
+
+async function requestConversionService(endpoint, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Number(options.timeoutMs || 15_000));
+  try {
+    const response = await fetch(`${CONVERSION_SERVICE_ORIGIN}${endpoint}`, {
+      method: options.method || "GET",
+      headers: options.body ? { "Content-Type": "application/json" } : undefined,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal
+    });
+    const text = await response.text();
+    let payload;
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(`转化知识库返回了无法识别的内容（${response.status}）`);
+    }
+    if (!response.ok) throw new Error(payload.error || payload.message || `转化知识库请求失败（${response.status}）`);
+    return payload;
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("转化知识库响应超时");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getConversionSnapshot() {
+  try {
+    const [health, sop, journey] = await Promise.all([
+      requestConversionService("/api/健康", { timeoutMs: 5_000 }),
+      requestConversionService("/api/正式SOP", { timeoutMs: 12_000 }),
+      requestConversionService("/api/用户旅程", { timeoutMs: 8_000 })
+    ]);
+    return {
+      ok: true,
+      serviceOrigin: CONVERSION_SERVICE_ORIGIN,
+      source: "团建工作台·流量转化",
+      health,
+      sop,
+      journey
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      serviceOrigin: CONVERSION_SERVICE_ORIGIN,
+      source: "团建工作台·流量转化",
+      launcherAvailable: exists(CONVERSION_ASSISTANT_LAUNCHER),
+      error: error.message
+    };
+  }
 }
 
 function isAllowedExternalTarget(target) {
@@ -2804,10 +2920,21 @@ function pickFolderWithWindowsDialog(description = "选择文件夹") {
   const safeDescription = String(description).replace(/'/g, "''");
   const command = [
     "Add-Type -AssemblyName System.Windows.Forms",
+    "Add-Type -AssemblyName System.Drawing",
+    "$owner = New-Object System.Windows.Forms.Form",
+    "$owner.TopMost = $true",
+    "$owner.ShowInTaskbar = $false",
+    "$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen",
+    "$owner.Size = New-Object System.Drawing.Size(1,1)",
+    "$owner.Opacity = 0",
+    "$owner.Show()",
+    "$owner.Activate()",
     "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
     `$dialog.Description = '${safeDescription}'`,
     "$dialog.ShowNewFolderButton = $true",
-    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {",
+    "$result = $dialog.ShowDialog($owner)",
+    "$owner.Close()",
+    "if ($result -eq [System.Windows.Forms.DialogResult]::OK) {",
     "  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
     "  Write-Output $dialog.SelectedPath",
     "}"
@@ -2965,6 +3092,10 @@ async function route(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
 
+  if (pathname === "/conversion-integrated" || pathname.startsWith("/conversion-integrated/")) {
+    return proxyIntegratedConversion(req, res, parsed, pathname);
+  }
+
   if (req.method === "OPTIONS") {
     res.writeHead(204, extensionCorsHeaders(req));
     return res.end();
@@ -2973,6 +3104,55 @@ async function route(req, res) {
   if (pathname === "/api/dashboard") {
     const libraryPath = parsed.query.library ? decodeURIComponent(parsed.query.library) : "";
     return sendExtensionJson(req, res, getDashboard(parsed.query.refresh === "materials", libraryPath));
+  }
+
+  if (pathname === "/api/conversion/snapshot" && req.method === "GET") {
+    return sendJson(res, await getConversionSnapshot());
+  }
+
+  if (pathname === "/api/conversion/proposal" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const demand = String(body.demand || body.需求 || "").trim();
+    if (!demand) return send(res, 400, JSON.stringify({ error: "请先写下客户需求" }), "application/json; charset=utf-8");
+    if (demand.length > 6_000) return send(res, 400, JSON.stringify({ error: "客户需求过长，请先精简到 6000 字以内" }), "application/json; charset=utf-8");
+    try {
+      return sendJson(res, await requestConversionService("/api/方案策划", {
+        method: "POST",
+        body: { 需求: demand },
+        timeoutMs: 90_000
+      }));
+    } catch (error) {
+      return send(res, 502, JSON.stringify({ error: error.message }), "application/json; charset=utf-8");
+    }
+  }
+
+  if (pathname === "/api/conversion/search" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const question = String(body.question || body.问题 || "").trim();
+    const role = body.role === "后端转化" ? "后端转化" : "前端运营";
+    if (!question) return send(res, 400, JSON.stringify({ error: "请先输入客户问题" }), "application/json; charset=utf-8");
+    if (question.length > 3_000) return send(res, 400, JSON.stringify({ error: "客户问题过长，请先精简到 3000 字以内" }), "application/json; charset=utf-8");
+    try {
+      return sendJson(res, await requestConversionService("/api/智能匹配", {
+        method: "POST",
+        body: { 问题: question, 身份: role },
+        timeoutMs: 60_000
+      }));
+    } catch (error) {
+      return send(res, 502, JSON.stringify({ error: error.message }), "application/json; charset=utf-8");
+    }
+  }
+
+  if (pathname === "/api/conversion/start" && req.method === "POST") {
+    if (!exists(CONVERSION_ASSISTANT_LAUNCHER)) {
+      return send(res, 404, JSON.stringify({ error: "流量转化模块暂时无法启动" }), "application/json; charset=utf-8");
+    }
+    childProcess.spawn("wscript.exe", [CONVERSION_ASSISTANT_LAUNCHER], {
+      cwd: CONVERSION_ASSISTANT_ROOT,
+      detached: true,
+      stdio: "ignore"
+    }).unref();
+    return sendJson(res, { ok: true });
   }
 
   if (pathname === "/api/extension/workspace" && req.method === "GET") {
@@ -3220,7 +3400,7 @@ async function route(req, res) {
     const apiKey = imageApiCredential(config.provider, body.apiKey);
     if (!apiKey) return send(res, 400, JSON.stringify({ error: "没有找到这个平台的本机密钥" }));
     const endpoint = config.provider === "minimax" ? `${config.baseUrl}/models` : `${config.baseUrl}/models`;
-    const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } });
+    const response = await networkFetch(endpoint, { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } });
     if (!response.ok) return send(res, 502, JSON.stringify({ error: `连接失败（HTTP ${response.status}）` }));
     const data = await response.json();
     const models = Array.isArray(data.data) ? data.data.map((item) => item.id).filter(Boolean).slice(0, 50) : [];
@@ -3244,11 +3424,20 @@ async function route(req, res) {
     const prompt = buildProductionPrompt({ ...body, stage }, facts);
     const folderName = `${new Date().toISOString().slice(0, 10).replaceAll("-", "")}_${safeOutputName(path.basename(materialPath))}_${safeOutputName(path.basename(templatePath))}`;
     const outputRoot = path.join(IMAGE_REVIEW_ROOT, folderName, stage === "cover" ? "封面校准" : "内页校准");
-    const results = await generateImages({
-      config, apiKey, prompt,
-      referencePaths: [...templateImages, ...materialImages].slice(0, 8),
-      outputRoot, count: body.count
-    });
+    let results;
+    try {
+      results = await generateImages({
+        config, apiKey, prompt,
+        referencePaths: [...templateImages, ...materialImages].slice(0, 8),
+        outputRoot, count: body.count
+      });
+    } catch (error) {
+      const timedOut = error?.cause?.code === "UND_ERR_CONNECT_TIMEOUT" || /timeout|timed out/i.test(String(error?.message || ""));
+      const message = timedOut
+        ? "生图平台连接超时，系统已经自动重试；请稍后再次开始，当前素材和模板选择不会丢失。"
+        : String(error?.message || "生图失败，请稍后重试");
+      return send(res, 502, JSON.stringify({ error: message }));
+    }
     const report = {
       status: "review-ready",
       createdAt: new Date().toISOString(),
@@ -3395,7 +3584,7 @@ async function route(req, res) {
 
   if (pathname === "/api/extension/info" && req.method === "GET") {
     return sendExtensionJson(req, res, {
-      name: "团建内容工作台 · GPT 助手",
+      name: "团建工作台 · GPT 助手",
       path: "D:\\AICode\\工具开发\\projects\\teambuilding-gpt-production-extension\\src",
       modules: ["最新版会话树", "成品区", "素材区", "生产去重状态", "上传到当前 GPT"],
       localApi: `http://127.0.0.1:${PORT}`
@@ -3589,7 +3778,7 @@ const httpServer = http.createServer((req, res) => {
 if (require.main === module) {
   ensureDataFiles();
   httpServer.listen(PORT, "127.0.0.1", () => {
-    console.log(`团建图文生产控制台: http://localhost:${PORT}`);
+    console.log(`团建工作台: http://localhost:${PORT}`);
     console.log(`项目根目录: ${PROJECT_ROOT}`);
   });
 }

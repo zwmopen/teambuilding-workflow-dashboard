@@ -75,7 +75,7 @@ async function createWindow() {
     height: 940,
     minWidth: 1120,
     minHeight: 700,
-    title: "团建内容工作台",
+    title: "团建工作台",
     show: false,
     backgroundColor: "#e7eee9",
     autoHideMenuBar: true,

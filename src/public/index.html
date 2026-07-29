@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>团建图文生产控制台</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <title>团建工作台</title>
+    <link rel="stylesheet" href="/styles.css?v=0.11.4" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -15,35 +15,44 @@
 
     <main class="app-shell">
       <nav class="workflow-rail glass" aria-label="工作流导航">
-        <button class="tab rail-tab active" data-tab="overview" type="button" title="总览">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>
-          <span>总览</span>
-        </button>
-        <button class="tab rail-tab" data-tab="dashboard" type="button" title="素材生产">
+        <div class="rail-brand">
+          <strong>团建工作台</strong>
+          <span>生产 · 分发 · 转化</span>
+        </div>
+        <button class="tab rail-tab active" data-tab="dashboard" type="button" title="素材生产">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z"/><path d="m18.5 16 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/></svg>
           <span>素材生产</span>
-        </button>
-        <button class="tab rail-tab" data-tab="products" type="button" title="作品集">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H19v16H7.5A2.5 2.5 0 0 0 5 21.5v-16Z"/><path d="M5 18.5A2.5 2.5 0 0 1 7.5 16H19"/></svg>
-          <span>作品集</span>
         </button>
         <button class="tab rail-tab" data-tab="distribution" type="button" title="分发功能">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/><path d="m3 9 2-2 2 2M21 13l-2 2-2-2"/></svg>
           <span>分发功能</span>
         </button>
+        <button class="tab rail-tab" data-tab="conversion" type="button" title="流量转化">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v12H9l-4 4V4Z"/><path d="M8 8h8M8 12h5"/></svg>
+          <span>流量转化</span>
+        </button>
         <button class="tab rail-tab" data-tab="plugins" type="button" title="插件市场">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3H4a1 1 0 0 0-1 1v4.5a2.5 2.5 0 1 1 0 5V20a1 1 0 0 0 1 1h6.5a2.5 2.5 0 1 1 5 0H20a1 1 0 0 0 1-1v-4.5a2.5 2.5 0 1 1 0-5V4a1 1 0 0 0-1-1h-6.5a2.5 2.5 0 1 1-5 0Z"/></svg>
           <span>插件市场</span>
         </button>
-        <button class="tab rail-tab rail-bottom" data-tab="settings" type="button" title="设置">
+        <button class="tab rail-tab" data-tab="settings" type="button" title="设置">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg>
           <span>设置</span>
         </button>
+        <div class="rail-service">
+          <p><span class="status-dot"></span>本地服务已连接</p>
+          <div class="rail-theme-switch" aria-label="视觉主题">
+            <button id="globalThemeCycleBtn" class="theme-cycle-button" type="button" aria-label="切换视觉主题">
+              <span class="theme-cycle-icon" aria-hidden="true"><i></i><i></i></span>
+              <span id="globalThemeName">拟态</span>
+            </button>
+          </div>
+        </div>
       </nav>
       <header class="topbar glass">
         <section>
-          <h1>团建内容工作台</h1>
-          <div class="subtitle">本地项目 · 手动操作与 Codex 共用同一流程</div>
+          <h1>团建工作台</h1>
+          <div class="subtitle">内容生产 · 分发 · 流量转化</div>
         </section>
         <div class="topbar-status"><span class="status-dot"></span>本地已连接</div>
         <section class="top-actions">
@@ -52,22 +61,7 @@
         </section>
       </header>
 
-      <section class="view active" id="overviewView">
-        <section class="overview-layout">
-          <header class="page-heading">
-            <div><p class="label">今天从哪里继续</p><h2>工作流总览</h2><p>只显示真实可读取的本地状态，不推测 ChatGPT 页面内部进度。</p></div>
-            <div class="detail-button-row"><button class="primary-button" id="overviewRefreshBtn">刷新状态</button><button class="page-help-button" type="button" data-page-help="overviewView" title="查看这个页面的使用说明">?</button></div>
-          </header>
-          <div class="overview-stats" id="overviewStats"></div>
-          <section class="overview-grid">
-            <article class="overview-card" data-jump="dashboard"><span class="overview-index">01</span><h3>素材生产</h3><p>工作台整理本地素材与指令，真实对话由 Chrome / Edge 扩展接管。</p><button type="button">进入素材生产</button></article>
-            <article class="overview-card" data-jump="products"><span class="overview-index">02</span><h3>作品集</h3><p>按内容类型与平台资格筛选当前可用合集。</p><button type="button">查看作品集</button></article>
-            <article class="overview-card" data-jump="distribution"><span class="overview-index">03</span><h3>分发功能</h3><p>手机补笔记、公众号领取、使用记录与归档恢复。</p><button type="button">进入分发</button></article>
-          </section>
-        </section>
-      </section>
-
-      <section class="view" id="dashboardView">
+      <section class="view active" id="dashboardView">
         <section class="production-workbench-shell">
           <header class="production-workbench-heading">
             <div>
@@ -89,14 +83,10 @@
                   <button id="workbenchSelectAllBtn" type="button">全选当前</button>
                 </header>
                 <div class="workbench-path-row">
-                  <input id="workbenchMaterialRoot" type="text" placeholder="素材库根目录" />
+                  <input id="workbenchMaterialRoot" type="text" placeholder="粘贴素材目录，或选择本地文件夹" />
                   <button id="workbenchChooseMaterialRootBtn" type="button" title="选择素材库">选择</button>
-                  <button id="workbenchApplyMaterialRootBtn" type="button">读取</button>
+                  <button id="workbenchApplyMaterialRootBtn" type="button" title="读取填写的素材目录">应用</button>
                 </div>
-                <label class="workbench-category-field">
-                  <span>当前分类</span>
-                  <select id="workbenchMaterialCategory" aria-label="切换素材分类"></select>
-                </label>
                 <div class="workbench-filter-row" id="workbenchMaterialFilters">
                   <button class="active" type="button" data-workbench-material-filter="all">全部</button>
                   <button type="button" data-workbench-material-filter="conversion">团建转化</button>
@@ -105,7 +95,9 @@
                   <button type="button" data-workbench-material-filter="unused">已使用0次</button>
                 </div>
                 <input id="workbenchMaterialSearch" class="workbench-search" type="search" placeholder="搜索地点、玩法或文件夹名称" />
-                <div class="workbench-material-list" id="workbenchMaterialList"></div>
+                <div class="workbench-asset-browser" aria-label="素材目录与帖子">
+                  <nav class="workbench-folder-list" id="workbenchMaterialFolders" aria-label="素材分类目录"></nav>
+                </div>
               </section>
 
               <section class="workbench-card template-picker-card">
@@ -117,20 +109,17 @@
                   <button class="active" type="button" data-template-type="conversion">转化模板</button>
                   <button type="button" data-template-type="game">游戏模板</button>
                 </div>
-                <div class="workbench-template-list" id="workbenchTemplateList"></div>
-                <div class="workbench-template-summary" id="workbenchTemplateSummary">请选择一个模板查看用途和版式。</div>
+                <div class="workbench-asset-browser template-asset-browser" aria-label="模板目录与母版图">
+                  <nav class="workbench-template-list workbench-folder-list" id="workbenchTemplateList" aria-label="模板列表"></nav>
+                </div>
               </section>
             </aside>
 
             <main class="production-dialog-column">
               <section class="workbench-card production-dialog-card">
                 <header class="workbench-card-head production-dialog-head">
-                  <div><span class="workbench-step">03</span><strong id="workbenchDialogTitle">模板生产对话</strong><small id="workbenchDialogMeta">一个模板保留一套生产记录</small></div>
-                  <span class="selection-driven-mode" id="workbenchSelectionMode">选择 1 个素材文件夹生成 1 套；选择多个则批量生成多套</span>
+                  <div><span class="workbench-step">03</span><strong id="workbenchDialogTitle">生产规则与提示词</strong><small id="workbenchDialogMeta">规则跟随当前模板，本批要求单独追加</small></div>
                 </header>
-                <div class="workbench-template-preview" id="workbenchTemplatePreview">
-                  <div class="empty-state"><strong>先选择模板</strong><p>这里会显示封面和内页参考图。</p></div>
-                </div>
                 <div class="prompt-version-bar">
                   <div><strong>当前生产规则</strong><span id="workbenchPromptVersion">模板默认规则</span></div>
                   <button id="workbenchSavePromptBtn" type="button">保存规则</button>
@@ -141,14 +130,35 @@
                   <textarea id="workbenchConversationInput" rows="3" placeholder="直接说本次要求，例如：图上文字少一点；只做前10套；保留真实场景；失败项重做。"></textarea>
                   <button id="workbenchSendRequirementBtn" type="button">加入本次要求</button>
                 </div>
-                <div class="workbench-run-settings">
+                <div class="workbench-run-settings compact">
+                  <label>生图平台<select id="workbenchImageProvider"><option value="local-openai">本地 GPT 生图</option><option value="bytecat">ByteCat</option><option value="minimax">MiniMax</option></select></label>
+                  <label>生图模型<select id="workbenchImageModel" aria-label="选择生图模型"><option value="gpt-image-2">gpt-image-2</option></select></label>
+                  <label>文案模型<select id="workbenchTextModel" aria-label="选择文案模型"><option value="gpt-5.6-terra">gpt-5.6-terra</option></select></label>
                   <label>页数<select id="workbenchPageCount"><option value="">按素材自动</option><option>3</option><option>5</option><option>7</option><option>9</option><option>10</option></select></label>
                   <label>质量<select id="workbenchQuality"><option value="严格母版">严格母版</option><option value="高质量">高质量</option><option value="标准">标准</option></select></label>
                 </div>
-                <button id="workbenchStartProductionBtn" class="primary-button workbench-start-button" type="button">开始生产整套作品</button>
-                <div id="workbenchProductionStatus" class="workbench-production-status">请选择素材和模板。</div>
-                <section id="workbenchPlanPanel" class="production-plan-panel" hidden></section>
+                <div class="workbench-model-row"><span id="workbenchModelStatus">图片与文案模型分别运行，可随时切换</span><button id="workbenchRefreshModelsBtn" type="button">刷新可用模型</button></div>
                 <div id="workbenchLatestOutputs" class="production-output-grid"></div>
+                <div class="workbench-action-dock">
+                  <section id="workbenchPlanPanel" class="production-plan-panel" hidden></section>
+                  <div class="workbench-primary-actions">
+                    <button id="workbenchEditPlanBtn" type="button" hidden>返回调整</button>
+                    <button id="workbenchStartProductionBtn" class="primary-button workbench-start-button" type="button">开始生产</button>
+                  </div>
+                  <section class="workbench-production-feedback" aria-live="polite">
+                    <div class="workbench-progress-head">
+                      <strong id="workbenchProgressPhase">等待开始</strong>
+                      <span id="workbenchProgressPercent">0%</span>
+                    </div>
+                    <div class="workbench-progress-track" role="progressbar" aria-label="生产进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                      <span id="workbenchProgressBar"></span>
+                    </div>
+                    <div id="workbenchProductionStatus" class="workbench-production-status">请选择素材和模板。</div>
+                    <ol id="workbenchProductionLog" class="workbench-production-log">
+                      <li>等待选择素材与模板</li>
+                    </ol>
+                  </section>
+                </div>
               </section>
             </main>
 
@@ -163,6 +173,11 @@
                   <button type="button" data-workbench-output-filter="review">今日/待审</button>
                   <button type="button" data-workbench-output-filter="unpacked">待打包</button>
                   <button type="button" data-workbench-output-filter="packed">已打包</button>
+                </div>
+                <div class="workbench-path-row workbench-output-root-row">
+                  <input id="workbenchProductRoot" type="text" placeholder="粘贴成品目录，或选择本地文件夹" />
+                  <button id="workbenchChooseProductRootBtn" type="button" title="选择成品目录">选择</button>
+                  <button id="workbenchApplyProductRootBtn" type="button" title="读取填写的成品目录">应用</button>
                 </div>
                 <div class="workbench-output-path" id="workbenchOutputPath"></div>
                 <div class="workbench-product-list" id="workbenchProductList"></div>
@@ -193,7 +208,7 @@
         </section>
         <section class="production-console glass" aria-label="作品生产">
           <div class="production-console-head">
-            <div><p class="label">选好素材和模板，直接得到结果</p><h2>生产数量跟随素材选择</h2><p>选择 1 个素材文件夹生成 1 套作品；选择多个素材文件夹，则同一模板批量生成多套。</p></div>
+            <div><p class="label">选好素材和模板，直接得到结果</p><h2>处理对象跟随左侧选择</h2><p>左侧勾选哪些帖子文件夹，就按当前模板处理哪些内容；中间不再设置“一套”或“一批”模式。</p></div>
             <span class="review-only-badge">结果先进入待审区</span>
           </div>
           <div class="production-simple-controls">
@@ -201,20 +216,6 @@
             <label><span>质量</span><select id="productionQuality" class="search-input"><option value="严格母版">严格母版（推荐）</option><option value="高质量">高质量</option><option value="标准">标准</option></select></label>
           </div>
           <label class="production-prompt-field"><span>额外要求（可以不填）</span><textarea id="productionPrompt" rows="3" placeholder="例如：本次标题更克制；不要出现篝火。模板规则、事实锁、页数和文案规则已经自动加入，不需要自己写提示词。"></textarea></label>
-          <details class="production-advanced">
-            <summary>接口设置（平时不用动）</summary>
-            <div class="production-controls">
-              <label><span>生图平台</span><select id="productionApiProvider" class="search-input"><option value="local-openai">本地 GPT 生图</option><option value="bytecat">ByteCat Image 2.0</option><option value="minimax">MiniMax 生图</option></select></label>
-              <label><span>接口地址</span><input id="productionApiBaseUrl" class="search-input" type="url" /></label>
-              <label><span>生图模型</span><input id="productionApiModel" class="search-input" type="text" /></label>
-              <label><span>文案模型</span><input id="productionTextModel" class="search-input" type="text" value="gpt-5.6-terra" /></label>
-              <label><span>本机密钥</span><input id="productionApiKey" class="search-input" type="password" autocomplete="off" placeholder="已保存时可留空" /></label>
-            </div>
-            <div class="production-actions compact-actions">
-              <button id="saveProductionApiBtn" type="button">保存接口</button>
-              <button id="testProductionApiBtn" type="button">测试连接</button>
-            </div>
-          </details>
           <div class="production-actions primary-production-actions">
             <button id="createProductionPlanBtn" class="primary-button production-main-button" type="button">开始生产</button>
             <button id="cancelProductionPlanBtn" type="button" hidden>重新选择</button>
@@ -347,8 +348,8 @@
           </header>
           <section class="folder-source-bar" aria-label="作品集目录设置">
             <input id="collectionRootInput" class="search-input" type="text" placeholder="粘贴作品集目录后按回车" />
-            <button id="chooseCollectionRootBtn" class="ghost-button" type="button">选择目录</button>
-            <button id="applyCollectionRootBtn" class="primary-button" type="button">读取目录</button>
+            <button id="chooseCollectionRootBtn" class="ghost-button" type="button">选择</button>
+            <button id="applyCollectionRootBtn" class="primary-button" type="button">读取</button>
           </section>
           <div class="workflow-stage-toolbar">
             <div class="workflow-stage-tabs" id="collectionStageTabs" aria-label="作品阶段"></div>
@@ -375,8 +376,8 @@
           </header>
           <section class="folder-source-bar compact" aria-label="分发作品集目录设置">
             <input id="distributionCollectionRootInput" class="search-input" type="text" placeholder="粘贴分发作品集目录后按回车" />
-            <button id="chooseDistributionCollectionRootBtn" class="ghost-button" type="button">选择目录</button>
-            <button id="applyDistributionCollectionRootBtn" class="primary-button" type="button">读取目录</button>
+            <button id="chooseDistributionCollectionRootBtn" class="ghost-button" type="button">选择</button>
+            <button id="applyDistributionCollectionRootBtn" class="primary-button" type="button">读取</button>
           </section>
           <div class="segment-tabs distribution-stage-tabs" id="distributionTabs"></div>
           <section class="distribution-panel active" id="distributionDevices"></section>
@@ -389,6 +390,13 @@
             <input id="distributionCommand" placeholder="例如：给5号补一个泛流量" />
             <button id="copyDistributionCommand" type="button">复制指令</button>
           </section>
+        </section>
+      </section>
+
+      <section class="view" id="conversionView">
+        <section class="conversion-embedded-shell">
+          <div class="conversion-embedded-status" id="conversionEmbeddedStatus">正在加载流量转化…</div>
+          <iframe id="conversionAppFrame" title="流量转化" src="/conversion-integrated/?embedded=1" loading="eager"></iframe>
         </section>
       </section>
 
@@ -430,94 +438,86 @@
 
       <section class="view" id="settingsView">
         <section class="settings-layout">
-          <header class="page-heading"><div><p class="label">外观与本地数据</p><h2>设置</h2><p>主题偏好会保存在本机浏览器，不修改项目素材。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置的使用说明">?</button></header>
-          <section class="settings-card appearance-card">
-            <div class="settings-card-heading"><div><p class="label">显示偏好</p><h3>界面风格</h3></div><span class="version-status">即时切换</span></div>
-            <div class="theme-options">
-              <button class="theme-option theme-preview-glass" data-theme="glass"><i aria-hidden="true"></i><span><b>玻璃</b><small>清透、悬浮、蓝灰色工作空间</small></span></button>
-              <button class="theme-option theme-preview-neo active" data-theme="neo"><i aria-hidden="true"></i><span><b>拟态</b><small>默认 · 柔和、低对比、适合长时间操作</small></span></button>
+          <header class="page-heading settings-heading"><div><p class="label">本机工作空间</p><h2>设置</h2><p>管理全局接口、默认目录、备份与诊断。各业务页面自己的素材路径，在对应页面单独设置。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置的使用说明">?</button></header>
+          <section class="settings-card api-settings-card">
+            <div class="settings-card-heading"><div><p class="label">全局能力</p><h3>API 与模型</h3></div><span class="version-status">全工作台共用</span></div>
+            <p class="path-line">统一配置生图与文案接口。素材生产、流量转化和后续功能都从这里调用；密钥只保存在本机。</p>
+            <div class="production-controls">
+              <label><span>生图平台</span><select id="productionApiProvider" class="search-input"><option value="local-openai">本地 GPT 生图</option><option value="bytecat">ByteCat Image 2.0</option><option value="minimax">MiniMax 生图</option></select></label>
+              <label><span>接口地址</span><input id="productionApiBaseUrl" class="search-input" type="url" /></label>
+              <label><span>生图模型</span><input id="productionApiModel" class="search-input" type="text" /></label>
+              <label><span>文案模型</span><input id="productionTextModel" class="search-input" type="text" value="gpt-5.6-terra" /></label>
+              <label><span>本机密钥</span><input id="productionApiKey" class="search-input" type="password" autocomplete="off" placeholder="已保存时可留空" /></label>
             </div>
+            <div class="settings-actions"><button id="saveProductionApiBtn" class="primary-button" type="button">保存接口</button><button id="testProductionApiBtn" type="button">测试连接</button></div>
           </section>
           <section class="settings-card workspace-settings-card">
-            <h3>目录与一键工作包</h3>
-            <p class="path-line">这里直接读写现有 VBS / PowerShell 工作包配置；旧工具继续可用，新界面与它并行。</p>
-            <div class="path-settings-grid">
-              <label><span>素材扫描目录</span><input id="settingsMaterialRoot" class="search-input" type="text" /></label>
-              <label><span>作品集存放目录</span><input id="settingsPortfolioRoot" class="search-input" type="text" /></label>
-              <label><span>每个合集数量</span><input id="settingsBatchSize" class="search-input" type="number" min="1" max="100" value="14" /></label>
-              <label class="check-setting"><input id="settingsAutoGroup" type="checkbox" checked /><span>满额后自动组成合集</span></label>
-              <label class="check-setting"><input id="settingsAutoZip" type="checkbox" checked /><span>自动生成压缩包</span></label>
+            <div class="settings-card-heading">
+              <div><p class="label">日常设置</p><h3>工作目录</h3></div>
+              <span class="version-status">全局默认</span>
             </div>
-            <div class="settings-actions">
-              <button id="choosePortfolioRootBtn" type="button">选择作品集目录</button>
-              <button id="savePathSettingsBtn" class="primary-button" type="button">保存目录设置</button>
-              <button id="runExistingWorkPackageBtn" type="button">运行现有一键工作包</button>
+            <p class="path-line">素材页和分发页可以临时切换目录；这里保存软件每次启动时使用的默认位置。</p>
+            <div class="settings-path-list">
+              <label class="settings-path-row">
+                <span><b>素材目录</b><small>自动扫描图片、TXT 与子文件夹</small></span>
+                <input id="settingsMaterialRoot" class="search-input" type="text" />
+                <button id="chooseSettingsMaterialRootBtn" type="button">选择</button>
+              </label>
+              <label class="settings-path-row">
+                <span><b>成品目录</b><small>保存作品集与分发记录</small></span>
+                <input id="settingsPortfolioRoot" class="search-input" type="text" />
+                <button id="choosePortfolioRootBtn" type="button">选择</button>
+              </label>
             </div>
+            <div class="settings-actions"><button id="savePathSettingsBtn" class="primary-button" type="button">保存目录</button></div>
           </section>
           <section class="settings-card cloud-backup-card">
             <div class="settings-card-heading">
-              <div><p class="label">复用人生游戏系统配置</p><h3>坚果云备份</h3></div>
+              <div><p class="label">异地保护</p><h3>备份与恢复</h3></div>
               <span class="version-status" id="cloudBackupStatus">读取中</span>
             </div>
-            <p class="path-line">直接沿用人生游戏系统已登录的坚果云 WebDAV。账号和应用密码使用 Windows 当前用户加密保存，不进入仓库、日志或诊断信息。</p>
+            <p class="path-line">沿用本机已保存的坚果云配置，备份设置、提示词、任务索引与分发记录；素材和成品仍以本地文件夹为准。</p>
             <div class="cloud-backup-summary">
               <article><span>配置来源</span><strong id="cloudBackupSource">尚未读取</strong></article>
-              <article><span>备份账号</span><strong id="cloudBackupAccount">—</strong></article>
               <article><span>云端目录</span><strong id="cloudBackupPath">—</strong></article>
               <article><span>最近备份</span><strong id="cloudBackupTime">尚未备份</strong></article>
             </div>
             <div class="settings-actions">
-              <button id="importLifeGameCloudBtn" class="primary-button" type="button">沿用人生游戏配置</button>
+              <button id="importLifeGameCloudBtn" type="button">读取本机配置</button>
               <button id="testCloudBackupBtn" type="button">测试连接</button>
-              <button id="runCloudBackupBtn" type="button">立即备份</button>
+              <button id="runCloudBackupBtn" class="primary-button" type="button">立即备份</button>
             </div>
-            <p class="path-line" id="cloudBackupMessage">备份范围：设置、提示词、生产任务索引、设备备注、分发记录和防重复账本；素材与成品大文件仍以本地文件夹为真源。</p>
+            <p class="settings-message" id="cloudBackupMessage">正在读取备份状态…</p>
           </section>
           <section class="settings-card dedup-card">
             <div class="settings-card-heading">
-              <div><p class="label">本地历史沉淀</p><h3>数据与防重复</h3></div>
+              <div><p class="label">本地记录</p><h3>生产与分发数据</h3></div>
               <span class="version-status">只存本机</span>
             </div>
-            <p class="path-line">生产去重读取一键工作包的图片组 SHA-256 与 dHash 历史库；手机和公众号使用记录单独保存。</p>
+            <p class="path-line">用于生成去重和分发防重。不会上传素材内容，也不会记录账号密码。</p>
             <div class="dedup-stats">
-              <article><span>历史图片组</span><strong id="dedupProductionGroups">—</strong><small>组作品</small></article>
-              <article><span>精确哈希</span><strong id="dedupExactGroups">—</strong><small>组可查</small></article>
-              <article><span>视觉哈希</span><strong id="dedupPerceptualGroups">—</strong><small>组可查</small></article>
-              <article><span>手机已使用</span><strong id="dedupMobileUsed">—</strong><small>个合集</small></article>
-              <article><span>公众号已使用</span><strong id="dedupOfficialUsed">—</strong><small>个合集</small></article>
+              <article><span>生产历史</span><strong id="dedupProductionGroups">—</strong><small>组作品</small></article>
+              <article><span>手机分发</span><strong id="dedupMobileUsed">—</strong><small>个合集</small></article>
+              <article><span>公众号分发</span><strong id="dedupOfficialUsed">—</strong><small>个合集</small></article>
             </div>
             <div class="settings-actions">
-              <button id="syncDedupHistoryBtn" class="primary-button" type="button">同步本地记录</button>
+              <button id="syncDedupHistoryBtn" class="primary-button" type="button">刷新数据</button>
               <button id="openDedupRootBtn" type="button">打开数据目录</button>
-              <button id="exportDedupLedgerBtn" type="button">导出防重复账本</button>
+              <button id="exportDedupLedgerBtn" type="button">导出账本</button>
             </div>
-            <p class="path-line" id="dedupSummary">尚未读取防重复账本。</p>
-          </section>
-          <section class="settings-card extension-card">
-            <div class="settings-card-heading">
-              <div><p class="label">真实 ChatGPT 页面</p><h3>GPT 助手扩展</h3></div>
-              <span class="version-status">浏览器端</span>
-            </div>
-            <p class="path-line">Google 与 ChatGPT 登录保留在受信任的 Chrome / Edge；扩展负责真实网页里的对话树、成品区和素材区，本地中控只提供路径、文件和去重数据。</p>
-            <div class="settings-actions">
-              <button id="openExtensionRootBtn" class="primary-button" type="button">打开扩展目录</button>
-              <button id="copyExtensionAddressBtn" type="button">复制安装地址</button>
-            </div>
+            <p class="settings-message" id="dedupSummary">尚未读取本地账本。</p>
           </section>
           <section class="settings-card version-card">
             <div class="version-summary">
-              <div><p class="label">应用版本</p><h3 id="settingsVersion">读取中…</h3><p id="settingsVersionChannel">本地便携版</p></div>
+              <div><p class="label">软件与诊断</p><h3 id="settingsVersion">读取中…</h3><p id="settingsVersionChannel">本地开发版</p></div>
               <span class="version-status" id="settingsVersionStatus">已安装</span>
             </div>
             <div class="settings-actions">
-              <button id="checkAppUpdateBtn" class="primary-button" type="button">检查当前版本</button>
-              <button id="openReleaseRootBtn" type="button">打开发布包目录</button>
               <button id="copyDiagnosticsBtn" type="button">复制诊断信息</button>
               <button id="openRuntimeRootBtn" type="button">打开运行数据</button>
             </div>
             <p class="path-line" id="settingsDiagnosticsSummary">版本、数据目录和桌面运行状态会在这里核对。</p>
           </section>
-          <section class="settings-card advanced-card"><h3>更多工具</h3><div class="settings-actions"><button data-jump="prompts">提示词版本</button><button data-jump="juguang">聚光运营</button><button data-jump="workflow">生产日志</button></div></section>
         </section>
       </section>
 
@@ -574,8 +574,8 @@
       <button id="contextRename" type="button">重命名</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js"></script>
-    <script src="/material-workspace.js"></script>
-    <script src="/app.js"></script>
+    <script src="/distribution-ui.js?v=0.11.4"></script>
+    <script src="/material-workspace.js?v=0.11.4"></script>
+    <script src="/app.js?v=0.11.4"></script>
   </body>
 </html>
