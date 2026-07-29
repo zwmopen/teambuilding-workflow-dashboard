@@ -1,6 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { applySuggestedTitles, buildCopyPrompt, buildProductionPlan, recipeForTemplate } = require("./production-recipes");
+const {
+  applySuggestedTitles,
+  buildCopyPrompt,
+  buildPagePrompt,
+  buildProductionPlan,
+  recipeForTemplate
+} = require("./production-recipes");
 
 test("chat-derived template recipes identify the three long-term master styles", () => {
   assert.equal(recipeForTemplate("米字格大字四宫格封面 × 黄底引号手写标题").id, "rice-grid-quotes");
@@ -26,6 +32,18 @@ test("copy prompt contains the latest factual and optional-project rules", () =>
   assert.match(prompt, /10人起接/);
   assert.match(prompt, /可选、可组合或路线参考/);
   assert.match(prompt, /参考价/);
+});
+
+test("keycap inner-page prompt forbids white rounded cards and extra text", () => {
+  const plan = buildProductionPlan({
+    mode: "set",
+    materialPath: "D:\\素材\\杭州农庄",
+    templatePath: "D:\\模板\\湖景绿底价格信息封面 × 彩色键帽大字四宫格项目拼图模板",
+    materialImages: ["D:\\素材\\杭州农庄\\P1.jpg", "D:\\素材\\杭州农庄\\P2.jpg"]
+  });
+  const prompt = buildPagePrompt(plan, plan.pages[1], "樱桃采摘");
+  assert.match(prompt, /禁止绿色外框、白色边框、白色缝隙、圆角照片卡/);
+  assert.match(prompt, /禁止页眉、页脚、品牌、水印、说明文字和额外小字/);
 });
 
 test("one, set and material-driven page counts are explicit", () => {

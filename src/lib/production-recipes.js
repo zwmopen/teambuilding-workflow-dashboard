@@ -142,6 +142,12 @@ function buildProductionPlan({
 }
 
 function buildPagePrompt(plan, page, facts = "", extraPrompt = "", quality = "严格母版") {
+  const innerPageGuard = page.role === "inner"
+    ? "内页只允许显示本页准确标题；禁止页眉、页脚、品牌、水印、说明文字和额外小字。标题放在母版原有中部位置，顶部与四周必须留出安全边距，任何文字不得裁切出画面。"
+    : "";
+  const keycapGuard = plan.recipe.id === "green-info-keycaps" && page.role === "inner"
+    ? "本页必须是铺满整张画布的无白边四宫格：四张照片直达画面外沿、直角硬拼、只允许极弱拼缝。禁止绿色外框、白色边框、白色缝隙、圆角照片卡、阴影卡片和海报底板。彩色键帽标题仅横压在四格中央交界处，所有键帽必须缩小后保持一行横排，禁止拆成两行。"
+    : "";
   return [
     "执行已经确认的本地团建图文生产任务。不是自由设计，也不是做相似风格。",
     `模板生产配方：${plan.recipe.name}。`,
@@ -156,6 +162,8 @@ function buildPagePrompt(plan, page, facts = "", extraPrompt = "", quality = "�
     "业务规则：江浙沪企业团建，10人起接。素材没有明确价格时不得出现任何价格。",
     "事实锁：不得虚构地点、项目、车程、价格、建筑、人物活动和素材中不存在的露营或篝火。",
     "人物、分区、静物和道具必须去重；保持真实手机抓拍感，不要广告模特、塑料脸和统一假笑。",
+    innerPageGuard,
+    keycapGuard,
     `质量档：${quality}。`,
     extraPrompt ? `本批补充要求：${String(extraPrompt).slice(0, 12000)}` : "",
     facts ? `素材事实（只能从这里取业务事实）：\n${String(facts).slice(0, 12000)}` : ""

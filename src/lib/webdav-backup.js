@@ -18,8 +18,8 @@ function networkFetch(input, options = {}) {
 
 const dpapiProtectScript = [
   "Add-Type -AssemblyName System.Security",
-  "$plain = [Console]::In.ReadToEnd()",
-  "$bytes = [Text.Encoding]::UTF8.GetBytes($plain)",
+  "$encoded = [Console]::In.ReadToEnd()",
+  "$bytes = [Convert]::FromBase64String($encoded)",
   "$encrypted = [Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)",
   "[Convert]::ToBase64String($encrypted)"
 ].join("; ");
@@ -29,7 +29,7 @@ const dpapiUnprotectScript = [
   "$encoded = [Console]::In.ReadToEnd()",
   "$bytes = [Convert]::FromBase64String($encoded)",
   "$plain = [Security.Cryptography.ProtectedData]::Unprotect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)",
-  "[Text.Encoding]::UTF8.GetString($plain)"
+  "[Convert]::ToBase64String($plain)"
 ].join("; ");
 
 function powershellWithInput(script, input) {
@@ -50,7 +50,8 @@ function powershellWithInput(script, input) {
 
 function saveSecureConfig(filePath, config) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const encrypted = powershellWithInput(dpapiProtectScript, JSON.stringify(config));
+  const plainBase64 = Buffer.from(JSON.stringify(config), "utf8").toString("base64");
+  const encrypted = powershellWithInput(dpapiProtectScript, plainBase64);
   fs.writeFileSync(filePath, JSON.stringify({
     version: 1,
     protection: "windows-current-user",
@@ -58,11 +59,32 @@ function saveSecureConfig(filePath, config) {
   }, null, 2), "utf8");
 }
 
+function saveManualConfig(filePath, input = {}) {
+  const url = String(input.url || DEFAULT_URL).trim();
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new Error("坚果云 WebDAV 地址格式不正确"); }
+  if (parsed.protocol !== "https:") throw new Error("坚果云 WebDAV 必须使用 HTTPS");
+  const username = String(input.username || "").trim();
+  const password = String(input.password || "");
+  if (!username || !password) throw new Error("请填写坚果云账号和应用密码");
+  const normalized = {
+    url: parsed.toString(),
+    username,
+    password,
+    basePath: String(input.basePath || "/团建工作台备份").trim().slice(0, 300),
+    importedFrom: "团建工作台本机安全设置",
+    importedAt: new Date().toISOString()
+  };
+  saveSecureConfig(filePath, normalized);
+  return normalized;
+}
+
 function readSecureConfig(filePath) {
   if (!fs.existsSync(filePath)) return null;
   const container = JSON.parse(fs.readFileSync(filePath, "utf8"));
   if (!container?.encrypted) return null;
-  return JSON.parse(powershellWithInput(dpapiUnprotectScript, container.encrypted));
+  const plainBase64 = powershellWithInput(dpapiUnprotectScript, container.encrypted);
+  return JSON.parse(Buffer.from(plainBase64, "base64").toString("utf8"));
 }
 
 function evpBytesToKey(password, salt, keyLength = 32, ivLength = 16) {
@@ -218,6 +240,16 @@ async function ensureRemotePath(config, remotePath = "") {
   }
 }
 
+function largeUploadErrorMessage(status) {
+  if (Number(status) === 403) {
+    return "坚果云拒绝上传（403）：可能已达到云端上传流量/空间额度，或当前目录无写入权限；已上传清单会保留，可在额度恢复后继续";
+  }
+  if (Number(status) === 507) {
+    return "坚果云空间不足（507）：已上传清单会保留，释放空间后可以继续";
+  }
+  return `坚果云大文件上传失败（${status}）`;
+}
+
 async function uploadFile(config, localPath, remotePath) {
   const stats = fs.statSync(localPath);
   if (!stats.isFile()) throw new Error("大文件备份来源不是文件");
@@ -232,7 +264,7 @@ async function uploadFile(config, localPath, remotePath) {
     duplex: "half"
   });
   if (![200, 201, 204].includes(response.status)) {
-    throw new Error(`坚果云大文件上传失败（${response.status}）`);
+    throw new Error(largeUploadErrorMessage(response.status));
   }
   return { size: stats.size, remotePath };
 }
@@ -250,6 +282,20 @@ async function uploadBackup(config, payload, fileName) {
   }
 }
 
+async function downloadBackup(config, fileName = "latest.json") {
+  const response = await networkFetch(webdavUrl(config, fileName), {
+    method: "GET",
+    headers: authHeaders(config, { Accept: "application/json" })
+  });
+  if (response.status === 404) throw new Error("云端还没有可恢复的团建工作台备份");
+  if (!response.ok) throw new Error(`坚果云备份读取失败（${response.status}）`);
+  const payload = await response.json();
+  if (payload?.schema !== "teambuilding-workbench-backup-v1" || !payload.records) {
+    throw new Error("云端最新文件不是可识别的团建工作台备份");
+  }
+  return payload;
+}
+
 function publicStatus(config, metadata = {}) {
   if (!config) return { configured: false, provider: "坚果云 WebDAV", ...metadata };
   const [name, domain = ""] = String(config.username).split("@");
@@ -265,12 +311,15 @@ function publicStatus(config, metadata = {}) {
 }
 
 module.exports = {
+  downloadBackup,
   ensureRemotePath,
   importLifeGameConfig,
   publicStatus,
   readSecureConfig,
+  saveManualConfig,
   saveSecureConfig,
   testConnection,
   uploadBackup,
-  uploadFile
+  uploadFile,
+  largeUploadErrorMessage
 };

@@ -4205,6 +4205,149 @@ body[data-theme="glass"] .settings-card {
   }
 }
 
+/* 0.12.0 production recovery, cloud recovery and final density pass */
+.workbench-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.workbench-task-actions[hidden],
+.workbench-quality-summary[hidden] {
+  display: none;
+}
+
+.workbench-task-actions button {
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--panel-light) 86%, transparent);
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.workbench-task-actions .primary-button {
+  color: #fff;
+  border-color: transparent;
+  background: var(--accent);
+}
+
+.workbench-quality-summary {
+  display: grid;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, #d19842 30%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, #fff4dc 48%, var(--panel-light));
+}
+
+.workbench-quality-summary strong,
+.workbench-quality-summary span,
+.workbench-quality-summary small {
+  display: block;
+}
+
+.workbench-quality-summary strong {
+  color: var(--ink);
+  font-size: 11.5px;
+}
+
+.workbench-quality-summary span,
+.workbench-quality-summary small {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.cloud-credential-panel {
+  margin: 14px 0;
+  padding: 0 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--panel-light) 72%, transparent);
+}
+
+.cloud-credential-panel summary {
+  padding: 12px 0;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.cloud-credential-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.cloud-credential-grid label {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.cloud-credential-grid input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  margin-top: 4px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--input);
+}
+
+.settings-layout > .api-settings-card {
+  grid-column: span 5;
+}
+
+.settings-layout > .cloud-backup-card {
+  grid-column: span 7;
+}
+
+.settings-layout > .version-card {
+  grid-column: 1 / -1;
+}
+
+.plugin-market-hero {
+  padding: 20px 22px;
+}
+
+.plugin-market-hero h3 {
+  font-size: clamp(20px, 1.9vw, 28px);
+}
+
+.plugin-market-card {
+  min-height: 250px;
+}
+
+.workbench-run-settings.compact label {
+  font-size: 11px;
+}
+
+.workbench-run-settings.compact select {
+  font-size: 12px;
+}
+
+@media (max-width: 1180px) {
+  .settings-layout > :is(.api-settings-card, .cloud-backup-card, .version-card) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 680px) {
+  .cloud-credential-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* 0.10.0 素材生产工作台：三栏直线动线 */
 .production-workbench-shell{height:100%;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:12px;padding:14px 16px 16px}
 .production-workbench-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;padding:2px 4px}

@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -11,6 +11,19 @@ const RUNTIME_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\
 const DESKTOP_LOG_FILE = path.join(RUNTIME_ROOT, "desktop.log");
 let serverProcess = null;
 let mainWindow = null;
+
+ipcMain.handle("desktop:pick-folder", async (_event, options = {}) => {
+  const dialogOptions = {
+    title: String(options.title || "选择文件夹"),
+    defaultPath: String(options.defaultPath || "").trim() || undefined,
+    buttonLabel: "选择",
+    properties: ["openDirectory", "createDirectory", "promptToCreate"]
+  };
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, dialogOptions)
+    : await dialog.showOpenDialog(dialogOptions);
+  return result.canceled ? "" : String(result.filePaths?.[0] || "");
+});
 
 if (!app.isPackaged || process.env.TB_DESKTOP_SMOKE === "1") {
   app.commandLine.appendSwitch("remote-debugging-port", "9333");

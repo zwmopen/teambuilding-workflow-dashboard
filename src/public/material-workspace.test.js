@@ -60,15 +60,18 @@ test("流量转化状态不再暴露旧版独立助手措辞", () => {
   const appSource = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
   assert.doesNotMatch(html, /正在连接江湖团建转化助手/);
   assert.doesNotMatch(appSource, /转化助手暂时没有连接/);
-  assert.match(html, /正在加载流量转化/);
+  assert.match(html, /id="conversionEmbeddedStatus" hidden/);
+  assert.doesNotMatch(html, /正在加载流量转化/);
 });
 
-test("设置页集中全局接口、目录、备份、本地数据与诊断", () => {
+test("设置页只保留全局接口、备份恢复与软件诊断", () => {
   const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
-  assert.match(html, /id="settingsMaterialRoot"/);
-  assert.match(html, /id="settingsPortfolioRoot"/);
+  assert.doesNotMatch(html, /id="settingsMaterialRoot"/);
+  assert.doesNotMatch(html, /id="settingsPortfolioRoot"/);
   assert.match(html, /id="cloudBackupStatus"/);
-  assert.match(html, /id="dedupProductionGroups"/);
+  assert.match(html, /id="inspectCloudBackupBtn"/);
+  assert.match(html, /id="restoreCloudBackupBtn"/);
+  assert.doesNotMatch(html, /id="dedupProductionGroups"/);
   assert.match(html, /id="settingsVersion"/);
   assert.match(html, /id="productionApiProvider"/);
   assert.match(html, /id="productionTextModel"/);

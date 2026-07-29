@@ -40,6 +40,7 @@ let deviceScanRunning = false;
 let activeProductionPlan = null;
 let activeProductionJobId = "";
 let productionJobPollTimer = null;
+let productionTasksRestored = false;
 let workbenchProgressValue = 0;
 const workbenchProductionLog = [];
 const workbenchSelectedMaterials = new Set();
@@ -885,7 +886,7 @@ async function loadProductionWorkspace() {
 
 const WORKBENCH_PROVIDER_DEFAULTS = {
   "local-openai": { baseUrl: "http://localhost:62104/v1", imageModel: "gpt-image-2", label: "本地 GPT 生图" },
-  bytecat: { baseUrl: "https://codecdn.bytecatcode.org/v1", imageModel: "gpt-image-2", label: "ByteCat" },
+  bytecat: { baseUrl: "https://bytecat.lamclod.cn/v1", imageModel: "gpt-image-2", label: "ByteCat" },
   minimax: { baseUrl: "https://api.minimaxi.com/v1", imageModel: "image-01", label: "MiniMax" }
 };
 
@@ -928,7 +929,7 @@ async function fetchModelCatalog(payload) {
   return api("/api/image-api/test", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ ...payload, quiet: true })
   });
 }
 
@@ -1067,6 +1068,7 @@ async function renderProductionWorkbench() {
   if (!selectedTemplate) selectedTemplate = dashboard?.templates?.templates?.find((item) => templateTypeOf(item) === workbenchTemplateType) || null;
   renderWorkbenchTemplates();
   refreshWorkbenchModels().catch(() => {});
+  restoreLatestProductionTask().catch(() => {});
 }
 
 function syncWorkbenchProductionSettings() {
@@ -1336,11 +1338,22 @@ async function confirmProductionPlan() {
 function renderProductionJob(job) {
   const percent = job.total ? Math.round((job.progress / job.total) * 100) : 0;
   const suffix = job.status === "running" ? ` · ${job.progress}/${job.total} 张（${percent}%）` : "";
-  const overallPercent = job.status === "review-ready" ? 100 : job.status === "running" ? 30 + Math.round(percent * 0.7) : workbenchProgressValue;
-  const phase = job.status === "review-ready" ? "生产完成" : job.status === "failed" ? "生产失败" : "正在生图";
-  setProductionLiveStatus(`${job.message || "正在生产"}${suffix}`, job.status === "failed" ? "error" : job.status === "running" ? "running" : "", overallPercent, phase);
+  const finished = ["review-ready", "needs-rework"].includes(job.status);
+  const overallPercent = finished ? 100 : job.status === "running" ? 30 + Math.round(percent * 0.7) : workbenchProgressValue;
+  const phaseLabels = {
+    "review-ready": "生产完成",
+    "needs-rework": "需要补做",
+    interrupted: "可继续",
+    cancelled: "已停止",
+    failed: "生产失败"
+  };
+  const phase = phaseLabels[job.status] || "正在生图";
+  const errorTone = ["failed", "needs-rework"].includes(job.status) ? "error" : job.status === "running" ? "running" : "";
+  setProductionLiveStatus(`${job.message || "正在生产"}${suffix}`, errorTone, overallPercent, phase);
   renderProductionOutputs(job);
-  if (job.status === "review-ready") {
+  renderProductionTaskActions(job);
+  renderProductionQualitySummary(job);
+  if (finished) {
     activeProductionJobId = "";
     activeProductionPlan = null;
     if ($("#productionPlanPanel")) $("#productionPlanPanel").hidden = true;
@@ -1349,7 +1362,7 @@ function renderProductionJob(job) {
       $("#workbenchEditPlanBtn").hidden = true;
       $("#workbenchEditPlanBtn").disabled = false;
     }
-    if ($("#workbenchStartProductionBtn")) {
+    if ($("#workbenchStartProductionBtn") && job.status === "review-ready") {
       $("#workbenchStartProductionBtn").textContent = "开始下一次生产";
       $("#workbenchStartProductionBtn").disabled = false;
     }
@@ -1361,9 +1374,79 @@ function renderProductionJob(job) {
     $("#productionLiveStatus")?.append(" ", openButton);
     loadProductionWorkspace().catch(() => {});
   }
-  if (job.status === "failed") {
+  if (["failed", "interrupted", "cancelled", "needs-rework"].includes(job.status)) {
     activeProductionJobId = "";
-    setProductionLiveStatus(`${job.message} ${job.error || ""}`, "error");
+    if (job.status === "failed") setProductionLiveStatus(`${job.message} ${job.error || ""}`, "error");
+  }
+}
+
+function renderProductionTaskActions(job) {
+  const actions = $("#workbenchTaskActions");
+  if (!actions) return;
+  actions.hidden = false;
+  const buttons = [];
+  if (job.cancelable) buttons.push(`<button type="button" data-production-cancel="${escapeHtml(job.id)}">完成当前页后停止</button>`);
+  if (job.resumable) buttons.push(`<button class="primary-button" type="button" data-production-resume="${escapeHtml(job.id)}">继续未完成页面</button>`);
+  if (job.outputRoots?.[0]) buttons.push(`<button type="button" data-production-open="${escapeHtml(job.outputRoots[0])}">打开本次待审目录</button>`);
+  const report = job.qualityReports?.find((item) => item.reportFile);
+  if (report) buttons.push(`<button type="button" data-production-report="${escapeHtml(report.reportFile)}">查看质量报告</button>`);
+  actions.innerHTML = buttons.join("");
+  actions.hidden = !buttons.length;
+}
+
+function renderProductionQualitySummary(job) {
+  const container = $("#workbenchQualitySummary");
+  if (!container) return;
+  const reports = job.qualityReports || [];
+  if (!reports.length) {
+    container.hidden = true;
+    container.innerHTML = "";
+    return;
+  }
+  const failures = reports.reduce((sum, report) => sum + Number(report.summary?.failures || 0), 0);
+  const warnings = reports.reduce((sum, report) => sum + Number(report.summary?.warnings || 0), 0);
+  const durationMs = Number(job.durationMs || 0);
+  container.hidden = false;
+  container.innerHTML = `
+    <strong>自动质检：${failures ? `${failures} 项需补做` : "文件检查通过"}</strong>
+    <span>${reports.length} 套 · ${job.progress}/${job.total} 张 · ${warnings} 条人工复核提醒 · 用时 ${Math.max(1, Math.round(durationMs / 60000))} 分钟</span>
+    <small>已检查数量、尺寸、重复图、损坏文件和文案风险词；母版一致性与真实感请按报告最终看图。</small>
+  `;
+}
+
+async function resumeProductionJob(jobId) {
+  const result = await api(`/api/production/jobs/${encodeURIComponent(jobId)}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...currentImageApiPayload(),
+      textModel: $("#workbenchTextModel")?.value || "gpt-5.6-terra"
+    })
+  });
+  activeProductionJobId = result.job.id;
+  renderProductionJob(result.job);
+  startProductionJobPolling();
+}
+
+async function cancelProductionJob(jobId) {
+  const result = await api(`/api/production/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+  renderProductionJob(result.job);
+}
+
+async function restoreLatestProductionTask() {
+  if (productionTasksRestored || activeProductionJobId) return;
+  productionTasksRestored = true;
+  const result = await api("/api/production/tasks");
+  const latest = (result.tasks || [])[0];
+  if (!latest) return;
+  if (latest.status === "running") {
+    activeProductionJobId = latest.id;
+    renderProductionJob(latest);
+    startProductionJobPolling();
+    return;
+  }
+  if (["interrupted", "failed", "needs-rework", "cancelled"].includes(latest.status)) {
+    renderProductionJob(latest);
   }
 }
 
@@ -1421,11 +1504,17 @@ function buildDiagnosticsText() {
   ].join("\n");
 }
 
-async function chooseFolder(description) {
+async function chooseFolder(description, defaultPath = "") {
+  if (window.desktopDialogs?.pickFolder) {
+    return await window.desktopDialogs.pickFolder({
+      title: description,
+      defaultPath
+    });
+  }
   const result = await api("/api/pick-folder", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ description })
+    body: JSON.stringify({ description, defaultPath })
   });
   return result.path || "";
 }
@@ -3021,8 +3110,8 @@ function workbenchAssistantCapabilities() {
     "2. 给已确认的指定设备发送某个作品集，或补精准/泛流量作品；",
     "3. 打开内容制作、内容分发、流量转化、插件市场和各页设置；",
     "4. 查看当前作品储备、在线设备和运行任务；",
-    "5. 帮你进入批量生产流程，保留素材和模板的人工确认；",
-    "6. 打开备份设置并说明当前备份状态。",
+    "5. 建立批量生产计划、查询生产进度、停止或继续未完成任务；",
+    "6. 立即备份、验证云端备份是否可恢复，并打开相关设置。",
     "不明确或有风险的指令我会先追问，不会猜着删除、覆盖或给陌生设备发送。"
   ].join("\n");
 }
@@ -3114,6 +3203,54 @@ async function executeWorkbenchAssistantCommand(rawCommand, options = {}) {
     appendWorkbenchAssistantMessage(`检测完成：当前发现 ${online} 台在线设备，分发页已经刷新。`);
     return;
   }
+  if (/生产|生图|制作/.test(command) && /状态|进度|到哪|完成多少/.test(command)) {
+    const result = await api("/api/production/tasks");
+    const latest = (result.tasks || [])[0];
+    if (!latest) {
+      appendWorkbenchAssistantMessage("当前没有生产任务。");
+      return;
+    }
+    const percent = latest.total ? Math.round((latest.progress / latest.total) * 100) : 0;
+    appendWorkbenchAssistantMessage(`最近任务：${latest.message || latest.status}；已完成 ${latest.progress}/${latest.total} 张（${percent}%），状态 ${latest.status}。`);
+    return;
+  }
+  if (/继续|恢复|重试|补做/.test(command) && /生产|生图|失败页|任务/.test(command)) {
+    const result = await api("/api/production/tasks");
+    const latest = (result.tasks || []).find((task) => task.resumable);
+    if (!latest) {
+      appendWorkbenchAssistantMessage("没有可继续的生产任务。");
+      return;
+    }
+    activateTab("dashboard");
+    appendWorkbenchAssistantMessage(`正在继续最近任务，已完成的 ${latest.progress} 张不会重复生成。`);
+    await resumeProductionJob(latest.id);
+    return;
+  }
+  if (/停止|取消/.test(command) && /生产|生图|任务/.test(command)) {
+    const result = await api("/api/production/tasks");
+    const running = (result.tasks || []).find((task) => task.cancelable);
+    if (!running) {
+      appendWorkbenchAssistantMessage("当前没有正在运行的生产任务。");
+      return;
+    }
+    await cancelProductionJob(running.id);
+    appendWorkbenchAssistantMessage("已申请停止；系统会在当前页面结束后停下，并保留已经完成的文件。");
+    return;
+  }
+  if (/立即|现在|马上/.test(command) && /备份/.test(command)) {
+    activateTab("settings");
+    appendWorkbenchAssistantMessage("正在备份工作台设置、提示词、任务索引和分发记录。");
+    await runCloudBackup();
+    appendWorkbenchAssistantMessage("坚果云备份已经完成。");
+    return;
+  }
+  if (/验证|检查|测试/.test(command) && /备份|恢复/.test(command)) {
+    activateTab("settings");
+    appendWorkbenchAssistantMessage("正在读取云端最新备份并验证恢复格式。");
+    await inspectCloudBackup();
+    appendWorkbenchAssistantMessage("验证完成，详情已经显示在设置页。");
+    return;
+  }
   if (/设置/.test(command) && /分发|设备|发送/.test(command)) {
     activateTab("distribution");
     openPageSettings("distribution");
@@ -3190,7 +3327,13 @@ async function executeWorkbenchAssistantCommand(rawCommand, options = {}) {
   const productionCount = Number(command.match(/(?:生产|制作)\s*(\d+)\s*(?:个|套)/)?.[1] || 0);
   if (productionCount) {
     activateTab("dashboard");
-    appendWorkbenchAssistantMessage(`已经切到内容制作。请先选素材和模板；确认后会按 ${productionCount} 套执行，避免误用素材。`);
+    const selectedCount = selectedProductionMaterials().length;
+    if (selectedCount && selectedTemplate) {
+      appendWorkbenchAssistantMessage(`当前已选 ${selectedCount} 个素材文件夹和模板 ${selectedTemplate.name || selectedTemplate.id}。我正在建立生产计划，计划出来后请确认页面清单。`);
+      await createProductionPlan();
+    } else {
+      appendWorkbenchAssistantMessage(`已经切到内容制作。请在左侧选择 ${productionCount} 个素材文件夹和一个模板；系统会自动按选择数量建立批量计划。`);
+    }
     return;
   }
   if (options.allowModel === false) {
@@ -3781,10 +3924,6 @@ async function ensureEmbeddedConversionApp(force = false) {
   const status = $("#conversionEmbeddedStatus");
   if (!frame) return;
   if (!force && frame.dataset.ready === "1") return;
-  if (status) {
-    status.hidden = false;
-    status.textContent = "正在加载流量转化…";
-  }
   try {
     let snapshot = await api("/api/conversion/snapshot");
     if (!snapshot?.ok) {
@@ -3793,13 +3932,8 @@ async function ensureEmbeddedConversionApp(force = false) {
       snapshot = await api("/api/conversion/snapshot");
     }
     if (!snapshot?.ok) throw new Error(snapshot?.error || "流量转化模块尚未就绪");
-    frame.onload = () => {
-      frame.dataset.ready = "1";
-      syncConversionTheme();
-      if (status) status.hidden = true;
-    };
     const theme = document.body.dataset.theme || "neo";
-    frame.src = `/conversion-integrated/?embedded=1&theme=${encodeURIComponent(theme)}&v=${Date.now()}`;
+    frame.src = `/conversion-integrated/?embedded=1&theme=${encodeURIComponent(theme)}${force ? `&retry=${Date.now()}` : ""}`;
   } catch (error) {
     if (status) {
       status.hidden = false;
@@ -3807,6 +3941,20 @@ async function ensureEmbeddedConversionApp(force = false) {
       $("#retryConversionEmbedBtn")?.addEventListener("click", () => ensureEmbeddedConversionApp(true));
     }
   }
+}
+
+function prepareEmbeddedConversionApp() {
+  const frame = $("#conversionAppFrame");
+  const status = $("#conversionEmbeddedStatus");
+  if (!frame) return;
+  frame.addEventListener("load", () => {
+    frame.dataset.ready = "1";
+    syncConversionTheme();
+    if (status) status.hidden = true;
+  });
+  frame.addEventListener("error", () => {
+    frame.dataset.ready = "0";
+  });
 }
 
 async function copyMobileConversionEntry() {
@@ -4306,6 +4454,8 @@ function renderCloudBackupStatus(status = {}) {
   $("#testCloudBackupBtn").disabled = !status.configured;
   $("#runCloudBackupBtn").disabled = !status.configured;
   $("#runLargeCloudBackupBtn").disabled = !status.configured;
+  $("#inspectCloudBackupBtn").disabled = !status.configured;
+  $("#restoreCloudBackupBtn").disabled = !status.configured;
   renderLargeCloudBackupProgress(status.largeBackup);
 }
 
@@ -4349,6 +4499,37 @@ async function importLifeGameCloudConfig() {
   }
 }
 
+async function saveCloudBackupConfig() {
+  const passwordInput = $("#cloudBackupPassword");
+  const password = passwordInput?.value || "";
+  if (!$("#cloudBackupUsername")?.value.trim() || !password) {
+    showSystemNotice("坚果云配置不完整", "首次设置需要填写账号和应用密码；已经保存过时无需重复填写。", { tone: "danger" });
+    return;
+  }
+  $("#saveCloudBackupConfigBtn").disabled = true;
+  $("#cloudBackupMessage").textContent = "正在加密保存并测试坚果云连接…";
+  try {
+    const status = await api("/api/cloud-backup/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: $("#cloudBackupUrl")?.value || "https://dav.jianguoyun.com/dav/",
+        username: $("#cloudBackupUsername")?.value || "",
+        password,
+        basePath: $("#cloudBackupBasePath")?.value || "/团建工作台备份"
+      })
+    });
+    if (passwordInput) passwordInput.value = "";
+    renderCloudBackupStatus(status);
+    toast("坚果云已安全接入");
+  } catch (error) {
+    $("#cloudBackupMessage").textContent = error.message;
+    showSystemNotice("坚果云配置没有保存", error.message, { tone: "danger" });
+  } finally {
+    $("#saveCloudBackupConfigBtn").disabled = false;
+  }
+}
+
 async function testCloudBackup() {
   $("#testCloudBackupBtn").disabled = true;
   $("#cloudBackupMessage").textContent = "正在测试坚果云连接…";
@@ -4376,6 +4557,52 @@ async function runCloudBackup() {
     $("#cloudBackupMessage").textContent = error.message;
   } finally {
     $("#runCloudBackupBtn").disabled = false;
+  }
+}
+
+async function inspectCloudBackup() {
+  $("#inspectCloudBackupBtn").disabled = true;
+  $("#cloudBackupMessage").textContent = "正在从云端读取最新备份并核对格式…";
+  try {
+    const result = await api("/api/cloud-backup/inspect-latest", { method: "POST" });
+    $("#cloudBackupMessage").textContent = `${result.message}；备份时间 ${new Date(result.createdAt).toLocaleString("zh-CN", { hour12: false })}`;
+    showSystemNotice("云端备份可以恢复", result.message, {
+      tone: "success",
+      details: [
+        { label: "备份版本", value: result.appVersion || "未知" },
+        { label: "备份时间", value: result.createdAt ? new Date(result.createdAt).toLocaleString("zh-CN", { hour12: false }) : "未知" },
+        { label: "记录数量", value: String(result.recordCount || 0) }
+      ]
+    });
+  } catch (error) {
+    $("#cloudBackupMessage").textContent = error.message;
+    showSystemNotice("云端备份无法恢复", error.message, { tone: "danger" });
+  } finally {
+    $("#inspectCloudBackupBtn").disabled = false;
+  }
+}
+
+async function restoreCloudBackup() {
+  const accepted = window.confirm("将用云端最新记录覆盖本机设置与台账。系统会先自动保存一份恢复前快照。确定继续吗？");
+  if (!accepted) return;
+  $("#restoreCloudBackupBtn").disabled = true;
+  $("#cloudBackupMessage").textContent = "正在保存本机快照并恢复云端记录…";
+  try {
+    const result = await api("/api/cloud-backup/restore-latest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true })
+    });
+    $("#cloudBackupMessage").textContent = result.message;
+    showSystemNotice("云端记录已恢复", result.message, {
+      tone: "success",
+      warning: "重新打开工作台后会按恢复后的设置读取。恢复前的本机快照仍在运行数据目录。"
+    });
+  } catch (error) {
+    $("#cloudBackupMessage").textContent = error.message;
+    showSystemNotice("云端记录没有恢复", error.message, { tone: "danger" });
+  } finally {
+    $("#restoreCloudBackupBtn").disabled = false;
   }
 }
 
@@ -4429,6 +4656,32 @@ function bindEvents() {
   document.addEventListener("click", async (event) => {
     if (!event.target.closest(".custom-select")) closeCustomSelects();
     if (!event.target.closest(".context-menu")) hideContextMenu();
+    const resumeProduction = event.target.closest("[data-production-resume]");
+    if (resumeProduction) {
+      resumeProduction.disabled = true;
+      resumeProductionJob(resumeProduction.dataset.productionResume)
+        .catch((error) => showSystemNotice("未能继续生产", error.message, { tone: "danger" }))
+        .finally(() => { resumeProduction.disabled = false; });
+      return;
+    }
+    const cancelProduction = event.target.closest("[data-production-cancel]");
+    if (cancelProduction) {
+      cancelProduction.disabled = true;
+      cancelProductionJob(cancelProduction.dataset.productionCancel)
+        .catch((error) => showSystemNotice("未能停止任务", error.message, { tone: "danger" }))
+        .finally(() => { cancelProduction.disabled = false; });
+      return;
+    }
+    const openProduction = event.target.closest("[data-production-open]");
+    if (openProduction) {
+      openPath(openProduction.dataset.productionOpen);
+      return;
+    }
+    const productionReport = event.target.closest("[data-production-report]");
+    if (productionReport) {
+      openPath(productionReport.dataset.productionReport);
+      return;
+    }
     const settingsButton = event.target.closest("[data-open-page-settings]");
     if (settingsButton) {
       openPageSettings(settingsButton.dataset.openPageSettings);
@@ -4872,7 +5125,7 @@ function bindEvents() {
         message: "已切换本地 GPT 生图。"
       },
       bytecat: {
-        baseUrl: "https://codecdn.bytecatcode.org/v1",
+        baseUrl: "https://bytecat.lamclod.cn/v1",
         model: "gpt-image-2",
         textModel: "gpt-5.6-terra",
         message: "已切换 ByteCat Image 2.0；图片走 ByteCat，文案自动走本地接口。"
@@ -5103,8 +5356,11 @@ function bindEvents() {
   $("#juguangKeywordSearch")?.addEventListener("input", renderJuguangRecommendations);
   $("#pluginMarketSearch")?.addEventListener("input", renderPluginMarket);
   $("#importLifeGameCloudBtn")?.addEventListener("click", importLifeGameCloudConfig);
+  $("#saveCloudBackupConfigBtn")?.addEventListener("click", saveCloudBackupConfig);
   $("#testCloudBackupBtn")?.addEventListener("click", testCloudBackup);
   $("#runCloudBackupBtn")?.addEventListener("click", runCloudBackup);
+  $("#inspectCloudBackupBtn")?.addEventListener("click", inspectCloudBackup);
+  $("#restoreCloudBackupBtn")?.addEventListener("click", restoreCloudBackup);
   $("#runLargeCloudBackupBtn")?.addEventListener("click", runLargeCloudBackup);
   $("#chooseCloudBackupSourceBtn")?.addEventListener("click", async () => {
     try {
@@ -5245,6 +5501,7 @@ function bindEvents() {
 
 bindEvents();
 bindPaneResizers();
+prepareEmbeddedConversionApp();
 window.addEventListener("message", (event) => {
   if (event.origin !== window.location.origin || event.data?.type !== "jianghu-theme-ready") return;
   const frame = $("#conversionAppFrame");

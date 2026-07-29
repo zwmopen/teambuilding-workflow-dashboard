@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.11.6" />
+    <link rel="stylesheet" href="/styles.css?v=0.12.0" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -149,6 +149,8 @@
                       <span id="workbenchProgressBar"></span>
                     </div>
                     <div id="workbenchProductionStatus" class="workbench-production-status">请选择素材和模板。</div>
+                    <div id="workbenchTaskActions" class="workbench-task-actions" hidden></div>
+                    <div id="workbenchQualitySummary" class="workbench-quality-summary" hidden></div>
                     <ol id="workbenchProductionLog" class="workbench-production-log">
                       <li>等待选择素材与模板</li>
                     </ol>
@@ -338,7 +340,6 @@
           <section class="folder-source-bar" aria-label="作品集目录设置">
             <input id="collectionRootInput" class="search-input" type="text" placeholder="粘贴作品集目录后按回车" />
             <button id="chooseCollectionRootBtn" class="ghost-button" type="button">选择</button>
-            <button id="applyCollectionRootBtn" class="primary-button" type="button">读取</button>
           </section>
           <div class="workflow-stage-toolbar">
             <div class="workflow-stage-tabs" id="collectionStageTabs" aria-label="作品阶段"></div>
@@ -375,7 +376,7 @@
 
       <section class="view" id="conversionView">
         <section class="conversion-embedded-shell">
-          <div class="conversion-embedded-status" id="conversionEmbeddedStatus">正在加载流量转化…</div>
+          <div class="conversion-embedded-status" id="conversionEmbeddedStatus" hidden></div>
           <button class="conversion-mobile-entry" id="conversionMobileEntryBtn" type="button" title="复制安全的手机入口" aria-label="复制安全的手机入口">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/></svg>
           </button>
@@ -421,7 +422,7 @@
 
       <section class="view" id="settingsView">
         <section class="settings-layout">
-          <header class="page-heading settings-heading"><div><p class="label">本机工作空间</p><h2>设置</h2><p>管理全局接口、默认目录、备份与诊断。各业务页面自己的素材路径，在对应页面单独设置。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置的使用说明" aria-label="查看设置说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button></header>
+          <header class="page-heading settings-heading"><div><p class="label">本机工作空间</p><h2>设置</h2><p>这里只保留全局接口、云备份与软件诊断；业务目录都在对应页面单独设置并自动保存。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置的使用说明" aria-label="查看设置说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button></header>
           <section class="settings-card api-settings-card">
             <div class="settings-card-heading"><div><p class="label">全局能力</p><h3>API 与模型</h3></div><span class="version-status">全工作台共用</span></div>
             <p class="path-line">统一配置生图与文案接口。素材生产、流量转化和后续功能都从这里调用；密钥只保存在本机。</p>
@@ -434,42 +435,36 @@
             </div>
             <div class="settings-actions"><button id="saveProductionApiBtn" class="primary-button" type="button">保存接口</button><button id="testProductionApiBtn" type="button">测试连接</button></div>
           </section>
-          <section class="settings-card workspace-settings-card">
-            <div class="settings-card-heading">
-              <div><p class="label">日常设置</p><h3>工作目录</h3></div>
-              <span class="version-status">全局默认</span>
-            </div>
-            <p class="path-line">素材页和分发页可以临时切换目录；这里保存软件每次启动时使用的默认位置。</p>
-            <div class="settings-path-list">
-              <label class="settings-path-row">
-                <span><b>素材目录</b><small>自动扫描图片、TXT 与子文件夹</small></span>
-                <input id="settingsMaterialRoot" class="search-input" type="text" />
-                <button id="chooseSettingsMaterialRootBtn" type="button">选择</button>
-              </label>
-              <label class="settings-path-row">
-                <span><b>成品目录</b><small>保存作品集与分发记录</small></span>
-                <input id="settingsPortfolioRoot" class="search-input" type="text" />
-                <button id="choosePortfolioRootBtn" type="button">选择</button>
-              </label>
-            </div>
-            <div class="settings-actions"><button id="savePathSettingsBtn" class="primary-button" type="button">保存目录</button></div>
-          </section>
           <section class="settings-card cloud-backup-card">
             <div class="settings-card-heading">
               <div><p class="label">异地保护</p><h3>备份与恢复</h3></div>
               <span class="version-status" id="cloudBackupStatus">读取中</span>
             </div>
-            <p class="path-line">沿用本机已保存的坚果云配置，备份设置、提示词、任务索引与分发记录；素材和成品仍以本地文件夹为准。</p>
+            <p class="path-line">账号和应用密码由 Windows 加密保存。日常记录每天备份；方案大文件按月流量上限增量上传。</p>
+            <details class="cloud-credential-panel">
+              <summary>坚果云连接设置</summary>
+              <div class="cloud-credential-grid">
+                <label><span>WebDAV 地址</span><input id="cloudBackupUrl" type="url" value="https://dav.jianguoyun.com/dav/" /></label>
+                <label><span>坚果云账号</span><input id="cloudBackupUsername" type="text" autocomplete="username" placeholder="邮箱账号" /></label>
+                <label><span>应用密码</span><input id="cloudBackupPassword" type="password" autocomplete="new-password" placeholder="已保存时留空" /></label>
+                <label><span>云端根目录</span><input id="cloudBackupBasePath" type="text" value="/团建工作台备份" /></label>
+              </div>
+              <div class="settings-actions">
+                <button id="saveCloudBackupConfigBtn" class="primary-button" type="button">安全保存并测试</button>
+                <button id="importLifeGameCloudBtn" type="button">读取其他本机配置</button>
+              </div>
+            </details>
             <div class="cloud-backup-summary">
               <article><span>配置来源</span><strong id="cloudBackupSource">尚未读取</strong></article>
               <article><span>云端目录</span><strong id="cloudBackupPath">—</strong></article>
               <article><span>最近备份</span><strong id="cloudBackupTime">尚未备份</strong></article>
             </div>
             <div class="settings-actions">
-              <button id="importLifeGameCloudBtn" type="button">读取本机配置</button>
               <button id="testCloudBackupBtn" type="button">测试连接</button>
               <button id="runCloudBackupBtn" class="primary-button" type="button">立即备份</button>
               <button id="runLargeCloudBackupBtn" type="button">备份方案文件</button>
+              <button id="inspectCloudBackupBtn" type="button">验证可恢复</button>
+              <button id="restoreCloudBackupBtn" type="button">恢复最新记录</button>
             </div>
             <div class="backup-schedule-grid">
               <label class="switch-setting"><span><b>自动备份</b><small>默认每天检查一次</small></span><input id="cloudBackupScheduleEnabled" type="checkbox" checked /></label>
@@ -483,24 +478,6 @@
               <div><strong id="largeCloudBackupLabel">方案文件备份</strong><span id="largeCloudBackupPercent">0%</span></div>
               <progress id="largeCloudBackupBar" max="100" value="0"></progress>
             </div>
-          </section>
-          <section class="settings-card dedup-card">
-            <div class="settings-card-heading">
-              <div><p class="label">本地记录</p><h3>生产与分发数据</h3></div>
-              <span class="version-status">只存本机</span>
-            </div>
-            <p class="path-line">用于生成去重和分发防重。不会上传素材内容，也不会记录账号密码。</p>
-            <div class="dedup-stats">
-              <article><span>生产历史</span><strong id="dedupProductionGroups">—</strong><small>组作品</small></article>
-              <article><span>手机分发</span><strong id="dedupMobileUsed">—</strong><small>个合集</small></article>
-              <article><span>公众号分发</span><strong id="dedupOfficialUsed">—</strong><small>个合集</small></article>
-            </div>
-            <div class="settings-actions">
-              <button id="syncDedupHistoryBtn" class="primary-button" type="button">刷新数据</button>
-              <button id="openDedupRootBtn" type="button">打开数据目录</button>
-              <button id="exportDedupLedgerBtn" type="button">导出账本</button>
-            </div>
-            <p class="settings-message" id="dedupSummary">尚未读取本地账本。</p>
           </section>
           <section class="settings-card version-card">
             <div class="version-summary">
@@ -635,8 +612,8 @@
       <button id="contextRename" type="button">重命名</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.11.6"></script>
-    <script src="/material-workspace.js?v=0.11.6"></script>
-    <script src="/app.js?v=0.11.6"></script>
+    <script src="/distribution-ui.js?v=0.12.0"></script>
+    <script src="/material-workspace.js?v=0.12.0"></script>
+    <script src="/app.js?v=0.12.0"></script>
   </body>
 </html>

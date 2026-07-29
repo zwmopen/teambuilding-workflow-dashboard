@@ -15,7 +15,7 @@ function networkFetch(url, options = {}, fetchImpl = undiciFetch, dispatcher) {
 
 const PROVIDER_DEFAULTS = {
   "local-openai": { baseUrl: "http://localhost:62104/v1", model: "gpt-image-2" },
-  bytecat: { baseUrl: "https://codecdn.bytecatcode.org/v1", model: "gpt-image-2" },
+  bytecat: { baseUrl: "https://bytecat.lamclod.cn/v1", model: "gpt-image-2" },
   minimax: { baseUrl: "https://api.minimaxi.com/v1", model: "image-01" }
 };
 
@@ -64,14 +64,19 @@ async function wait(delayMs) {
 async function fetchWithRetry(url, options, fetchImpl = networkFetch, retryOptions = {}) {
   const attempts = Math.max(1, Number(retryOptions.attempts || 3));
   const delays = retryOptions.delays || [1200, 3500];
+  const timeoutMs = Math.max(1_000, Number(retryOptions.timeoutMs || 480_000));
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const response = await fetchImpl(url, options);
+      const response = await fetchImpl(url, {
+        ...options,
+        signal: options?.signal || AbortSignal.timeout(timeoutMs)
+      });
       if (!isTransientStatus(response.status) || attempt === attempts) return response;
       lastError = new Error(`HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
+      if (options?.signal?.aborted) throw error;
       if (attempt === attempts) throw error;
     }
     await wait(Number(delays[Math.min(attempt - 1, delays.length - 1)] || 0));
@@ -96,6 +101,38 @@ function imageDataUrl(filePath) {
   const stat = fs.statSync(filePath);
   if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw new Error("参考图不存在或超过 20 MB");
   return `data:${imageMimeType(filePath)};base64,${fs.readFileSync(filePath).toString("base64")}`;
+}
+
+async function referenceSheetDataUrl(referencePaths) {
+  const files = referencePaths.slice(0, 4);
+  if (files.length === 1) return imageDataUrl(files[0]);
+  const columns = 2;
+  const rows = Math.ceil(files.length / columns);
+  // Every cell is exactly 3:4 and touches its neighbours. Padding or a
+  // letterboxed card is easily copied by image models as an unwanted white
+  // seam in the finished four-grid layout.
+  const cellWidth = 768;
+  const cellHeight = 1024;
+  const canvasWidth = columns * cellWidth;
+  const canvasHeight = rows * cellHeight;
+  const composites = await Promise.all(files.map(async (filePath, index) => ({
+    input: await sharp(filePath, { failOn: "none" })
+      .rotate()
+      .resize(cellWidth, cellHeight, { fit: "cover", position: "attention" })
+      .jpeg({ quality: 70, chromaSubsampling: "4:2:0" })
+      .toBuffer(),
+    left: (index % columns) * cellWidth,
+    top: Math.floor(index / columns) * cellHeight
+  })));
+  const sheet = await sharp({
+    create: {
+      width: canvasWidth,
+      height: canvasHeight,
+      channels: 3,
+      background: "#1c211f"
+    }
+  }).composite(composites).jpeg({ quality: 68, chromaSubsampling: "4:2:0" }).toBuffer();
+  return `data:image/jpeg;base64,${sheet.toString("base64")}`;
 }
 
 function imageDimensions(bytes) {
@@ -149,19 +186,33 @@ async function fetchImageBytes(imageUrl, fetchImpl = networkFetch, retryOptions 
   return { bytes: Buffer.from(await response.arrayBuffer()), contentType: response.headers.get("content-type") || "" };
 }
 
-async function generateOpenAiCompatible({ config, apiKey, prompt, referencePaths = [], fetchImpl = networkFetch, retryOptions = {} }) {
+async function generateOpenAiCompatible({
+  config,
+  apiKey,
+  prompt,
+  referencePaths = [],
+  fetchImpl = networkFetch,
+  retryOptions = {},
+  signal
+}) {
   const useEdit = referencePaths.length > 0;
-  const endpoint = `${config.baseUrl}/images/${useEdit ? "edits" : "generations"}`;
+  const bytecatReferenceGeneration = useEdit && config.provider === "bytecat";
+  const endpoint = `${config.baseUrl}/images/${useEdit && !bytecatReferenceGeneration ? "edits" : "generations"}`;
   assertSafeUrl(endpoint);
   let body;
   let headers = { Accept: "application/json", Authorization: `Bearer ${apiKey}` };
   if (useEdit) {
-    if (config.provider === "local-openai") {
+    if (config.provider === "local-openai" || bytecatReferenceGeneration) {
       headers["Content-Type"] = "application/json";
+      const imageReferences = bytecatReferenceGeneration
+        ? [{ image_url: await referenceSheetDataUrl(referencePaths) }]
+        : referencePaths.slice(0, 8).map(imageDataUrl);
       body = JSON.stringify({
         model: config.model,
-        prompt,
-        images: referencePaths.slice(0, 8).map(imageDataUrl),
+        prompt: bytecatReferenceGeneration && referencePaths.length > 1
+          ? `${prompt}\n\n参考板说明：参考图由多张原图拼成。第一格是A类视觉母版，其余格是B类内容素材；只迁移母版骨架，不沿用素材排版。`
+          : prompt,
+        images: imageReferences,
         n: 1,
         size: "1024x1536",
         response_format: "b64_json"
@@ -182,7 +233,7 @@ async function generateOpenAiCompatible({ config, apiKey, prompt, referencePaths
     headers["Content-Type"] = "application/json";
     body = JSON.stringify({ model: config.model, prompt, n: 1, size: "1024x1536", response_format: "b64_json" });
   }
-  const response = await fetchWithRetry(endpoint, { method: "POST", headers, body }, fetchImpl, retryOptions);
+  const response = await fetchWithRetry(endpoint, { method: "POST", headers, body, signal }, fetchImpl, retryOptions);
   const data = await readJsonResponse(response);
   const item = data.data?.[0];
   if (!item?.b64_json && !item?.url) throw new Error("接口没有返回图片数据");
@@ -190,13 +241,14 @@ async function generateOpenAiCompatible({ config, apiKey, prompt, referencePaths
   return fetchImageBytes(item.url, fetchImpl, retryOptions);
 }
 
-async function generateMinimax({ config, apiKey, prompt, fetchImpl = networkFetch, retryOptions = {} }) {
+async function generateMinimax({ config, apiKey, prompt, fetchImpl = networkFetch, retryOptions = {}, signal }) {
   const endpoint = `${config.baseUrl}/image_generation`;
   assertSafeUrl(endpoint);
   const response = await fetchWithRetry(endpoint, {
     method: "POST",
     headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: config.model, prompt, aspect_ratio: "3:4", response_format: "url", n: 1, prompt_optimizer: true })
+    body: JSON.stringify({ model: config.model, prompt, aspect_ratio: "3:4", response_format: "url", n: 1, prompt_optimizer: true }),
+    signal
   }, fetchImpl, retryOptions);
   const data = await readJsonResponse(response);
   if (data.base_resp && Number(data.base_resp.status_code) !== 0) {
@@ -219,7 +271,8 @@ async function generateText({ config, apiKey, prompt, model = "gpt-5.6-terra", f
       model,
       messages: [{ role: "user", content: prompt }],
       temperature: 0.7
-    })
+    }),
+    signal: AbortSignal.timeout(180_000)
   });
   const data = await readJsonResponse(response);
   const content = data.choices?.[0]?.message?.content;
@@ -255,5 +308,6 @@ module.exports = {
   imageDimensions,
   networkFetch,
   normalizeToThreeByFour,
-  normalizeImageApiConfig
+  normalizeImageApiConfig,
+  referenceSheetDataUrl
 };

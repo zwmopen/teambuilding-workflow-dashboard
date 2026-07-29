@@ -45,13 +45,20 @@ const {
   normalizePageSettings
 } = require("./lib/workbench-settings");
 const {
+  downloadBackup,
   importLifeGameConfig,
   publicStatus: publicCloudBackupStatus,
   readSecureConfig,
+  saveManualConfig,
+  saveSecureConfig,
   testConnection: testCloudBackupConnection,
   uploadBackup,
   uploadFile
 } = require("./lib/webdav-backup");
+const {
+  inspectProductionQuality,
+  qualityReportText
+} = require("./lib/production-quality");
 
 const PORT = Number(process.env.PORT || 4327);
 const LISTEN_HOST = process.env.TB_WORKBENCH_HOST || "127.0.0.1";
@@ -132,6 +139,9 @@ const distributionTasks = new Map();
 const automaticDistributionSessions = new Set();
 const pendingProductionPlans = new Map();
 const productionJobs = new Map();
+const productionAbortControllers = new Map();
+const conversionProxyCache = new Map();
+const CONVERSION_CACHE_TTL_MS = PORT === 4327 ? 10 * 60 * 1000 : 2_000;
 let cloudBackupTimer = null;
 let largeCloudBackupTask = null;
 
@@ -147,6 +157,7 @@ function ensureDataFiles() {
     });
   }
   if (!fs.existsSync(DEDUP_LEDGER_FILE)) syncHistoricalDedupLedger();
+  loadProductionJobs();
 }
 
 function getCloudBackupStatus() {
@@ -195,7 +206,7 @@ function buildCloudBackupPayload() {
 
 async function runCloudBackupNow() {
   const config = readSecureConfig(WEBDAV_CONFIG_FILE);
-  if (!config) throw new Error("请先导入人生游戏系统的坚果云配置");
+  if (!config) throw new Error("请先配置坚果云 WebDAV");
   const payload = buildCloudBackupPayload();
   const stamp = payload.createdAt.replace(/[:.]/g, "-");
   const fileName = `teambuilding-workbench-${stamp}.json`;
@@ -209,6 +220,64 @@ async function runCloudBackupNow() {
   return publicCloudBackupStatus(config, metadata);
 }
 
+async function inspectLatestCloudBackup() {
+  const config = readSecureConfig(WEBDAV_CONFIG_FILE);
+  if (!config) throw new Error("请先配置坚果云 WebDAV");
+  const payload = await downloadBackup(config);
+  const recordNames = Object.keys(payload.records || {});
+  return {
+    ok: true,
+    schema: payload.schema,
+    createdAt: payload.createdAt || "",
+    appVersion: payload.appVersion || "",
+    recordCount: recordNames.length,
+    records: recordNames,
+    message: `云端最新备份可读取，共 ${recordNames.length} 份记录`
+  };
+}
+
+async function restoreLatestCloudBackup() {
+  const config = readSecureConfig(WEBDAV_CONFIG_FILE);
+  if (!config) throw new Error("请先配置坚果云 WebDAV");
+  const payload = await downloadBackup(config);
+  const allowed = new Map([
+    STATE_FILE,
+    PROMPTS_FILE,
+    TASK_INDEX_FILE,
+    APP_SETTINGS_FILE,
+    COLLECTION_LEDGER_FILE,
+    DEVICE_PRESENCE_FILE,
+    DEVICE_NOTES_FILE,
+    DEDUP_LEDGER_FILE,
+    EXTENSION_DOWNLOAD_LOG_FILE,
+    MATERIAL_USAGE_LEDGER_FILE,
+    MATERIAL_METADATA_LEDGER_FILE
+  ].map((filePath) => [path.relative(DATA_ROOT, filePath).replace(/\\/g, "/"), filePath]));
+  const restorable = Object.entries(payload.records || {}).filter(([relative]) => allowed.has(relative));
+  if (!restorable.length) throw new Error("云端备份没有可恢复的工作台记录");
+
+  const recoveryRoot = path.join(DATA_ROOT, "恢复前快照");
+  fs.mkdirSync(recoveryRoot, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const localSnapshot = path.join(recoveryRoot, `before-restore-${stamp}.json`);
+  writeJson(localSnapshot, buildCloudBackupPayload());
+
+  for (const [relative, value] of restorable) {
+    const target = allowed.get(relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (typeof value === "string") fs.writeFileSync(target, value, "utf8");
+    else writeJson(target, value);
+  }
+  return {
+    ok: true,
+    restoredAt: new Date().toISOString(),
+    sourceCreatedAt: payload.createdAt || "",
+    restoredRecords: restorable.length,
+    localSnapshot,
+    message: `已恢复 ${restorable.length} 份记录；恢复前快照已保留`
+  };
+}
+
 function currentMonthKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
@@ -220,6 +289,9 @@ function scanLargeBackupFiles(root) {
     const current = queue.shift();
     for (const entry of safeList(current)) {
       const fullPath = path.join(current, entry.name);
+      if (entry.name.startsWith(".")
+        || entry.name.startsWith("~$")
+        || ["desktop.ini", "thumbs.db"].includes(entry.name.toLowerCase())) continue;
       let stats;
       try {
         stats = fs.lstatSync(fullPath);
@@ -248,7 +320,7 @@ async function executeLargeCloudBackup() {
     throw new Error("请先设置有效的方案/大文件来源目录");
   }
   const config = readSecureConfig(WEBDAV_CONFIG_FILE);
-  if (!config) throw new Error("请先导入人生游戏系统的坚果云配置");
+  if (!config) throw new Error("请先配置坚果云 WebDAV");
   await testCloudBackupConnection(config);
 
   const manifest = readJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, {
@@ -271,6 +343,7 @@ async function executeLargeCloudBackup() {
     totalFiles: candidates.length,
     completedFiles: 0,
     skippedFiles: 0,
+    failedFiles: 0,
     uploadedBytes: 0,
     monthlyUsedBytes: usedBytes,
     monthlyLimitBytes: limitBytes,
@@ -280,13 +353,29 @@ async function executeLargeCloudBackup() {
   largeCloudBackupTask = task;
   manifest.files ||= {};
   manifest.monthlyUsage ||= {};
+  let consecutiveFailures = 0;
 
   for (const file of candidates) {
     if (limitBytes === 0 || usedBytes + file.size > limitBytes) {
       task.skippedFiles += 1;
       continue;
     }
-    await uploadFile(config, file.path, `方案增量/${file.relative}`);
+    try {
+      await uploadFile(config, file.path, `方案增量/${file.relative}`);
+      consecutiveFailures = 0;
+    } catch (error) {
+      consecutiveFailures += 1;
+      task.failedFiles += 1;
+      task.skippedFiles += 1;
+      task.lastFailedFile = file.relative;
+      task.message = `有文件无法上传，已跳过并继续：${file.relative}`;
+      manifest.lastTask = { ...task };
+      writeJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, manifest);
+      if (consecutiveFailures >= 3) {
+        throw new Error(`连续 3 个文件上传失败，最后文件：${file.relative}；${error.message || "上传失败"}`);
+      }
+      continue;
+    }
     usedBytes += file.size;
     task.completedFiles += 1;
     task.uploadedBytes += file.size;
@@ -307,7 +396,7 @@ async function executeLargeCloudBackup() {
   task.finishedAt = new Date().toISOString();
   task.percent = 100;
   task.message = task.skippedFiles
-    ? `本月额度内上传 ${task.completedFiles} 个，${task.skippedFiles} 个留待下月`
+    ? `本月额度内上传 ${task.completedFiles} 个，${task.skippedFiles} 个跳过或留待下月`
     : `增量备份完成，共上传 ${task.completedFiles} 个文件`;
   manifest.monthlyUsage[month] = usedBytes;
   manifest.lastTask = { ...task };
@@ -329,8 +418,9 @@ function startLargeCloudBackup() {
     try {
       await executeLargeCloudBackup();
     } catch (error) {
+      const current = largeCloudBackupTask || task;
       largeCloudBackupTask = {
-        ...task,
+        ...current,
         state: "failed",
         finishedAt: new Date().toISOString(),
         message: error.message || "大文件备份失败"
@@ -1136,18 +1226,63 @@ function publicProductionJob(job) {
     total: job.total,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
+    startedAt: job.startedAt || "",
+    finishedAt: job.finishedAt || "",
+    durationMs: job.startedAt
+      ? Math.max(0, new Date(
+        job.finishedAt || (job.status === "running" ? Date.now() : job.updatedAt || Date.now())
+      ).getTime() - new Date(job.startedAt).getTime())
+      : 0,
     outputRoots: job.outputRoots || [],
     results: (job.results || []).map((item) => ({
       ...item,
       previewUrl: item.outputFile ? `/file?path=${encodeURIComponent(item.outputFile)}` : ""
     })),
+    failures: job.failures || [],
+    qualityReports: job.qualityReports || [],
+    resumable: ["interrupted", "failed", "needs-rework", "cancelled"].includes(job.status),
+    cancelable: job.status === "running",
     error: job.error || ""
+  };
+}
+
+function safeProductionOptions(options = {}) {
+  const config = normalizeImageApiConfig(options);
+  return {
+    provider: config.provider,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    quality: String(options.quality || "严格母版").slice(0, 100),
+    prompt: String(options.prompt || "").slice(0, 30_000),
+    textModel: String(options.textModel || "gpt-5.6-terra").slice(0, 200),
+    outputPrefix: safeOutputName(String(options.outputPrefix || "")).slice(0, 40)
   };
 }
 
 function saveProductionJob(job) {
   fs.mkdirSync(PRODUCTION_JOB_ROOT, { recursive: true });
-  writeJson(path.join(PRODUCTION_JOB_ROOT, `${job.id}.json`), publicProductionJob(job));
+  writeJson(path.join(PRODUCTION_JOB_ROOT, `${job.id}.json`), {
+    ...job,
+    options: safeProductionOptions(job.options || {}),
+    planBundle: job.planBundle || null
+  });
+}
+
+function loadProductionJobs() {
+  fs.mkdirSync(PRODUCTION_JOB_ROOT, { recursive: true });
+  for (const entry of safeList(PRODUCTION_JOB_ROOT)) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const saved = readJson(path.join(PRODUCTION_JOB_ROOT, entry.name), null);
+    if (!saved?.id || !saved?.planBundle) continue;
+    if (saved.status === "running") {
+      saved.status = "interrupted";
+      saved.phase = "interrupted";
+      saved.message = "应用曾在生产中关闭，已保留进度，可以继续生产。";
+      saved.updatedAt = new Date().toISOString();
+      saved.cancelRequested = false;
+    }
+    productionJobs.set(saved.id, saved);
+  }
 }
 
 function updateProductionJob(job, patch) {
@@ -1161,18 +1296,67 @@ async function runProductionJob(job, planBundle, options) {
   const apiKey = imageApiCredential(config.provider, options.apiKey);
   if (!apiKey) throw new Error("没有找到这个平台的本机密钥");
   const textConnection = textGenerationConnection(config, options.apiKey);
-  let completed = 0;
-  for (const plan of planBundle.plans) {
+  const abortController = new AbortController();
+  productionAbortControllers.set(job.id, abortController);
+  job.planBundle = planBundle;
+  job.options = safeProductionOptions(options);
+  const uniqueResults = new Map();
+  for (const item of job.results || []) {
+    if (!item?.type || !item?.outputFile || !exists(item.outputFile)) continue;
+    const key = item.type === "image"
+      ? `image:${item.work || ""}:${item.page || ""}`
+      : `${item.type}:${item.work || ""}:${item.outputFile}`;
+    uniqueResults.set(key, item);
+  }
+  job.results = [...uniqueResults.values()];
+  job.failures = [];
+  job.qualityReports = [];
+  job.cancelRequested = false;
+  job.startedAt = new Date().toISOString();
+  job.finishedAt = "";
+  updateProductionJob(job, {
+    status: "running",
+    phase: "starting",
+    message: "正在核对已完成页面并继续生产",
+    error: ""
+  });
+  let completed = job.results.filter((item) => item.type === "image").length;
+  for (const [planIndex, plan] of planBundle.plans.entries()) {
+    if (job.cancelRequested) break;
     const facts = materialFacts(plan.materialPath);
     const templateImages = collectReferenceImages(plan.templatePath, 5);
     const materialImages = collectReferenceImages(plan.materialPath, 10);
-    if (!templateImages.length) throw new Error(`模板中没有可用参考图：${plan.templateName}`);
-    const folderName = `${new Date().toISOString().slice(0, 10).replaceAll("-", "")}_${safeOutputName(plan.materialName)}_${safeOutputName(plan.recipe.name)}_${job.id.slice(-6)}`;
-    const outputRoot = path.join(IMAGE_REVIEW_ROOT, folderName);
+    if (!templateImages.length) {
+      job.failures.push({ work: plan.materialName, phase: "prepare", message: `模板中没有可用参考图：${plan.templateName}` });
+      continue;
+    }
+    job.workRoots ||= {};
+    const workKey = String(planIndex);
+    if (!job.workRoots[workKey]) {
+      const outputPrefix = safeOutputName(String(options.outputPrefix || ""));
+      const folderName = `${outputPrefix}${job.createdAt.slice(0, 10).replaceAll("-", "")}_${safeOutputName(plan.materialName)}_${safeOutputName(plan.recipe.name)}_${job.id.slice(-6)}`;
+      job.workRoots[workKey] = path.join(IMAGE_REVIEW_ROOT, folderName);
+    }
+    const outputRoot = job.workRoots[workKey];
     fs.mkdirSync(outputRoot, { recursive: true });
-    job.outputRoots.push(outputRoot);
+    job.outputRoots = [...new Set([...(job.outputRoots || []), outputRoot])];
     writeJson(path.join(outputRoot, "出图计划.json"), plan);
     for (const page of plan.pages) {
+      if (job.cancelRequested) break;
+      const existing = (job.results || []).find((item) => (
+        item.type === "image"
+        && item.work === plan.materialName
+        && item.page === page.code
+        && exists(item.outputFile)
+      ));
+      if (existing) {
+        updateProductionJob(job, {
+          phase: "resuming",
+          message: `${plan.materialName} · ${page.code} 已完成，继续下一页`,
+          progress: completed
+        });
+        continue;
+      }
       const pageStartedAt = Date.now();
       updateProductionJob(job, {
         phase: "generating-images",
@@ -1190,71 +1374,128 @@ async function runProductionJob(job, planBundle, options) {
       // image is enough to lock the layout while preserving the real scene.
       const referencePaths = [templateRef, pageMaterial];
       const prompt = buildPagePrompt(plan, page, facts, options.prompt, options.quality);
-      const generated = await generateImages({
-        config,
-        apiKey,
-        prompt,
-        referencePaths: [...new Set(referencePaths.filter(Boolean))].slice(0, 8),
-        outputRoot,
-        count: 1
+      try {
+        const generated = await generateImages({
+          config,
+          apiKey,
+          prompt,
+          referencePaths: [...new Set(referencePaths.filter(Boolean))].slice(0, 8),
+          outputRoot,
+          count: 1,
+          signal: abortController.signal
+        });
+        const original = generated[0];
+        const extension = path.extname(original.outputFile);
+        const finalFile = path.join(outputRoot, `${page.code}_${safeOutputName(page.title)}${extension}`);
+        if (exists(finalFile)) fs.rmSync(finalFile, { force: true });
+        fs.renameSync(original.outputFile, finalFile);
+        job.results.push({
+          type: "image",
+          work: plan.materialName,
+          page: page.code,
+          title: page.title,
+          outputFile: finalFile,
+          bytes: original.bytes,
+          width: original.width,
+          height: original.height,
+          provider: original.provider,
+          model: original.model,
+          durationMs: Date.now() - pageStartedAt
+        });
+        completed += 1;
+        updateProductionJob(job, { progress: completed });
+      } catch (error) {
+        job.failures.push({
+          work: plan.materialName,
+          page: page.code,
+          phase: "image",
+          message: String(error?.message || error).slice(0, 500)
+        });
+        updateProductionJob(job, {
+          message: `${plan.materialName} · ${page.code} 生成失败，已记录并继续下一页`,
+          progress: completed
+        });
+      }
+    }
+    const copyFile = path.join(outputRoot, "小红书文案.txt");
+    const existingCopy = (job.results || []).find((item) => item.type === "copy"
+      && item.work === plan.materialName && exists(item.outputFile));
+    if (!job.cancelRequested && !existingCopy) {
+      updateProductionJob(job, {
+        phase: "generating-copy",
+        message: `正在写 ${plan.materialName} 的小红书文案`
       });
-      const original = generated[0];
-      const extension = path.extname(original.outputFile);
-      const finalFile = path.join(outputRoot, `${page.code}_${safeOutputName(page.title)}${extension}`);
-      if (exists(finalFile)) throw new Error(`待审目录已存在同名页面：${path.basename(finalFile)}`);
-      fs.renameSync(original.outputFile, finalFile);
-      job.results.push({
-        type: "image",
-        work: plan.materialName,
-        page: page.code,
-        title: page.title,
-        outputFile: finalFile,
-        bytes: original.bytes,
-        width: original.width,
-        height: original.height,
-        provider: original.provider,
-        model: original.model,
-        durationMs: Date.now() - pageStartedAt
-      });
-      completed += 1;
-      updateProductionJob(job, { progress: completed });
+      const copyStartedAt = Date.now();
+      try {
+        const copy = await generateText({
+          config: textConnection.config,
+          apiKey: textConnection.apiKey,
+          prompt: buildCopyPrompt(plan, facts),
+          model: String(options.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
+        });
+        fs.writeFileSync(copyFile, `${copy}\n`, "utf8");
+        job.results.push({
+          type: "copy",
+          work: plan.materialName,
+          outputFile: copyFile,
+          bytes: Buffer.byteLength(copy),
+          durationMs: Date.now() - copyStartedAt
+        });
+      } catch (error) {
+        job.failures.push({
+          work: plan.materialName,
+          phase: "copy",
+          message: String(error?.message || error).slice(0, 500)
+        });
+      }
     }
     updateProductionJob(job, {
-      phase: "generating-copy",
-      message: `正在写 ${plan.materialName} 的小红书文案`
+      phase: "quality-check",
+      message: `正在检查 ${plan.materialName} 的数量、尺寸、重复图和文案`
     });
-    const copyStartedAt = Date.now();
-    const copy = await generateText({
-      config: textConnection.config,
-      apiKey: textConnection.apiKey,
-      prompt: buildCopyPrompt(plan, facts),
-      model: String(options.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
+    const quality = await inspectProductionQuality({
+      plan,
+      outputRoot,
+      results: job.results,
+      startedAt: job.startedAt,
+      finishedAt: new Date().toISOString()
     });
-    const copyFile = path.join(outputRoot, "小红书文案.txt");
-    fs.writeFileSync(copyFile, `${copy}\n`, "utf8");
-    job.results.push({
-      type: "copy",
-      work: plan.materialName,
-      outputFile: copyFile,
-      bytes: Buffer.byteLength(copy),
-      durationMs: Date.now() - copyStartedAt
-    });
+    const qualityJsonFile = path.join(outputRoot, "质量报告.json");
+    const qualityTextFile = path.join(outputRoot, "质量报告.txt");
+    job.qualityReports.push({ ...quality, reportFile: qualityTextFile });
+    writeJson(qualityJsonFile, quality);
+    fs.writeFileSync(qualityTextFile, qualityReportText(quality), "utf8");
     writeJson(path.join(outputRoot, "生产记录.json"), {
-      status: "review-ready",
+      status: quality.status,
       createdAt: new Date().toISOString(),
       plan,
       provider: config.provider,
       imageModel: config.model,
       textModel: options.textModel || "gpt-5.6-terra",
+      quality,
       officialLibraryWritten: false,
       files: job.results.filter((item) => item.work === plan.materialName).map((item) => item.outputFile)
     });
   }
+  if (job.cancelRequested) {
+    updateProductionJob(job, {
+      status: "cancelled",
+      phase: "cancelled",
+      finishedAt: new Date().toISOString(),
+      message: "任务已停止，已完成页面和文案均已保留，可稍后继续。"
+    });
+    return;
+  }
+  const hasQualityFailures = job.qualityReports.some((report) => report.failures?.length);
+  const finalStatus = job.failures.length || hasQualityFailures ? "needs-rework" : "review-ready";
   updateProductionJob(job, {
-    status: "review-ready",
+    status: finalStatus,
     phase: "completed",
-    progress: job.total,
-    message: `${planBundle.plans.length} 套作品已经生成；每套都包含独立图片、文案和生产记录。`
+    progress: completed,
+    finishedAt: new Date().toISOString(),
+    message: finalStatus === "review-ready"
+      ? `${planBundle.plans.length} 套作品已生成并完成自动检查；请按质量报告做最终看图确认。`
+      : `本批已继续完成可生成页面；有 ${job.failures.length} 项需要重试或人工处理。`
   });
 }
 
@@ -2931,6 +3172,18 @@ function proxyIntegratedConversion(req, res, parsed, pathname) {
   const prefix = "/conversion-integrated";
   const upstreamPath = pathname.slice(prefix.length) || "/";
   const requestPath = `${upstreamPath}${parsed.search || ""}`;
+  const cacheKey = `${upstreamPath}${upstreamPath.endsWith(".js") ? ":js" : ":document"}`;
+  const canUseRewriteCache = req.method === "GET" && (upstreamPath === "/" || upstreamPath.endsWith(".js"));
+  const cached = canUseRewriteCache ? conversionProxyCache.get(cacheKey) : null;
+  if (cached && Date.now() - cached.savedAt < CONVERSION_CACHE_TTL_MS) {
+    res.writeHead(200, {
+      "Content-Type": cached.contentType,
+      "Content-Length": Buffer.byteLength(cached.content),
+      "Cache-Control": "private, max-age=60"
+    });
+    res.end(cached.content);
+    return Promise.resolve();
+  }
   return new Promise((resolve, reject) => {
     const upstream = http.request(`${CONVERSION_SERVICE_ORIGIN}${requestPath}`, {
       method: req.method,
@@ -2962,12 +3215,21 @@ function proxyIntegratedConversion(req, res, parsed, pathname) {
         const content = isAppDocument
           ? rewriteIntegratedConversionDocument(source)
           : rewriteIntegratedConversionContent(source);
+        if (canUseRewriteCache && (upstreamResponse.statusCode || 200) < 400) {
+          conversionProxyCache.set(cacheKey, {
+            savedAt: Date.now(),
+            content,
+            contentType: isAppDocument
+              ? "text/html; charset=utf-8"
+              : "application/javascript; charset=utf-8"
+          });
+        }
         res.writeHead(upstreamResponse.statusCode || 200, {
           "Content-Type": isAppDocument
             ? "text/html; charset=utf-8"
             : "application/javascript; charset=utf-8",
           "Content-Length": Buffer.byteLength(content),
-          "Cache-Control": "no-store"
+          "Cache-Control": PORT === 4327 ? "private, max-age=60" : "no-store"
         });
         res.end(content);
         resolve();
@@ -2976,6 +3238,21 @@ function proxyIntegratedConversion(req, res, parsed, pathname) {
     upstream.on("error", reject);
     req.pipe(upstream);
   });
+}
+
+async function warmIntegratedConversionCache() {
+  try {
+    const response = await networkFetch(`${CONVERSION_SERVICE_ORIGIN}/`);
+    if (!response.ok) return;
+    const content = rewriteIntegratedConversionDocument(await response.text());
+    conversionProxyCache.set("/:document", {
+      savedAt: Date.now(),
+      content,
+      contentType: "text/html; charset=utf-8"
+    });
+  } catch {
+    // The conversion service can be started later without blocking the workbench.
+  }
 }
 
 async function requestConversionService(endpoint, options = {}) {
@@ -3577,23 +3854,30 @@ function pickFolderWithWindowsDialog(description = "选择文件夹") {
   const safeDescription = String(description).replace(/'/g, "''");
   const command = [
     "Add-Type -AssemblyName System.Windows.Forms",
-    "Add-Type -AssemblyName System.Drawing",
     "$owner = New-Object System.Windows.Forms.Form",
     "$owner.TopMost = $true",
     "$owner.ShowInTaskbar = $false",
     "$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen",
-    "$owner.Size = New-Object System.Drawing.Size(1,1)",
+    "$owner.Width = 1",
+    "$owner.Height = 1",
     "$owner.Opacity = 0",
     "$owner.Show()",
     "$owner.Activate()",
-    "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
-    `$dialog.Description = '${safeDescription}'`,
-    "$dialog.ShowNewFolderButton = $true",
+    "$dialog = New-Object System.Windows.Forms.OpenFileDialog",
+    `$dialog.Title = '${safeDescription}'`,
+    "$dialog.CheckFileExists = $false",
+    "$dialog.CheckPathExists = $true",
+    "$dialog.ValidateNames = $false",
+    "$dialog.DereferenceLinks = $true",
+    "$dialog.RestoreDirectory = $true",
+    "$dialog.FileName = '选择当前文件夹'",
+    "$dialog.Filter = '文件夹|*.folder'",
     "$result = $dialog.ShowDialog($owner)",
     "$owner.Close()",
     "if ($result -eq [System.Windows.Forms.DialogResult]::OK) {",
+    "  $selected = Split-Path -Parent $dialog.FileName",
     "  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
-    "  Write-Output $dialog.SelectedPath",
+    "  Write-Output $selected",
     "}"
   ].join("; ");
   return new Promise((resolve, reject) => {
@@ -4054,7 +4338,9 @@ async function route(req, res) {
   if (pathname === "/api/production/tasks" && req.method === "GET") {
     return sendJson(res, {
       ok: true,
-      tasks: [...productionJobs.values()].map(publicProductionJob)
+      tasks: [...productionJobs.values()]
+        .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+        .map(publicProductionJob)
     });
   }
 
@@ -4085,6 +4371,12 @@ async function route(req, res) {
       updatedAt: new Date().toISOString(),
       outputRoots: [],
       results: [],
+      failures: [],
+      qualityReports: [],
+      workRoots: {},
+      planBundle,
+      options: safeProductionOptions(body),
+      cancelRequested: false,
       error: ""
     };
     productionJobs.set(job.id, job);
@@ -4094,10 +4386,11 @@ async function route(req, res) {
       updateProductionJob(job, {
         status: "failed",
         phase: "failed",
+        finishedAt: new Date().toISOString(),
         message: "生产中断，已生成的文件仍保留在待审区。",
         error: String(error?.message || error).slice(0, 1000)
       });
-    });
+    }).finally(() => productionAbortControllers.delete(job.id));
     return sendJson(res, { ok: true, job: publicProductionJob(job) });
   }
 
@@ -4105,6 +4398,46 @@ async function route(req, res) {
   if (productionJobMatch && req.method === "GET") {
     const job = productionJobs.get(decodeURIComponent(productionJobMatch[1]));
     if (!job) return send(res, 404, JSON.stringify({ error: "没有找到这次生产任务" }));
+    return sendJson(res, { ok: true, job: publicProductionJob(job) });
+  }
+
+  const resumeProductionJobMatch = pathname.match(/^\/api\/production\/jobs\/([^/]+)\/resume$/);
+  if (resumeProductionJobMatch && req.method === "POST") {
+    const job = productionJobs.get(decodeURIComponent(resumeProductionJobMatch[1]));
+    if (!job) return send(res, 404, JSON.stringify({ error: "没有找到这次生产任务" }));
+    if (job.status === "running") return send(res, 409, JSON.stringify({ error: "这次任务仍在生产中" }));
+    if (!job.planBundle || !job.options) return send(res, 409, JSON.stringify({ error: "旧任务没有可恢复的生产计划" }));
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const retryOptions = safeProductionOptions({
+      ...job.options,
+      ...body,
+      prompt: body.prompt || job.options.prompt,
+      quality: body.quality || job.options.quality,
+      outputPrefix: job.options.outputPrefix
+    });
+    job.cancelRequested = false;
+    runProductionJob(job, job.planBundle, retryOptions).catch((error) => {
+      updateProductionJob(job, {
+        status: "failed",
+        phase: "failed",
+        finishedAt: new Date().toISOString(),
+        message: "继续生产时发生中断，已完成文件仍保留。",
+        error: String(error?.message || error).slice(0, 1000)
+      });
+    }).finally(() => productionAbortControllers.delete(job.id));
+    return sendJson(res, { ok: true, job: publicProductionJob(job) });
+  }
+
+  const cancelProductionJobMatch = pathname.match(/^\/api\/production\/jobs\/([^/]+)\/cancel$/);
+  if (cancelProductionJobMatch && req.method === "POST") {
+    const job = productionJobs.get(decodeURIComponent(cancelProductionJobMatch[1]));
+    if (!job) return send(res, 404, JSON.stringify({ error: "没有找到这次生产任务" }));
+    if (job.status !== "running") return sendJson(res, { ok: true, job: publicProductionJob(job) });
+    job.cancelRequested = true;
+    productionAbortControllers.get(job.id)?.abort();
+    updateProductionJob(job, {
+      message: "已收到停止请求；完成当前页面后停止，已生成内容不会删除。"
+    });
     return sendJson(res, { ok: true, job: publicProductionJob(job) });
   }
 
@@ -4135,13 +4468,38 @@ async function route(req, res) {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     const config = normalizeImageApiConfig(body);
     const apiKey = imageApiCredential(config.provider, body.apiKey);
-    if (!apiKey) return send(res, 400, JSON.stringify({ error: "没有找到这个平台的本机密钥" }));
-    const endpoint = config.provider === "minimax" ? `${config.baseUrl}/models` : `${config.baseUrl}/models`;
-    const response = await networkFetch(endpoint, { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } });
-    if (!response.ok) return send(res, 502, JSON.stringify({ error: `连接失败（HTTP ${response.status}）` }));
-    const data = await response.json();
-    const models = Array.isArray(data.data) ? data.data.map((item) => item.id).filter(Boolean).slice(0, 50) : [];
-    return sendJson(res, { ok: true, modelAvailable: !models.length || models.includes(config.model), models });
+    if (!apiKey) {
+      if (body.quiet) return sendJson(res, { ok: false, available: false, modelAvailable: false, models: [], error: "未配置本机密钥" });
+      return send(res, 400, JSON.stringify({ error: "没有找到这个平台的本机密钥" }));
+    }
+    try {
+      const response = await networkFetch(`${config.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(30_000)
+      });
+      if (!response.ok) {
+        if (body.quiet) return sendJson(res, {
+          ok: false,
+          available: false,
+          modelAvailable: false,
+          models: [],
+          error: `连接失败（HTTP ${response.status}）`
+        });
+        return send(res, 502, JSON.stringify({ error: `连接失败（HTTP ${response.status}）` }));
+      }
+      const data = await response.json();
+      const models = Array.isArray(data.data) ? data.data.map((item) => item.id).filter(Boolean).slice(0, 50) : [];
+      return sendJson(res, { ok: true, available: true, modelAvailable: !models.length || models.includes(config.model), models });
+    } catch (error) {
+      if (body.quiet) return sendJson(res, {
+        ok: false,
+        available: false,
+        modelAvailable: false,
+        models: [],
+        error: String(error?.message || "连接失败").slice(0, 300)
+      });
+      return send(res, 502, JSON.stringify({ error: String(error?.message || "连接失败").slice(0, 300) }));
+    }
   }
 
   if (pathname === "/api/image-api/generate" && req.method === "POST") {
@@ -4201,6 +4559,19 @@ async function route(req, res) {
     return sendJson(res, getCloudBackupStatus());
   }
 
+  if (pathname === "/api/cloud-backup/config" && req.method === "POST") {
+    try {
+      const body = JSON.parse(await getBody(req, 32_000) || "{}");
+      const config = saveManualConfig(WEBDAV_CONFIG_FILE, body);
+      await testCloudBackupConnection(config);
+      return sendJson(res, publicCloudBackupStatus(config, {
+        lastResult: "坚果云配置已加密保存在当前 Windows 账户，并已通过连接测试"
+      }));
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message || "坚果云配置没有保存" }));
+    }
+  }
+
   if (pathname === "/api/cloud-backup/import-life-game" && req.method === "POST") {
     try {
       const config = await importLifeGameConfig(WEBDAV_CONFIG_FILE);
@@ -4217,7 +4588,7 @@ async function route(req, res) {
   if (pathname === "/api/cloud-backup/test" && req.method === "POST") {
     try {
       const config = readSecureConfig(WEBDAV_CONFIG_FILE);
-      if (!config) throw new Error("请先导入人生游戏系统的坚果云配置");
+      if (!config) throw new Error("请先配置坚果云 WebDAV");
       await testCloudBackupConnection(config);
       return sendJson(res, { ok: true, message: "坚果云连接正常" });
     } catch (error) {
@@ -4230,6 +4601,22 @@ async function route(req, res) {
       return sendJson(res, await runCloudBackupNow());
     } catch (error) {
       return send(res, 400, JSON.stringify({ error: error.message || "坚果云备份失败" }));
+    }
+  }
+  if (pathname === "/api/cloud-backup/inspect-latest" && req.method === "POST") {
+    try {
+      return sendJson(res, await inspectLatestCloudBackup());
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message || "云端备份无法读取" }));
+    }
+  }
+  if (pathname === "/api/cloud-backup/restore-latest" && req.method === "POST") {
+    try {
+      const body = JSON.parse(await getBody(req, 8_000) || "{}");
+      if (body.confirmed !== true) throw new Error("恢复前需要明确确认");
+      return sendJson(res, await restoreLatestCloudBackup());
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message || "云端备份恢复失败" }));
     }
   }
   if (pathname === "/api/cloud-backup/run-large" && req.method === "POST") {
@@ -4547,6 +4934,7 @@ if (require.main === module) {
     cloudBackupTimer = setInterval(runScheduledCloudBackup, 15 * 60 * 1000);
     cloudBackupTimer.unref?.();
     setTimeout(runScheduledCloudBackup, 8_000).unref?.();
+    setTimeout(warmIntegratedConversionCache, 1_200).unref?.();
   });
 }
 
