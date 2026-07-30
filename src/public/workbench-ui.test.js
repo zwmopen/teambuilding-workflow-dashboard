@@ -8,6 +8,9 @@ const app = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const css = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const desktopMain = fs.readFileSync(path.join(__dirname, "..", "desktop", "main.js"), "utf8");
 const desktopPreload = fs.readFileSync(path.join(__dirname, "..", "desktop", "preload.js"), "utf8");
+const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+const gptSidebar = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "sidebar.js"), "utf8");
+const gptBackground = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "background.js"), "utf8");
 
 test("GPT 内置测试把本地素材和模板与持久原生网页合成一个生产界面", () => {
   assert.match(html, /data-tab="gptProductionTest"/);
@@ -28,6 +31,36 @@ test("GPT 内置测试把本地素材和模板与持久原生网页合成一个�
   assert.match(desktopMain, /tb-workbench-upload/);
   assert.match(desktopPreload, /gptWorkbench/);
   assert.match(css, /\.gpt-production-test-grid/);
+});
+
+test("GPT 自动生产 uses isolated accounts, browser controls, real serial completion and random pacing", () => {
+  assert.match(html, /内容生产（自动）/);
+  assert.match(html, /id="gptBrowserBackBtn"/);
+  assert.match(html, /id="gptBrowserForwardBtn"/);
+  assert.match(html, /id="gptBrowserReloadBtn"/);
+  assert.match(html, /id="gptBrowserHomeBtn"/);
+  assert.match(html, /id="gptAccountTabs"/);
+  assert.match(html, /id="gptAutoMinDelay"/);
+  assert.match(html, /id="gptAutoMaxDelay"/);
+  assert.match(app, /Math\.random\(\) \* \(maxDelay - minDelay\)/);
+  assert.match(app, /await window\.gptWorkbench\.sendTask\(task\)/);
+  assert.match(app, /gptAutoSettings\.accountTaskLimit/);
+  assert.match(desktopMain, /GPT_PARTITION_PREFIX = "persist:teambuilding-gpt-production"/);
+  assert.match(desktopMain, /partition: `\$\{GPT_PARTITION_PREFIX\}-\$\{id\}`/);
+  assert.match(desktopMain, /desktop:gpt-navigate/);
+});
+
+test("GPT 自动生产 downloads and packages only the current verified batch", () => {
+  assert.match(gptSidebar, /chatgpt-workpkg-\$\{batchId\}-\$\{index \+ 1\}-of-\$\{urls\.length\}/);
+  assert.match(gptSidebar, /type: "tb-download"/);
+  assert.match(gptSidebar, /batchId: downloadResult\.batchId/);
+  assert.match(gptSidebar, /expectedImageCount: downloadedImages/);
+  assert.match(gptSidebar, /platformPauseReason\(\)/);
+  assert.match(gptBackground, /api\/extension\/download-event/);
+  assert.match(server, /chatgpt-workpkg-task-\$\{batchId\}\.json/);
+  assert.match(server, /"-BatchId", batchId, "-ExpectedImageCount"/);
+  assert.match(server, /成品图片核对失败/);
+  assert.match(server, /成品文件夹没有 TXT 文案/);
 });
 
 test("production exposes phase, percent, progressbar, status and recent log", () => {

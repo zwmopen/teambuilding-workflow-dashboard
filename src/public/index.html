@@ -23,9 +23,9 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z"/><path d="m18.5 16 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/></svg>
           <span>内容制作</span>
         </button>
-        <button class="tab rail-tab rail-tab-test" data-tab="gptProductionTest" type="button" title="内容制作（GPT内置测试）">
+        <button class="tab rail-tab rail-tab-test" data-tab="gptProductionTest" type="button" title="内容生产（自动）">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H9l-4 4v-14Z"/><path d="m10 8 1 2.6 2.6 1-2.6 1L10 15l-1-2.4-2.6-1 2.6-1L10 8Z"/><path d="M15 8h2M15 11h2"/></svg>
-          <span>内容制作（GPT内置测试）</span><small>TEST</small>
+          <span>内容生产（自动）</span>
         </button>
         <button class="tab rail-tab" data-tab="distribution" type="button" title="内容分发">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/><path d="m3 9 2-2 2 2M21 13l-2 2-2-2"/></svg>
@@ -339,13 +339,13 @@
         <section class="gpt-production-test-shell">
           <header class="gpt-production-test-heading">
             <div>
-              <p class="label">开发测试入口</p>
-              <h2>本地素材与模板 × GPT 网页生产</h2>
-              <p>左侧选择真实素材和母版，右侧保留原生 GPT 网页；上传、下载、打包与查重继续复用既有生产助手。</p>
+              <p class="label">网页额度自动生产</p>
+              <h2>本地素材与模板 × GPT 自动生产</h2>
+              <p>选择一个或多个帖子后按顺序上传、生成、下载文案与图片，并打包到本地成品目录。</p>
             </div>
             <div class="gpt-production-test-actions">
               <span id="gptEmbeddedState" class="gpt-embedded-state" data-tone="idle">等待打开 GPT</span>
-              <button id="gptEmbeddedReloadBtn" type="button">重新载入</button>
+              <button class="page-settings-button" type="button" data-open-page-settings="gptAuto" title="自动生产设置" aria-label="打开自动生产设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button>
             </div>
           </header>
 
@@ -369,17 +369,30 @@
               <section class="gpt-test-send-dock">
                 <label for="gptTestExtraPrompt">本次补充要求</label>
                 <textarea id="gptTestExtraPrompt" rows="3" placeholder="可留空；模板规则和素材 TXT 会自动带入"></textarea>
-                <button id="gptTestSendBtn" class="primary-button" type="button">送入右侧 GPT</button>
+                <button id="gptTestSendBtn" class="primary-button" type="button">开始自动生产</button>
+                <div class="gpt-auto-progress" aria-label="自动生产进度">
+                  <span id="gptAutoProgressBar"></span>
+                </div>
                 <p id="gptTestQueueStatus">选择一个模板和至少一个素材文件夹</p>
               </section>
             </aside>
 
             <section class="gpt-production-browser-panel">
+              <header class="gpt-browser-toolbar">
+                <div class="gpt-browser-nav" aria-label="网页导航">
+                  <button id="gptBrowserBackBtn" type="button" title="后退" aria-label="后退">←</button>
+                  <button id="gptBrowserForwardBtn" type="button" title="前进" aria-label="前进">→</button>
+                  <button id="gptBrowserReloadBtn" type="button" title="刷新" aria-label="刷新">↻</button>
+                  <button id="gptBrowserHomeBtn" type="button" title="打开 ChatGPT 首页" aria-label="打开 ChatGPT 首页">⌂</button>
+                </div>
+                <nav id="gptAccountTabs" class="gpt-account-tabs" aria-label="GPT账号切换"></nav>
+                <button id="gptAddAccountBtn" class="gpt-add-account" type="button" title="增加独立账号" aria-label="增加独立账号">＋</button>
+              </header>
               <div id="gptEmbeddedHost" class="gpt-embedded-host" aria-label="GPT网页显示区域">
                 <div class="gpt-embedded-placeholder">
                   <span class="gpt-orbit" aria-hidden="true"></span>
                   <strong>正在准备 GPT 网页</strong>
-                  <p>桌面测试版会在这里加载独立、可持续登录的 GPT 会话。</p>
+                  <p>每个账号标签使用独立登录状态，互不串号。</p>
                 </div>
               </div>
             </section>
@@ -646,6 +659,25 @@
             <label class="switch-setting"><span><b>完成后悬浮通知</b><small>开始、进度和完成记录始终保留</small></span><input id="completionNotificationEnabled" type="checkbox" /></label>
           </div>
           <p class="settings-footnote">已登记并标记 confirmed 的现有设备已自动加入白名单。新设备第一次出现只会显示“陌生设备”，确认前不能发送。</p>
+        </section>
+        <section id="gptAutoPageSettings" class="page-settings-section" hidden>
+          <div class="settings-group">
+            <h3>自动生产闭环</h3>
+            <label class="switch-setting"><span><b>自动发送“1”确认出图</b><small>检测到迁移计划完成后才发送</small></span><input id="gptAutoConfirmEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>自动生成小红书文案</b><small>套图完成后请求文案并检测非空正文</small></span><input id="gptAutoCopyEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>自动下载图片并打包</b><small>图片数量与 TXT 均核对成功后才标记完成</small></span><input id="gptAutoPackageEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>失败时暂停队列</b><small>避免重复付费生成或把错误带到下一帖</small></span><input id="gptAutoPauseOnFailure" type="checkbox" checked /></label>
+          </div>
+          <div class="settings-group">
+            <h3>限速与稳定性</h3>
+            <div class="settings-two-columns">
+              <label><span>生产间隔最短（秒）</span><input id="gptAutoMinDelay" type="number" min="5" max="600" value="25" /></label>
+              <label><span>生产间隔最长（秒）</span><input id="gptAutoMaxDelay" type="number" min="5" max="900" value="55" /></label>
+              <label><span>单帖最长等待（分钟）</span><input id="gptAutoTaskTimeout" type="number" min="5" max="60" value="30" /></label>
+              <label><span>每轮最多生产（套）</span><input id="gptAutoAccountLimit" type="number" min="1" max="30" value="8" /></label>
+            </div>
+            <p class="settings-footnote">每套完成后会在最短与最长时间之间随机等待，让任务节奏更稳定；遇到登录验证、限流或异常提示会立即暂停。</p>
+          </div>
         </section>
       </aside>
     </div>

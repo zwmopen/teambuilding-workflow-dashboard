@@ -46,14 +46,25 @@ async function main() {
   });
   await evaluate('document.querySelector(\'[data-tab="gptProductionTest"]\')?.click()');
   await wait(6000);
-  const statusResult = await evaluate("window.gptWorkbench.status()", true);
-  const uiResult = await evaluate("({active: document.querySelector('#gptProductionTestView')?.classList.contains('active') || false, state: document.querySelector('#gptTestFrameState')?.textContent || ''})");
+  const statusResult = await evaluate("window.gptWorkbench.status('account-1')", true);
+  const uiResult = await evaluate(`({
+    active: document.querySelector('#gptProductionTestView')?.classList.contains('active') || false,
+    state: document.querySelector('#gptEmbeddedState')?.textContent || '',
+    accountTabs: document.querySelectorAll('#gptAccountTabs .gpt-account-tab').length,
+    browserControls: ['gptBrowserBackBtn', 'gptBrowserForwardBtn', 'gptBrowserReloadBtn', 'gptBrowserHomeBtn']
+      .filter((id) => document.getElementById(id)).length,
+    settingsButton: Boolean(document.querySelector('[data-open-page-settings="gptAuto"]'))
+  })`);
+  await evaluate("window.close()");
   socket.close();
   const status = statusResult?.result?.value || {};
   const ui = uiResult?.result?.value || {};
   if (!ui.active) throw new Error("GPT production test view did not become active");
   if (!status.available || !status.loaded || !status.extensionLoaded) {
     throw new Error(`Embedded GPT is incomplete: ${JSON.stringify({ status, ui })}`);
+  }
+  if (ui.accountTabs !== 1 || ui.browserControls !== 4 || !ui.settingsButton) {
+    throw new Error(`GPT production controls are incomplete: ${JSON.stringify(ui)}`);
   }
   process.stdout.write(`${JSON.stringify({ ok: true, status, ui }, null, 2)}\n`);
 }

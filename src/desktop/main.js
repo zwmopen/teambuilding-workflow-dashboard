@@ -11,13 +11,16 @@ const RUNTIME_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\
 const DESKTOP_LOG_FILE = path.join(RUNTIME_ROOT, "desktop.log");
 let serverProcess = null;
 let mainWindow = null;
-let gptView = null;
-let gptSession = null;
-let gptExtensionInfo = null;
-let gptExtensionError = "";
+const gptAccounts = new Map();
+let activeGptAccountId = "account-1";
 
-const GPT_PARTITION = "persist:teambuilding-gpt-production";
+const GPT_PARTITION_PREFIX = "persist:teambuilding-gpt-production";
 const GPT_URL = "https://chatgpt.com/";
+
+function safeGptAccountId(value = "") {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized.slice(0, 48) || "account-1";
+}
 
 function resolveGptExtensionPath() {
   const configured = String(process.env.TEAMBUILDING_GPT_EXTENSION || "").trim();
@@ -40,55 +43,83 @@ function safeGptBounds(input = {}) {
   };
 }
 
-async function initializeEmbeddedGptPage() {
-  if (!gptView || gptView.webContents.isDestroyed()) return;
+async function initializeEmbeddedGptPage(account) {
+  const view = account?.view;
+  if (!view || view.webContents.isDestroyed()) return;
   const apiRoot = new URL(APP_URL).origin;
-  await gptView.webContents.executeJavaScript(`(() => {
+  await view.webContents.executeJavaScript(`(() => {
     localStorage.setItem("tb-workbench-embedded", "1");
     localStorage.setItem("tb-workbench-api-root", ${JSON.stringify(apiRoot)});
+    localStorage.setItem("tb-workbench-account-id", ${JSON.stringify(account.id)});
     return true;
   })()`, true).catch((error) => appendDesktopLog("gpt-init-failed", error.message));
 }
 
-async function ensureGptView() {
-  if (gptView && !gptView.webContents.isDestroyed()) return gptView;
+async function ensureGptAccount(accountId = activeGptAccountId) {
+  const id = safeGptAccountId(accountId);
+  const existing = gptAccounts.get(id);
+  if (existing?.view && !existing.view.webContents.isDestroyed()) return existing;
   if (!mainWindow) throw new Error("工作台窗口尚未就绪");
-  gptSession = session.fromPartition(GPT_PARTITION);
-  if (!gptExtensionInfo && !gptExtensionError) {
-    const extensionPath = resolveGptExtensionPath();
-    try {
-      if (!fs.existsSync(path.join(extensionPath, "manifest.json"))) throw new Error(`扩展目录不存在：${extensionPath}`);
-      gptExtensionInfo = await gptSession.loadExtension(extensionPath, { allowFileAccess: true });
-      appendDesktopLog("gpt-extension-loaded", `${gptExtensionInfo.name} ${gptExtensionInfo.version}`);
-    } catch (error) {
-      gptExtensionError = error.message;
-      appendDesktopLog("gpt-extension-failed", error.stack || error.message);
-    }
+  const account = {
+    id,
+    partition: `${GPT_PARTITION_PREFIX}-${id}`,
+    session: session.fromPartition(`${GPT_PARTITION_PREFIX}-${id}`),
+    view: null,
+    extensionInfo: null,
+    extensionError: ""
+  };
+  gptAccounts.set(id, account);
+  const extensionPath = resolveGptExtensionPath();
+  try {
+    if (!fs.existsSync(path.join(extensionPath, "manifest.json"))) throw new Error(`扩展目录不存在：${extensionPath}`);
+    account.extensionInfo = await account.session.loadExtension(extensionPath, { allowFileAccess: true });
+    appendDesktopLog("gpt-extension-loaded", `${id} ${account.extensionInfo.name} ${account.extensionInfo.version}`);
+  } catch (error) {
+    account.extensionError = error.message;
+    appendDesktopLog("gpt-extension-failed", `${id} ${error.stack || error.message}`);
   }
-  gptView = new WebContentsView({
+  account.view = new WebContentsView({
     webPreferences: {
-      partition: GPT_PARTITION,
+      partition: account.partition,
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false
     }
   });
-  const currentUserAgent = gptView.webContents.getUserAgent();
-  gptView.webContents.setUserAgent(`${currentUserAgent} TeambuildingWorkbenchGPT/0.1`);
-  gptView.setBackgroundColor("#f5f7f5");
-  mainWindow.contentView.addChildView(gptView);
-  gptView.setVisible(false);
-  gptView.webContents.on("did-finish-load", initializeEmbeddedGptPage);
-  gptView.webContents.on("did-fail-load", (_event, code, description, validatedURL, isMainFrame) => {
-    appendDesktopLog("gpt-load-failed", `code=${code} main=${isMainFrame} url=${validatedURL} ${description}`);
+  const currentUserAgent = account.view.webContents.getUserAgent();
+  account.view.webContents.setUserAgent(`${currentUserAgent} TeambuildingWorkbenchGPT/0.2`);
+  account.view.setBackgroundColor("#f5f7f5");
+  mainWindow.contentView.addChildView(account.view);
+  account.view.setVisible(false);
+  account.view.webContents.on("did-finish-load", () => initializeEmbeddedGptPage(account));
+  account.view.webContents.on("did-fail-load", (_event, code, description, validatedURL, isMainFrame) => {
+    appendDesktopLog("gpt-load-failed", `account=${id} code=${code} main=${isMainFrame} url=${validatedURL} ${description}`);
   });
-  await gptView.webContents.loadURL(GPT_URL);
-  await initializeEmbeddedGptPage();
-  return gptView;
+  await account.view.webContents.loadURL(GPT_URL);
+  await initializeEmbeddedGptPage(account);
+  return account;
+}
+
+function activeGptAccount() {
+  const account = gptAccounts.get(activeGptAccountId);
+  return account?.view && !account.view.webContents.isDestroyed() ? account : null;
+}
+
+function hideAllGptViews(exceptId = "") {
+  for (const [id, account] of gptAccounts) {
+    if (!account.view || account.view.webContents.isDestroyed()) continue;
+    account.view.setVisible(Boolean(exceptId && id === exceptId));
+  }
+}
+
+async function ensureGptView(accountId = activeGptAccountId) {
+  const account = await ensureGptAccount(accountId);
+  return account.view;
 }
 
 async function sendTaskToEmbeddedGpt(task = {}) {
-  const view = await ensureGptView();
+  const accountId = safeGptAccountId(task.accountId || activeGptAccountId);
+  const view = await ensureGptView(accountId);
   const requestId = String(task.requestId || `workbench-${Date.now()}`);
   const payload = {
     source: "teambuilding-workbench",
@@ -97,7 +128,9 @@ async function sendTaskToEmbeddedGpt(task = {}) {
     name: String(task.name || "工作台素材"),
     materialPath: String(task.materialPath || ""),
     attachments: Array.isArray(task.attachments) ? task.attachments.slice(0, 30) : [],
-    prompt: String(task.prompt || "")
+    prompt: String(task.prompt || ""),
+    autoRun: Boolean(task.autoRun),
+    autoOptions: task.autoOptions && typeof task.autoOptions === "object" ? task.autoOptions : {}
   };
   const script = `new Promise((resolve) => {
     const requestId = ${JSON.stringify(requestId)};
@@ -105,7 +138,7 @@ async function sendTaskToEmbeddedGpt(task = {}) {
       window.removeEventListener("message", onResult);
       document.removeEventListener("tb-workbench-task-result", onResult);
       resolve({ ok: false, status: "timeout", requestId, error: "GPT 附件助手响应超时" });
-    }, 60000);
+    }, ${65 * 60 * 1000});
     function onResult(event) {
       let data = event?.data;
       if (event?.type === "tb-workbench-task-result") {
@@ -148,38 +181,75 @@ ipcMain.handle("desktop:pick-folder", async (_event, options = {}) => {
   return result.canceled ? "" : String(result.filePaths?.[0] || "");
 });
 
-ipcMain.handle("desktop:gpt-status", async () => ({
-  available: Boolean(WebContentsView),
-  loaded: Boolean(gptView && !gptView.webContents.isDestroyed()),
-  extensionLoaded: Boolean(gptExtensionInfo),
-  extensionError: gptExtensionError,
-  url: gptView && !gptView.webContents.isDestroyed() ? gptView.webContents.getURL() : GPT_URL
-}));
+ipcMain.handle("desktop:gpt-status", async (_event, accountId = activeGptAccountId) => {
+  const id = safeGptAccountId(accountId);
+  const account = gptAccounts.get(id);
+  const contents = account?.view && !account.view.webContents.isDestroyed() ? account.view.webContents : null;
+  return {
+    available: Boolean(WebContentsView),
+    accountId: id,
+    loaded: Boolean(contents),
+    extensionLoaded: Boolean(account?.extensionInfo),
+    extensionError: account?.extensionError || "",
+    url: contents?.getURL() || GPT_URL,
+    canGoBack: Boolean(contents?.canGoBack()),
+    canGoForward: Boolean(contents?.canGoForward())
+  };
+});
 
-ipcMain.handle("desktop:gpt-show", async (_event, bounds = {}) => {
-  const view = await ensureGptView();
-  view.setBounds(safeGptBounds(bounds));
+ipcMain.handle("desktop:gpt-show", async (_event, input = {}) => {
+  const accountId = safeGptAccountId(input.accountId || activeGptAccountId);
+  activeGptAccountId = accountId;
+  const account = await ensureGptAccount(accountId);
+  const view = account.view;
+  hideAllGptViews(accountId);
+  view.setBounds(safeGptBounds(input.bounds || input));
   view.setVisible(true);
   return {
     ok: true,
-    extensionLoaded: Boolean(gptExtensionInfo),
-    extensionError: gptExtensionError,
-    url: view.webContents.getURL()
+    accountId,
+    extensionLoaded: Boolean(account.extensionInfo),
+    extensionError: account.extensionError,
+    url: view.webContents.getURL(),
+    canGoBack: view.webContents.canGoBack(),
+    canGoForward: view.webContents.canGoForward()
   };
 });
 
 ipcMain.handle("desktop:gpt-hide", async () => {
-  if (gptView && !gptView.webContents.isDestroyed()) gptView.setVisible(false);
+  hideAllGptViews();
   return { ok: true };
 });
 
-ipcMain.handle("desktop:gpt-reload", async () => {
-  const view = await ensureGptView();
-  view.webContents.reload();
-  return { ok: true };
+ipcMain.handle("desktop:gpt-navigate", async (_event, input = {}) => {
+  const accountId = safeGptAccountId(input.accountId || activeGptAccountId);
+  const account = await ensureGptAccount(accountId);
+  const contents = account.view.webContents;
+  const action = String(input.action || "reload");
+  if (action === "back" && contents.canGoBack()) contents.goBack();
+  else if (action === "forward" && contents.canGoForward()) contents.goForward();
+  else if (action === "home") await contents.loadURL(GPT_URL);
+  else contents.reload();
+  return {
+    ok: true,
+    accountId,
+    url: contents.getURL(),
+    canGoBack: contents.canGoBack(),
+    canGoForward: contents.canGoForward()
+  };
 });
 
 ipcMain.handle("desktop:gpt-send-task", async (_event, task = {}) => sendTaskToEmbeddedGpt(task));
+
+ipcMain.handle("desktop:gpt-workflow-status", async (_event, accountId = activeGptAccountId) => {
+  const account = gptAccounts.get(safeGptAccountId(accountId));
+  const contents = account?.view?.webContents;
+  if (!contents || contents.isDestroyed()) return null;
+  return contents.executeJavaScript(`(() => {
+    try { return JSON.parse(document.getElementById("tb-workbench-bridge-progress")?.textContent || "null"); }
+    catch { return null; }
+  })()`, true).catch(() => null);
+});
 
 if (!app.isPackaged || process.env.TB_DESKTOP_SMOKE === "1") {
   app.commandLine.appendSwitch("remote-debugging-port", String(process.env.TB_REMOTE_DEBUGGING_PORT || "9333"));
@@ -261,8 +331,10 @@ async function createWindow() {
   });
   mainWindow = window;
   window.on("closed", () => {
-    if (gptView && !gptView.webContents.isDestroyed()) gptView.webContents.close();
-    gptView = null;
+    for (const account of gptAccounts.values()) {
+      if (account.view && !account.view.webContents.isDestroyed()) account.view.webContents.close();
+    }
+    gptAccounts.clear();
     mainWindow = null;
   });
 

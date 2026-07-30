@@ -64,6 +64,78 @@ let gptTestExpandedMaterialPath = "";
 let gptTestQueue = [];
 let gptTestQueueIndex = 0;
 let gptEmbeddedResizeObserver = null;
+let gptAutoRunning = false;
+const GPT_ACCOUNTS_STORAGE_KEY = "teambuilding-gpt-accounts";
+const GPT_AUTO_SETTINGS_STORAGE_KEY = "teambuilding-gpt-auto-settings";
+let gptAccounts = loadGptAccounts();
+let activeGptAccountId = gptAccounts[0]?.id || "account-1";
+let gptAutoSettings = loadGptAutoSettings();
+
+function loadGptAccounts() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(GPT_ACCOUNTS_STORAGE_KEY) || "[]");
+    const accounts = Array.isArray(stored)
+      ? stored.filter((item) => item && /^[a-z0-9_-]+$/i.test(String(item.id || ""))).slice(0, 8)
+      : [];
+    if (accounts.length) return accounts.map((item, index) => ({
+      id: String(item.id),
+      name: String(item.name || `账号 ${index + 1}`).slice(0, 18)
+    }));
+  } catch {
+    // Fall back to the first isolated account.
+  }
+  return [{ id: "account-1", name: "账号 1" }];
+}
+
+function saveGptAccounts() {
+  localStorage.setItem(GPT_ACCOUNTS_STORAGE_KEY, JSON.stringify(gptAccounts));
+}
+
+function loadGptAutoSettings() {
+  const defaults = {
+    autoConfirm: true,
+    autoCopy: true,
+    autoPackage: true,
+    pauseOnFailure: true,
+    minDelaySeconds: 25,
+    maxDelaySeconds: 55,
+    taskTimeoutMinutes: 30,
+    accountTaskLimit: 8
+  };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(GPT_AUTO_SETTINGS_STORAGE_KEY) || "{}") };
+  } catch {
+    return defaults;
+  }
+}
+
+function renderGptAutoSettings() {
+  const values = gptAutoSettings;
+  if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
+  if ($("#gptAutoCopyEnabled")) $("#gptAutoCopyEnabled").checked = values.autoCopy !== false;
+  if ($("#gptAutoPackageEnabled")) $("#gptAutoPackageEnabled").checked = values.autoPackage !== false;
+  if ($("#gptAutoPauseOnFailure")) $("#gptAutoPauseOnFailure").checked = values.pauseOnFailure !== false;
+  if ($("#gptAutoMinDelay")) $("#gptAutoMinDelay").value = values.minDelaySeconds;
+  if ($("#gptAutoMaxDelay")) $("#gptAutoMaxDelay").value = values.maxDelaySeconds;
+  if ($("#gptAutoTaskTimeout")) $("#gptAutoTaskTimeout").value = values.taskTimeoutMinutes;
+  if ($("#gptAutoAccountLimit")) $("#gptAutoAccountLimit").value = values.accountTaskLimit;
+}
+
+function saveGptAutoSettings() {
+  const minDelay = Math.max(5, Number($("#gptAutoMinDelay")?.value || 25));
+  const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
+  gptAutoSettings = {
+    autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
+    autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
+    autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
+    pauseOnFailure: $("#gptAutoPauseOnFailure")?.checked !== false,
+    minDelaySeconds: minDelay,
+    maxDelaySeconds: maxDelay,
+    taskTimeoutMinutes: Math.max(5, Number($("#gptAutoTaskTimeout")?.value || 30)),
+    accountTaskLimit: Math.max(1, Number($("#gptAutoAccountLimit")?.value || 8))
+  };
+  localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
+}
 const expandedMaterialPaths = new Set();
 const expandedCollectionNames = new Set();
 let materialTreeInitialized = false;
@@ -533,12 +605,16 @@ async function savePageSettingsFromUi(section) {
 
 function openPageSettings(section) {
   activePageSettings = section;
-  $("#pageSettingsTitle").textContent = section === "production" ? "内容制作设置" : "内容分发设置";
+  $("#pageSettingsTitle").textContent = section === "production"
+    ? "内容制作设置"
+    : section === "gptAuto" ? "自动生产设置" : "内容分发设置";
   $("#productionPageSettings").hidden = section !== "production";
   $("#distributionPageSettings").hidden = section !== "distribution";
+  if ($("#gptAutoPageSettings")) $("#gptAutoPageSettings").hidden = section !== "gptAuto";
   $("#pageSettingsBackdrop").hidden = false;
   document.body.classList.add("page-settings-open");
   renderPageSettingsValues();
+  if (section === "gptAuto") renderGptAutoSettings();
 }
 
 function closePageSettings() {
@@ -1179,7 +1255,7 @@ function buildGptTestTask(entry) {
     defaultTemplatePrompt(gptTestTemplate),
     "附件顺序说明：前 1—2 张是母版参考图（第1张封面、第2张内页）；其余附件全部是本次待迁移素材和 TXT 参考内容。",
     `当前素材文件夹：${entry.item.name}`,
-    "先读取本次附件并沿用当前对话中已沉淀的母版迁移规则。不要把素材当模板，不要省略 TXT；一套模板可以连续处理多个素材文件夹。先把附件和要求放入输入框，由我在右侧 GPT 中继续确认和生成。",
+    "先读取本次附件并沿用当前对话中已沉淀的母版迁移规则。不要把素材当模板，不要省略 TXT；一套模板可以连续处理多个素材文件夹。请先严格按既定格式输出逐页迁移计划，并在结尾明确等待我回复 1，暂时不要出图。",
     extra ? `本次补充要求：\n${extra}` : ""
   ].filter(Boolean).join("\n\n");
   return {
@@ -1198,19 +1274,108 @@ function updateGptTestQueueStatus(message = "") {
   const selectedCount = gptTestSelectedMaterials.size;
   if (message) node.textContent = message;
   else if (!gptTestTemplate || !selectedCount) node.textContent = "选择一个模板和至少一个素材文件夹";
-  else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) node.textContent = `待送入 ${gptTestQueue.length - gptTestQueueIndex} 组；每次送一组，避免附件混在一起`;
+  else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) node.textContent = `还有 ${gptTestQueue.length - gptTestQueueIndex} 套待生产；逐帖闭环，附件不会混组`;
   else node.textContent = `同一母版将依次对应 ${selectedCount} 个素材文件夹`;
   button.disabled = !gptTestTemplate || !selectedCount || !window.gptWorkbench?.available;
-  button.textContent = gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length
-    ? `送入下一组 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
-    : "送入右侧 GPT";
+  if (gptAutoRunning) button.disabled = true;
+  button.textContent = gptAutoRunning
+    ? `自动生产中 ${Math.min(gptTestQueueIndex + 1, gptTestQueue.length)}/${gptTestQueue.length}`
+    : gptTestQueue.length && gptTestQueueIndex > 0 && gptTestQueueIndex < gptTestQueue.length
+      ? `继续自动生产 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
+      : "开始自动生产";
 }
 
 function gptHostBounds() {
   const host = $("#gptEmbeddedHost");
   if (!host) return null;
   const rect = host.getBoundingClientRect();
-  return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+  const inset = 4;
+  return {
+    x: rect.left + inset,
+    y: rect.top + inset,
+    width: Math.max(320, rect.width - inset * 2),
+    height: Math.max(320, rect.height - inset * 2)
+  };
+}
+
+function renderGptAccountTabs() {
+  const host = $("#gptAccountTabs");
+  if (!host) return;
+  host.innerHTML = gptAccounts.map((account) => `
+    <button class="gpt-account-tab${account.id === activeGptAccountId ? " active" : ""}"
+      type="button" data-gpt-account="${escapeHtml(account.id)}"
+      title="${escapeHtml(account.name)} · 独立登录状态">
+      <span>${escapeHtml(account.name)}</span>
+      ${gptAccounts.length > 1 ? `<i data-remove-gpt-account="${escapeHtml(account.id)}" title="移除这个账号">×</i>` : ""}
+    </button>
+  `).join("");
+}
+
+async function switchGptAccount(accountId) {
+  if (gptAutoRunning) {
+    showSystemNotice("当前账号正在生产", "本轮任务会继续使用开始时的账号；完成或暂停后再切换账号。");
+    return;
+  }
+  const account = gptAccounts.find((item) => item.id === accountId);
+  if (!account || account.id === activeGptAccountId) return;
+  activeGptAccountId = account.id;
+  saveGptAccounts();
+  renderGptAccountTabs();
+  await showEmbeddedGptView();
+}
+
+async function addGptAccount() {
+  if (gptAutoRunning) {
+    showSystemNotice("自动生产进行中", "完成或暂停后再新增账号。");
+    return;
+  }
+  if (gptAccounts.length >= 8) {
+    showSystemNotice("账号数量已到上限", "最多可保留 8 个相互隔离的 GPT 登录账号。");
+    return;
+  }
+  const used = new Set(gptAccounts.map((item) => item.id));
+  let sequence = 1;
+  while (used.has(`account-${sequence}`)) sequence += 1;
+  const account = { id: `account-${sequence}`, name: `账号 ${sequence}` };
+  gptAccounts.push(account);
+  activeGptAccountId = account.id;
+  saveGptAccounts();
+  renderGptAccountTabs();
+  await showEmbeddedGptView();
+}
+
+async function removeGptAccount(accountId) {
+  if (gptAutoRunning) {
+    showSystemNotice("自动生产进行中", "完成或暂停后再移除账号。");
+    return;
+  }
+  if (gptAccounts.length <= 1) return;
+  gptAccounts = gptAccounts.filter((item) => item.id !== accountId);
+  if (activeGptAccountId === accountId) activeGptAccountId = gptAccounts[0].id;
+  saveGptAccounts();
+  renderGptAccountTabs();
+  await showEmbeddedGptView();
+}
+
+async function navigateEmbeddedGpt(action) {
+  if (!window.gptWorkbench?.available) return;
+  const state = $("#gptEmbeddedState");
+  try {
+    if (state) {
+      state.textContent = action === "reload" ? "正在刷新 GPT" : "正在切换网页";
+      state.dataset.tone = "busy";
+    }
+    const result = await window.gptWorkbench.navigate(action, activeGptAccountId);
+    $("#gptBrowserBackBtn").disabled = !result.canGoBack;
+    $("#gptBrowserForwardBtn").disabled = !result.canGoForward;
+    window.setTimeout(() => showEmbeddedGptView(), 380);
+  } catch (error) {
+    if (state) {
+      state.textContent = "网页操作失败";
+      state.dataset.tone = "danger";
+      state.title = error.message;
+    }
+  }
 }
 
 async function showEmbeddedGptView() {
@@ -1230,15 +1395,17 @@ async function showEmbeddedGptView() {
     state.dataset.tone = "busy";
   }
   try {
-    const result = await window.gptWorkbench.show(bounds);
+    const result = await window.gptWorkbench.show(bounds, activeGptAccountId);
     if (state) {
       const needsLogin = /\/auth\/(?:login|signup)/i.test(result.url || "");
       state.textContent = needsLogin
-        ? "请先登录 GPT · 登录状态会保留"
+        ? `${gptAccounts.find((item) => item.id === activeGptAccountId)?.name || "当前账号"}：请先登录`
         : result.extensionLoaded ? "GPT 已就绪 · 生产助手已接入" : "GPT 已打开 · 生产助手未加载";
       state.dataset.tone = needsLogin ? "warning" : result.extensionLoaded ? "success" : "warning";
       state.title = result.extensionError || "";
     }
+    if ($("#gptBrowserBackBtn")) $("#gptBrowserBackBtn").disabled = !result.canGoBack;
+    if ($("#gptBrowserForwardBtn")) $("#gptBrowserForwardBtn").disabled = !result.canGoForward;
   } catch (error) {
     if (state) {
       state.textContent = "GPT 打开失败";
@@ -1250,7 +1417,7 @@ async function showEmbeddedGptView() {
     gptEmbeddedResizeObserver = new ResizeObserver(() => {
       if ($("#gptProductionTestView")?.classList.contains("active")) {
         const nextBounds = gptHostBounds();
-        if (nextBounds) window.gptWorkbench.show(nextBounds).catch(() => {});
+        if (nextBounds) window.gptWorkbench.show(nextBounds, activeGptAccountId).catch(() => {});
       }
     });
     gptEmbeddedResizeObserver.observe($("#gptEmbeddedHost"));
@@ -1262,31 +1429,91 @@ function renderGptProductionTest() {
   if (!$("#gptProductionTestView")) return;
   renderGptTestMaterials();
   renderGptTestTemplates();
+  renderGptAccountTabs();
   window.requestAnimationFrame(() => showEmbeddedGptView());
 }
 
 async function sendNextGptTestTask() {
-  if (!window.gptWorkbench?.available) return;
+  if (!window.gptWorkbench?.available || gptAutoRunning) return;
   if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
     gptTestQueue = selectedGptTestEntries().map(buildGptTestTask);
     gptTestQueueIndex = 0;
   }
-  const task = gptTestQueue[gptTestQueueIndex];
-  if (!task) return;
+  if (!gptTestQueue.length) return;
+  const runAccountId = activeGptAccountId;
   const button = $("#gptTestSendBtn");
+  const progressBar = $("#gptAutoProgressBar");
+  gptAutoRunning = true;
   button.disabled = true;
-  updateGptTestQueueStatus(`正在把第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 组附件送入 GPT…`);
+  updateGptTestQueueStatus(`开始在${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号"}串行生产 ${gptTestQueue.length} 套作品`);
+  let completedThisRun = 0;
+  let failedThisRun = 0;
   try {
-    const result = await window.gptWorkbench.sendTask(task);
-    if (!result?.ok) throw new Error(result?.detail || result?.error || "附件没有成功进入 GPT");
-    gptTestQueueIndex += 1;
-    updateGptTestQueueStatus(gptTestQueueIndex < gptTestQueue.length
-      ? `第 ${gptTestQueueIndex} 组已放入输入框；确认无误后再送下一组`
-      : `已完成 ${gptTestQueue.length} 组附件送入；可在右侧继续对话和生成`);
+    while (gptTestQueueIndex < gptTestQueue.length) {
+      const accountLimit = Math.max(1, Number(gptAutoSettings.accountTaskLimit || 8));
+      if (completedThisRun >= accountLimit) {
+        throw new Error(`已完成本轮 ${accountLimit} 套上限；点击“继续自动生产”后从第 ${gptTestQueueIndex + 1} 套续跑`);
+      }
+      const task = gptTestQueue[gptTestQueueIndex];
+      task.accountId = runAccountId;
+      task.autoRun = true;
+      task.autoOptions = { ...gptAutoSettings };
+      let polling = true;
+      const poll = async () => {
+        while (polling) {
+          const status = await window.gptWorkbench.workflowStatus(runAccountId).catch(() => null);
+          if (status?.requestId === task.requestId) {
+            const overall = Math.round(((gptTestQueueIndex + Number(status.percent || 0) / 100) / gptTestQueue.length) * 100);
+            if (progressBar) progressBar.style.width = `${overall}%`;
+            updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 套 · ${status.stage || "处理中"} ${status.percent || 0}%${status.detail ? ` · ${status.detail}` : ""}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+        }
+      };
+      const pollingTask = poll();
+      let result;
+      try {
+        result = await window.gptWorkbench.sendTask(task);
+      } finally {
+        polling = false;
+        await pollingTask;
+      }
+      if (!result?.ok) {
+        const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
+        if (gptAutoSettings.pauseOnFailure !== false) throw taskError;
+        failedThisRun += 1;
+        gptTestQueueIndex += 1;
+        updateGptTestQueueStatus(`第 ${gptTestQueueIndex} 套失败并已记录：${taskError.message}；继续下一套`);
+        continue;
+      }
+      gptTestQueueIndex += 1;
+      completedThisRun += 1;
+      if (progressBar) progressBar.style.width = `${Math.round(gptTestQueueIndex / gptTestQueue.length * 100)}%`;
+      const completionLabel = gptAutoSettings.autoConfirm === false
+        ? "迁移计划已生成"
+        : gptAutoSettings.autoCopy === false
+          ? "套图已下载"
+          : gptAutoSettings.autoPackage === false
+            ? "套图已下载、文案已复制"
+            : "图片、TXT 和作品包已核对落盘";
+      updateGptTestQueueStatus(gptTestQueueIndex < gptTestQueue.length
+        ? `第 ${gptTestQueueIndex} 套${completionLabel}，继续下一套`
+        : failedThisRun
+          ? `本轮结束：成功 ${completedThisRun} 套，失败 ${failedThisRun} 套`
+          : `${gptTestQueue.length} 套全部完成：${completionLabel}`);
+      if (gptTestQueueIndex < gptTestQueue.length) {
+        const minDelay = Math.max(5, Number(gptAutoSettings.minDelaySeconds || 25));
+        const maxDelay = Math.max(minDelay, Number(gptAutoSettings.maxDelaySeconds || 55));
+        const delaySeconds = Math.round(minDelay + Math.random() * (maxDelay - minDelay));
+        updateGptTestQueueStatus(`第 ${gptTestQueueIndex} 套已完成；稳定等待 ${delaySeconds} 秒后继续下一套`);
+        await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
+      }
+    }
   } catch (error) {
-    updateGptTestQueueStatus(`本组未送入：${error.message}`);
-    showSystemNotice("GPT 附件没有送入", error.message, { tone: "danger" });
+    updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1} 套已暂停：${error.message}`);
+    showSystemNotice("自动生产已暂停", `${error.message}\n已完成的作品不会重复生成，处理当前问题后可继续。`, { tone: "danger" });
   } finally {
+    gptAutoRunning = false;
     button.disabled = false;
     updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
   }
@@ -5555,16 +5782,34 @@ function bindEvents() {
     updateGptTestQueueStatus();
   });
   $("#gptTestSendBtn")?.addEventListener("click", () => sendNextGptTestTask());
-  $("#gptEmbeddedReloadBtn")?.addEventListener("click", async () => {
-    if (!window.gptWorkbench?.available) return;
-    const state = $("#gptEmbeddedState");
-    if (state) state.textContent = "正在重新载入 GPT";
-    await window.gptWorkbench.reload();
+  $("#gptBrowserBackBtn")?.addEventListener("click", () => navigateEmbeddedGpt("back"));
+  $("#gptBrowserForwardBtn")?.addEventListener("click", () => navigateEmbeddedGpt("forward"));
+  $("#gptBrowserReloadBtn")?.addEventListener("click", () => navigateEmbeddedGpt("reload"));
+  $("#gptBrowserHomeBtn")?.addEventListener("click", () => navigateEmbeddedGpt("home"));
+  $("#gptAddAccountBtn")?.addEventListener("click", () => addGptAccount());
+  [
+    "#gptAutoConfirmEnabled", "#gptAutoCopyEnabled", "#gptAutoPackageEnabled", "#gptAutoPauseOnFailure",
+    "#gptAutoMinDelay", "#gptAutoMaxDelay", "#gptAutoTaskTimeout", "#gptAutoAccountLimit"
+  ].forEach((selector) => {
+    $(selector)?.addEventListener("change", () => {
+      saveGptAutoSettings();
+      toast("自动生产设置已保存");
+    });
+  });
+  $("#gptAccountTabs")?.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-remove-gpt-account]");
+    if (remove) {
+      event.stopPropagation();
+      removeGptAccount(remove.dataset.removeGptAccount);
+      return;
+    }
+    const tab = event.target.closest("[data-gpt-account]");
+    if (tab) switchGptAccount(tab.dataset.gptAccount);
   });
   window.addEventListener("resize", () => {
     if (!$("#gptProductionTestView")?.classList.contains("active") || !window.gptWorkbench?.available) return;
     const bounds = gptHostBounds();
-    if (bounds) window.gptWorkbench.show(bounds).catch(() => {});
+    if (bounds) window.gptWorkbench.show(bounds, activeGptAccountId).catch(() => {});
   });
   $("#workbenchOpenTemplateBtn")?.addEventListener("click", () => selectedTemplate && openPath(selectedTemplate.path));
   $("#workbenchSavePromptBtn")?.addEventListener("click", () => {

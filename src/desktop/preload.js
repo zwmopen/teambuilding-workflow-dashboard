@@ -17,19 +17,34 @@ contextBridge.exposeInMainWorld("desktopDialogs", {
 
 contextBridge.exposeInMainWorld("gptWorkbench", {
   available: true,
-  status() {
-    return ipcRenderer.invoke("desktop:gpt-status");
+  status(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-status", String(accountId || ""));
   },
-  show(bounds) {
-    return ipcRenderer.invoke("desktop:gpt-show", bounds);
+  show(bounds, accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-show", {
+      bounds,
+      accountId: String(accountId || "")
+    });
   },
   hide() {
     return ipcRenderer.invoke("desktop:gpt-hide");
   },
-  reload() {
-    return ipcRenderer.invoke("desktop:gpt-reload");
+  navigate(action, accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-navigate", {
+      action: String(action || "reload"),
+      accountId: String(accountId || "")
+    });
+  },
+  reload(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-navigate", {
+      action: "reload",
+      accountId: String(accountId || "")
+    });
   },
   sendTask(task) {
     return ipcRenderer.invoke("desktop:gpt-send-task", task);
+  },
+  workflowStatus(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-workflow-status", String(accountId || ""));
   }
 });

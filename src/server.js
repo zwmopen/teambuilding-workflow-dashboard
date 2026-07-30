@@ -913,6 +913,14 @@ function runExtensionWorkPackage(body = {}) {
   if (!clipboardText.trim()) {
     throw new Error("请先复制本次作品文案，再执行打包");
   }
+  const batchId = String(body.batchId || "").trim();
+  const expectedImageCount = Math.max(0, Number(body.expectedImageCount || 0));
+  if (batchId && !/^\d{8}-\d{6}-[a-z0-9]{4}$/i.test(batchId)) {
+    throw new Error("本次图片批次号无效，已停止打包");
+  }
+  if (batchId && expectedImageCount < 1) {
+    throw new Error("本次图片数量无效，已停止打包");
+  }
   const metadata = JSON.stringify({
     accountName: String(body.accountName || ""),
     conversationUrl: String(body.conversationUrl || ""),
@@ -926,6 +934,22 @@ function runExtensionWorkPackage(body = {}) {
     "-ConversationMetadataJsonOverride", metadata,
     "-NoMessage"
   ];
+  let taskFile = "";
+  if (batchId) {
+    taskFile = path.join(DOWNLOAD_ROOT, `chatgpt-workpkg-task-${batchId}.json`);
+    writeJson(taskFile, {
+      version: 1,
+      batchId,
+      expectedImageCount,
+      copyText: clipboardText,
+      accountName: String(body.accountName || ""),
+      conversationUrl: String(body.conversationUrl || ""),
+      title: String(body.title || ""),
+      status: "ready",
+      createdAt: new Date().toISOString()
+    });
+    args.push("-BatchId", batchId, "-ExpectedImageCount", String(expectedImageCount));
+  }
   if (body.preview === true) args.push("-Preview");
 
   return new Promise((resolve, reject) => {
@@ -944,12 +968,48 @@ function runExtensionWorkPackage(body = {}) {
         reject(new Error(stderr.trim() || stdout.trim() || `打包程序退出码 ${code}`));
         return;
       }
+      const output = stdout.trim();
+      const fields = Object.fromEntries(output.split(/\r?\n/).map((line) => {
+        const separator = line.indexOf("=");
+        return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : null;
+      }).filter(Boolean));
+      if (body.preview !== true && !/^OK(?:\r?\n|$)/.test(output)) {
+        reject(new Error(output || "打包程序没有返回完成标记"));
+        return;
+      }
+      const packagePath = String(fields.Folder || "").trim();
+      if (body.preview !== true) {
+        if (!packagePath || !exists(packagePath) || !fs.statSync(packagePath).isDirectory()) {
+          reject(new Error("打包程序已结束，但没有找到成品文件夹"));
+          return;
+        }
+        const packageFiles = fs.readdirSync(packagePath, { withFileTypes: true });
+        const imageCount = packageFiles.filter((entry) =>
+          entry.isFile() && imageExts.has(path.extname(entry.name).toLowerCase())
+        ).length;
+        const textCount = packageFiles.filter((entry) =>
+          entry.isFile() && path.extname(entry.name).toLowerCase() === ".txt"
+        ).length;
+        if (expectedImageCount && imageCount !== expectedImageCount) {
+          reject(new Error(`成品图片核对失败：${imageCount}/${expectedImageCount}`));
+          return;
+        }
+        if (textCount < 1) {
+          reject(new Error("成品文件夹没有 TXT 文案，已停止后续队列"));
+          return;
+        }
+      }
       resolve({
         ok: true,
         mode: "workbench-direct",
         fallback: false,
         preview: body.preview === true,
-        output: stdout.trim()
+        batchId,
+        expectedImageCount,
+        packagePath,
+        imageCount: Number(fields.Images || expectedImageCount || 0),
+        textFile: String(fields.Txt || ""),
+        output
       });
     });
   });

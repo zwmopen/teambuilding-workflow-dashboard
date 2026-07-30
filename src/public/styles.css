@@ -4360,6 +4360,22 @@ body[data-theme="glass"] .settings-card {
   line-height: 1.45;
 }
 
+.gpt-auto-progress {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent, #2d7c65) 10%, transparent);
+}
+
+.gpt-auto-progress > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent, #2d7c65), #62b996);
+  transition: width .3s ease;
+}
+
 .gpt-production-browser-panel,
 .gpt-embedded-host {
   min-width: 0;
@@ -4374,13 +4390,95 @@ body[data-theme="glass"] .settings-card {
   background: rgba(255, 255, 255, .56);
   box-shadow: 0 18px 46px rgba(29, 50, 41, .11);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
 .gpt-embedded-host {
+  flex: 1 1 auto;
+  height: auto;
   position: relative;
   border-radius: 15px;
   background: linear-gradient(145deg, rgba(245, 249, 246, .96), rgba(229, 238, 233, .82));
   overflow: hidden;
+}
+
+.gpt-browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 4px 7px;
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--panel, #fff) 86%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line-soft, rgba(70, 91, 79, .12));
+}
+
+.gpt-browser-nav { display: flex; gap: 4px; }
+
+.gpt-browser-nav button,
+.gpt-add-account {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 10px;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.gpt-browser-nav button:disabled { opacity: .38; cursor: default; }
+
+.gpt-account-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 5px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.gpt-account-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  color: var(--text-soft, #64766d);
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.gpt-account-tab.active {
+  color: var(--ink, #21342c);
+  background: color-mix(in srgb, var(--accent, #2d7c65) 13%, var(--panel, #fff));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent, #2d7c65) 24%, transparent);
+}
+
+.gpt-account-tab i {
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  color: inherit;
+  font-style: normal;
+  font-size: 14px;
+  opacity: .62;
+}
+
+.gpt-account-tab i:hover {
+  color: #a53737;
+  background: rgba(130, 62, 62, .12);
+  opacity: 1;
 }
 
 .gpt-embedded-placeholder {
