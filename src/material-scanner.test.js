@@ -4,7 +4,12 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { materialCategoryIndex, materialTreeSignature, scanPostFolders } = require("./server");
+const {
+  materialCategoryCountMap,
+  materialCategoryIndex,
+  materialTreeSignature,
+  scanPostFolders
+} = require("./server");
 
 test("scanPostFolders recursively finds folders containing images and text", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "material-scan-"));
@@ -61,4 +66,26 @@ test("material category index stays shallow so opening the workbench does not sc
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("saved global index supplies real parent-folder counts without rescanning every post", () => {
+  const root = path.resolve("D:\\素材库");
+  const first = path.join(root, "精准流量贴");
+  const second = path.join(root, "泛流量贴");
+  const counts = materialCategoryCountMap(root, {
+    root,
+    categories: [
+      { path: first, count: 31 },
+      { path: second, count: 18 },
+      { path: path.join(root, "损坏数据"), count: -1 }
+    ]
+  });
+
+  assert.equal(counts.get(path.resolve(first)), 31);
+  assert.equal(counts.get(path.resolve(second)), 18);
+  assert.equal(counts.has(path.resolve(root, "损坏数据")), false);
+  assert.equal(materialCategoryCountMap("D:\\另一个素材库", {
+    root,
+    categories: [{ path: first, count: 31 }]
+  }).size, 0);
 });

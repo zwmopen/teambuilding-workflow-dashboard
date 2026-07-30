@@ -1271,10 +1271,11 @@ function renderGptTestMaterials() {
   const query = String($("#gptTestMaterialSearch")?.value || "").trim().toLowerCase();
   host.innerHTML = categories.length ? categories.map((category) => {
     const expanded = gptTestExpandedCategories.has(category.path);
-    const items = (category.items || []).filter((item) => !query
+    const categoryItems = category.items || [];
+    const items = categoryItems.filter((item) => !query
       || `${item.name || ""} ${item.preview || ""} ${(item.tags || []).join(" ")}`.toLowerCase().includes(query));
-    const selectedCount = items.filter((item) => gptTestSelectedMaterials.has(item.path)).length;
-    const allSelected = Boolean(items.length && selectedCount === items.length);
+    const selectedCount = categoryItems.filter((item) => gptTestSelectedMaterials.has(item.path)).length;
+    const allSelected = Boolean(categoryItems.length && selectedCount === categoryItems.length);
     const partial = selectedCount > 0 && !allSelected;
     const posts = items.map((item) => {
       const selected = gptTestSelectedMaterials.has(item.path);
@@ -1301,7 +1302,7 @@ function renderGptTestMaterials() {
       <div class="workbench-folder-row${allSelected ? " selected" : ""}">
         <input class="material-check folder-check" type="checkbox" data-gpt-test-category-check="${escapeHtml(category.path)}" ${allSelected ? "checked" : ""} data-indeterminate="${partial ? "true" : "false"} aria-label="选择此文件夹中的全部帖子" />
         <button class="workbench-folder-item${expanded ? " active" : ""}" type="button" data-gpt-test-material-category="${escapeHtml(category.path)}">
-          <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(category.name)}（${Number(category.count || category.items?.length || 0)}）</strong></span>
+          <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(category.name)}（${category.countKnown === false ? "…" : Number(category.count ?? categoryItems.length)}）</strong></span>
         </button>
       </div>
       ${expanded ? `<div class="workbench-post-list">${category.loaded === false ? `<div class="tree-loading-state">正在读取文件夹…</div>` : (posts || `<div class="empty-state"><strong>没有匹配的帖子文件夹</strong></div>`)}</div>` : ""}
@@ -5455,6 +5456,7 @@ function bindEvents() {
     const gptCategoryCheck = event.target.closest("[data-gpt-test-category-check]");
     if (gptCategoryCheck) {
       const categoryPath = gptCategoryCheck.dataset.gptTestCategoryCheck;
+      const shouldSelect = gptCategoryCheck.checked;
       let category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
       if (category?.loaded === false) {
         gptTestExpandedCategories.add(categoryPath);
@@ -5462,7 +5464,7 @@ function bindEvents() {
         category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
       }
       (category?.items || []).forEach((item) => {
-        if (gptCategoryCheck.checked) {
+        if (shouldSelect) {
           gptTestSelectedMaterials.add(item.path);
           gptTestMaterialEntries.set(item.path, { item, category });
         } else {

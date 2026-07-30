@@ -2310,6 +2310,18 @@ function materialCategoryIndex(root) {
     .sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN", { numeric: true }));
 }
 
+function materialCategoryCountMap(root, snapshot = readJson(MATERIAL_GLOBAL_INDEX_FILE, null)) {
+  const currentRoot = path.resolve(root || "");
+  if (!snapshot?.root
+    || path.resolve(snapshot.root).toLowerCase() !== currentRoot.toLowerCase()
+    || !Array.isArray(snapshot.categories)) {
+    return new Map();
+  }
+  return new Map(snapshot.categories
+    .filter((category) => category?.path && Number.isInteger(Number(category.count)) && Number(category.count) >= 0)
+    .map((category) => [path.resolve(category.path), Number(category.count)]));
+}
+
 function getDetectedMaterialPosts(root, force = false) {
   const categoryRoot = path.resolve(root);
   const sourceSignature = materialTreeSignature(categoryRoot);
@@ -2333,6 +2345,7 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "", options = {
   const root = getWorkspaceSettings().materialRoot;
   const sourceSignature = materialTreeSignature(root);
   const descriptors = materialCategoryIndex(root);
+  const indexedCounts = materialCategoryCountMap(root);
   const requestedPath = selectedLibraryPath ? path.resolve(selectedLibraryPath) : "";
   const requestedCategory = descriptors.find((category) => category.path === requestedPath);
   const selectedCategory = requestedCategory
@@ -2364,13 +2377,16 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "", options = {
 
   function categoryFromPosts(descriptor, posts, loaded) {
     const cachedPosts = materialCategoryCache.get(descriptor.path)?.posts;
-    const countKnown = loaded || Array.isArray(cachedPosts);
+    const indexedCount = indexedCounts.get(path.resolve(descriptor.path));
+    const countKnown = loaded || Array.isArray(cachedPosts) || Number.isInteger(indexedCount);
     const items = posts
       .slice(0, PREVIEW_LIMITS.materialItemsPerCategory)
       .map((post, itemIndex) => materialItem(post, descriptor.name, itemIndex));
     return {
       ...descriptor,
-      count: loaded ? posts.length : Number(cachedPosts?.length || 0),
+      count: loaded
+        ? posts.length
+        : (Array.isArray(cachedPosts) ? cachedPosts.length : (Number.isInteger(indexedCount) ? indexedCount : 0)),
       countKnown,
       visibleCount: items.length,
       loaded,
@@ -5389,6 +5405,7 @@ module.exports = {
   localIPv4Addresses,
   mobileConversionLink,
   materialCategoryIndex,
+  materialCategoryCountMap,
   materialTreeSignature,
   getMaterialUsageLedger,
   getMaterialMetadataLedger,

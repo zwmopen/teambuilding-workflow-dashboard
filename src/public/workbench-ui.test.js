@@ -84,6 +84,12 @@ test("GPT automatic production exposes safe retry, quota and real archive contro
   assert.match(server, /function archiveMaterialAfterProduction/);
 });
 
+test("GPT material tree never presents an unloaded parent folder as a fake zero", () => {
+  assert.match(app, /category\.countKnown === false \? "…" : Number\(category\.count/);
+  assert.match(app, /const categoryItems = category\.items \|\| \[\]/);
+  assert.match(app, /const shouldSelect = gptCategoryCheck\.checked/);
+});
+
 test("GPT login recovery stays local and never enters ordinary cloud settings export", () => {
   assert.match(html, /id="createGptLoginRecoveryBtn"/);
   assert.match(html, /id="restoreGptLoginRecoveryBtn"/);
