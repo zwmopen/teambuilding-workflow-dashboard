@@ -1,15 +1,15 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.12.2",
-  "source_commit": "44ced35",
+  "version": "0.13.0",
+  "source_commit": "8a9155a",
   "artifacts": [
     {
-      "file": "0.12.2/团建工作台-0.12.2-便携版.exe",
-      "sha256": "42D6B01596788C67D19B7DEC2B398BECC2B974D3C654B2CC513DD6F17C7BC82F",
-      "size": 96144357,
+      "file": "0.13.0/团建工作台-0.13.0-便携版.exe",
+      "sha256": "D5C7CBACEBF546CC386E0585D72B1A85F31F9A2BEB670A6D654ED1A28F975F1E",
+      "size": 96157448,
       "platform": "Windows x64",
       "built_at": "2026-07-30",
-      "known_limits": "内置扩展、账号隔离、网页控制、页面设置和精确批次打包已通过自动测试与正式包隔离烟测。首次使用需用户本人登录 ChatGPT；登录后的真实付费生成、文案与下载整链仍需用一组真实素材完成首套验收。"
+      "known_limits": "真实 Plus 已验证附件上传、计划、自动确认、生成图片和下载；同一验收会话的小红书文案由官网连续返回短片段，扩展补问一次后仍不足 80 字会安全暂停，不打包、不归档。"
     }
   ]
 }
