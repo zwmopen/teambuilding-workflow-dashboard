@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.12.1" />
+    <link rel="stylesheet" href="/styles.css?v=0.13.0" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -367,13 +367,26 @@
               </section>
 
               <section class="gpt-test-send-dock">
+                <div class="gpt-mode-row">
+                  <label for="gptProductionMode">生产模式</label>
+                  <select id="gptProductionMode">
+                    <option value="automatic">自动闭环</option>
+                    <option value="manual">手动准备</option>
+                  </select>
+                </div>
                 <label for="gptTestExtraPrompt">本次补充要求</label>
                 <textarea id="gptTestExtraPrompt" rows="3" placeholder="可留空；模板规则和素材 TXT 会自动带入"></textarea>
                 <button id="gptTestSendBtn" class="primary-button" type="button">开始自动生产</button>
+                <button id="gptManualNextBtn" class="secondary-button" type="button" hidden>完成当前，上传下一套</button>
+                <div class="gpt-queue-actions">
+                  <button id="gptPauseQueueBtn" type="button">暂停</button>
+                  <button id="gptRetryTaskBtn" type="button" hidden>重试当前任务</button>
+                  <button id="gptSkipTaskBtn" type="button">跳过当前</button>
+                </div>
                 <div class="gpt-auto-progress" aria-label="自动生产进度">
                   <span id="gptAutoProgressBar"></span>
                 </div>
-                <p id="gptTestQueueStatus">选择一个模板和至少一个素材文件夹</p>
+                <p id="gptTestQueueStatus">请至少选择一个素材文件夹；模板可以不选</p>
               </section>
             </aside>
 
@@ -395,6 +408,7 @@
                   <p>每个账号标签使用独立登录状态，互不串号。</p>
                 </div>
               </div>
+              <aside id="gptSelectionAssistant" class="gpt-selection-assistant" hidden aria-live="polite"></aside>
             </section>
           </div>
         </section>
@@ -535,6 +549,16 @@
               <button id="inspectCloudBackupBtn" type="button">验证可恢复</button>
               <button id="restoreCloudBackupBtn" type="button">恢复最新记录</button>
             </div>
+            <div class="settings-actions">
+              <button id="exportLocalSettingsBtn" type="button">导出本地设置</button>
+              <button id="importLocalSettingsBtn" type="button">导入本地设置</button>
+              <input id="importLocalSettingsFile" type="file" accept="application/json,.json" hidden />
+            </div>
+            <div class="settings-actions">
+              <button id="createGptLoginRecoveryBtn" type="button">创建本机 GPT 登录恢复点</button>
+              <button id="restoreGptLoginRecoveryBtn" type="button">恢复当前账号登录档案</button>
+            </div>
+            <p class="settings-footnote" id="gptLoginRecoveryStatus">普通设置备份不包含 GPT/Google Cookie。登录恢复点只保存在这台 Windows 电脑，不上传坚果云，也不能作为普通配置分享。</p>
             <div class="backup-schedule-grid">
               <label class="switch-setting"><span><b>自动备份</b><small>默认每天检查一次</small></span><input id="cloudBackupScheduleEnabled" type="checkbox" checked /></label>
               <label><span>频率</span><select id="cloudBackupFrequency"><option value="daily">每天</option><option value="weekly">每周</option><option value="interval">按小时</option></select></label>
@@ -662,6 +686,12 @@
         </section>
         <section id="gptAutoPageSettings" class="page-settings-section" hidden>
           <div class="settings-group">
+            <h3>模式与归档</h3>
+            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="automatic">自动闭环</option><option value="manual">手动准备</option></select></label>
+            <label class="switch-setting"><span><b>成功后归档原素材</b><small>仅在图片、TXT 和作品包全部校验成功后移动到“已上传 N 次”</small></span><input id="gptAutoArchiveEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>显示账号额度提醒</b><small>按本地滚动账本估算，网页实际限流优先</small></span><input id="gptQuotaReminderEnabled" type="checkbox" checked /></label>
+          </div>
+          <div class="settings-group">
             <h3>自动生产闭环</h3>
             <label class="switch-setting"><span><b>自动发送“1”确认出图</b><small>检测到迁移计划完成后才发送</small></span><input id="gptAutoConfirmEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>自动生成小红书文案</b><small>套图完成后请求文案并检测非空正文</small></span><input id="gptAutoCopyEnabled" type="checkbox" checked /></label>
@@ -675,6 +705,9 @@
               <label><span>生产间隔最长（秒）</span><input id="gptAutoMaxDelay" type="number" min="5" max="900" value="55" /></label>
               <label><span>单帖最长等待（分钟）</span><input id="gptAutoTaskTimeout" type="number" min="5" max="60" value="30" /></label>
               <label><span>每轮最多生产（套）</span><input id="gptAutoAccountLimit" type="number" min="1" max="30" value="8" /></label>
+              <label><span>3小时上传上限（图）</span><input id="gptUploadLimit" type="number" min="1" max="500" value="80" /></label>
+              <label><span>3小时生成上限（图）</span><input id="gptGenerationLimit" type="number" min="1" max="500" value="50" /></label>
+              <label><span>滚动窗口（小时）</span><input id="gptQuotaWindowHours" type="number" min="1" max="24" value="3" /></label>
             </div>
             <p class="settings-footnote">每套完成后会在最短与最长时间之间随机等待，让任务节奏更稳定；遇到登录验证、限流或异常提示会立即暂停。</p>
           </div>
@@ -700,8 +733,8 @@
       <button id="contextRename" type="button">重命名</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.12.1"></script>
-    <script src="/material-workspace.js?v=0.12.1"></script>
-    <script src="/app.js?v=0.12.1"></script>
+    <script src="/distribution-ui.js?v=0.13.0"></script>
+    <script src="/material-workspace.js?v=0.13.0"></script>
+    <script src="/app.js?v=0.13.0"></script>
   </body>
 </html>

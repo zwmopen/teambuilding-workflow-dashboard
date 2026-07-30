@@ -5,6 +5,7 @@ const url = require("url");
 const childProcess = require("child_process");
 const crypto = require("crypto");
 const os = require("os");
+const sharp = require("sharp");
 const { generateImages, generateText, networkFetch, normalizeImageApiConfig } = require("./lib/image-generation");
 const {
   applySuggestedTitles,
@@ -44,6 +45,11 @@ const {
   findTrustedDevice,
   normalizePageSettings
 } = require("./lib/workbench-settings");
+const {
+  normalizeQuotaLedger,
+  recordQuotaEvent,
+  rollingQuotaStatus
+} = require("./lib/gpt-production-orchestrator");
 const {
   downloadBackup,
   importLifeGameConfig,
@@ -99,6 +105,8 @@ const MATERIAL_USAGE_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "mate
 const MATERIAL_METADATA_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "material-metadata-ledger.json");
 const MATERIAL_HASH_CACHE_FILE = path.join(DATA_ROOT, "material-hash-cache.json");
 const MATERIAL_GLOBAL_INDEX_FILE = path.join(DATA_ROOT, "material-global-index.json");
+const GPT_QUOTA_LEDGER_FILE = path.join(DATA_ROOT, "gpt-production-quota.json");
+const GPT_PRODUCTION_ARCHIVE_LOG_FILE = path.join(DATA_ROOT, "gpt-production-archive.jsonl");
 const WORKPKG_CONFIG_FILE = process.env.TEAMBUILDING_WORKPKG_CONFIG_FILE || "D:\\Download\\workpkg_config.json";
 const DOWNLOAD_ROOT = process.env.TEAMBUILDING_DOWNLOAD_ROOT || "D:\\Download";
 const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
@@ -185,7 +193,8 @@ function buildCloudBackupPayload() {
     DEDUP_LEDGER_FILE,
     EXTENSION_DOWNLOAD_LOG_FILE,
     MATERIAL_USAGE_LEDGER_FILE,
-    MATERIAL_METADATA_LEDGER_FILE
+    MATERIAL_METADATA_LEDGER_FILE,
+    GPT_QUOTA_LEDGER_FILE
   ];
   const records = {};
   for (const filePath of files) {
@@ -202,6 +211,47 @@ function buildCloudBackupPayload() {
     scope: "设置、提示词、任务索引、设备备注、分发与防重复记录；不包含素材和成品大文件",
     records
   };
+}
+
+function restoreBackupPayload(payload = {}) {
+  if (payload.schema !== "teambuilding-workbench-backup-v1") {
+    throw new Error("备份文件格式不正确");
+  }
+  const allowedFiles = [
+    STATE_FILE,
+    PROMPTS_FILE,
+    TASK_INDEX_FILE,
+    APP_SETTINGS_FILE,
+    COLLECTION_LEDGER_FILE,
+    DEVICE_PRESENCE_FILE,
+    DEVICE_NOTES_FILE,
+    DEDUP_LEDGER_FILE,
+    EXTENSION_DOWNLOAD_LOG_FILE,
+    MATERIAL_USAGE_LEDGER_FILE,
+    MATERIAL_METADATA_LEDGER_FILE,
+    GPT_QUOTA_LEDGER_FILE
+  ];
+  const allowed = new Map(allowedFiles.map((filePath) => [
+    path.relative(DATA_ROOT, filePath).replace(/\\/g, "/"),
+    filePath
+  ]));
+  const restorable = Object.entries(payload.records || {}).filter(([relative]) => allowed.has(relative));
+  if (!restorable.length) throw new Error("备份中没有可恢复的工作台记录");
+  const recoveryRoot = path.join(DATA_ROOT, "恢复前快照");
+  fs.mkdirSync(recoveryRoot, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const localSnapshot = path.join(recoveryRoot, `before-restore-${stamp}.json`);
+  writeJson(localSnapshot, buildCloudBackupPayload());
+  for (const [relative, value] of restorable) {
+    const target = allowed.get(relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (typeof value === "string") fs.writeFileSync(target, value, "utf8");
+    else writeJson(target, value);
+  }
+  materialCategoryCache.clear();
+  materialPostCache = null;
+  materialLibraryCache = null;
+  return { restored: restorable.length, localSnapshot };
 }
 
 async function runCloudBackupNow() {
@@ -240,41 +290,14 @@ async function restoreLatestCloudBackup() {
   const config = readSecureConfig(WEBDAV_CONFIG_FILE);
   if (!config) throw new Error("请先配置坚果云 WebDAV");
   const payload = await downloadBackup(config);
-  const allowed = new Map([
-    STATE_FILE,
-    PROMPTS_FILE,
-    TASK_INDEX_FILE,
-    APP_SETTINGS_FILE,
-    COLLECTION_LEDGER_FILE,
-    DEVICE_PRESENCE_FILE,
-    DEVICE_NOTES_FILE,
-    DEDUP_LEDGER_FILE,
-    EXTENSION_DOWNLOAD_LOG_FILE,
-    MATERIAL_USAGE_LEDGER_FILE,
-    MATERIAL_METADATA_LEDGER_FILE
-  ].map((filePath) => [path.relative(DATA_ROOT, filePath).replace(/\\/g, "/"), filePath]));
-  const restorable = Object.entries(payload.records || {}).filter(([relative]) => allowed.has(relative));
-  if (!restorable.length) throw new Error("云端备份没有可恢复的工作台记录");
-
-  const recoveryRoot = path.join(DATA_ROOT, "恢复前快照");
-  fs.mkdirSync(recoveryRoot, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const localSnapshot = path.join(recoveryRoot, `before-restore-${stamp}.json`);
-  writeJson(localSnapshot, buildCloudBackupPayload());
-
-  for (const [relative, value] of restorable) {
-    const target = allowed.get(relative);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    if (typeof value === "string") fs.writeFileSync(target, value, "utf8");
-    else writeJson(target, value);
-  }
+  const restored = restoreBackupPayload(payload);
   return {
     ok: true,
     restoredAt: new Date().toISOString(),
     sourceCreatedAt: payload.createdAt || "",
-    restoredRecords: restorable.length,
-    localSnapshot,
-    message: `已恢复 ${restorable.length} 份记录；恢复前快照已保留`
+    restoredRecords: restored.restored,
+    localSnapshot: restored.localSnapshot,
+    message: `已恢复 ${restored.restored} 份记录；恢复前快照已保留`
   };
 }
 
@@ -706,7 +729,7 @@ function recordMaterialUsage(body = {}, options = {}) {
   ledger.updatedAt = now;
   fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
   writeJson(ledgerFile, ledger);
-  if (status === "used") {
+  if (status === "used" && options.skipMetadataIncrement !== true) {
     try {
       updateMaterialMetadata({
         entryPath,
@@ -790,6 +813,119 @@ function moveWorkspaceEntry(body = {}, options = {}) {
   materialLibraryCache = null;
   if (!options.roots) setImmediate(() => startMaterialGlobalIndexRefresh({ force: true }));
   return { from: sourcePath, to: destination };
+}
+
+function gptQuotaSnapshot(accountId = "", now = Date.now()) {
+  const ledger = normalizeQuotaLedger(readJson(GPT_QUOTA_LEDGER_FILE, {}));
+  const pageAccounts = getPageSettings().gptAuto?.accounts || [];
+  for (const accountSettings of pageAccounts) {
+    const account = ledger.accounts[accountSettings.id] || { events: [] };
+    account.settings = {
+      enabled: getPageSettings().gptAuto?.quotaReminderEnabled !== false,
+      windowHours: accountSettings.windowHours,
+      uploadLimit: accountSettings.uploadLimit,
+      generationLimit: accountSettings.generationLimit
+    };
+    ledger.accounts[accountSettings.id] = account;
+  }
+  if (accountId) {
+    const account = ledger.accounts[accountId] || { settings: {}, events: [] };
+    return { accountId, ...rollingQuotaStatus(account, now) };
+  }
+  return {
+    generatedAt: new Date(now).toISOString(),
+    accounts: Object.fromEntries(Object.entries(ledger.accounts).map(([id, account]) => [
+      id,
+      { accountId: id, ...rollingQuotaStatus(account, now) }
+    ]))
+  };
+}
+
+function appendGptQuotaEvent(body = {}) {
+  const accountId = String(body.accountId || "").trim();
+  const ledger = recordQuotaEvent(readJson(GPT_QUOTA_LEDGER_FILE, {}), accountId, {
+    kind: body.kind,
+    count: body.count,
+    requestId: body.requestId
+  });
+  const settings = getPageSettings().gptAuto?.accounts?.find((account) => account.id === accountId);
+  if (settings) {
+    ledger.accounts[accountId].settings = {
+      enabled: getPageSettings().gptAuto?.quotaReminderEnabled !== false,
+      windowHours: settings.windowHours,
+      uploadLimit: settings.uploadLimit,
+      generationLimit: settings.generationLimit
+    };
+  }
+  writeJson(GPT_QUOTA_LEDGER_FILE, ledger);
+  return gptQuotaSnapshot(accountId);
+}
+
+function safeArchiveDestination(targetRoot, sourcePath, fingerprint) {
+  const baseName = path.basename(sourcePath);
+  let destination = path.join(targetRoot, baseName);
+  if (!exists(destination)) return destination;
+  const suffix = String(fingerprint || crypto.createHash("sha256").update(sourcePath).digest("hex")).slice(0, 8);
+  destination = path.join(targetRoot, `${baseName}（${suffix}）`);
+  if (exists(destination)) throw new Error(`归档目录已存在同名素材：${path.basename(destination)}`);
+  return destination;
+}
+
+function archiveMaterialAfterProduction(body = {}) {
+  const settings = getWorkspaceSettings();
+  const materialRoot = path.resolve(settings.materialRoot);
+  const sourceInput = String(body.entryPath || "").trim();
+  if (!sourceInput) throw new Error("缺少要归档的素材文件夹");
+  const sourcePath = path.resolve(sourceInput);
+  if (!isPathInside(materialRoot, sourcePath) || sourcePath === materialRoot || !exists(sourcePath)) {
+    throw new Error("只能归档当前素材库中的真实帖子文件夹");
+  }
+  const stat = fs.lstatSync(sourcePath);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("只能归档真实文件夹");
+  const metadata = updateMaterialMetadata({
+    entryPath: sourcePath,
+    name: path.basename(sourcePath),
+    incrementUsage: true
+  });
+  const usageCount = Math.max(1, Number(metadata.usageCount || 1));
+  const usageRecord = recordMaterialUsage({
+    entryPath: sourcePath,
+    name: path.basename(sourcePath),
+    status: "used",
+    conversationUrl: body.conversationUrl
+  }, { skipMetadataIncrement: true });
+  const targetRoot = path.join(materialRoot, `已上传 ${usageCount} 次`);
+  fs.mkdirSync(targetRoot, { recursive: true });
+  const destination = safeArchiveDestination(targetRoot, sourcePath, usageRecord.fingerprint);
+  if (path.resolve(path.dirname(sourcePath)).toLowerCase() !== path.resolve(targetRoot).toLowerCase()) {
+    fs.renameSync(sourcePath, destination);
+  } else if (path.resolve(sourcePath).toLowerCase() !== path.resolve(destination).toLowerCase()) {
+    fs.renameSync(sourcePath, destination);
+  }
+  const finalPath = exists(destination) ? destination : sourcePath;
+  updateMaterialMetadata({
+    entryPath: finalPath,
+    name: path.basename(finalPath),
+    usageCount
+  });
+  const event = {
+    recordedAt: new Date().toISOString(),
+    requestId: String(body.requestId || ""),
+    templateId: String(body.templateId || ""),
+    conversationUrl: String(body.conversationUrl || ""),
+    packagePath: String(body.packagePath || ""),
+    from: sourcePath,
+    to: finalPath,
+    usageCount,
+    fingerprint: usageRecord.fingerprint
+  };
+  fs.mkdirSync(path.dirname(GPT_PRODUCTION_ARCHIVE_LOG_FILE), { recursive: true });
+  fs.appendFileSync(GPT_PRODUCTION_ARCHIVE_LOG_FILE, `${JSON.stringify(event)}\n`, "utf8");
+  materialCategoryCache.clear();
+  materialPostCache = null;
+  materialLibraryCache = null;
+  setImmediate(() => startMaterialGlobalIndexRefresh({ force: true }));
+  return event;
 }
 
 function extensionProductSnapshot(collectionName = "") {
@@ -958,12 +1094,20 @@ function runExtensionWorkPackage(body = {}) {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    child.stdout.on("data", (chunk) => { stdoutChunks.push(Buffer.from(chunk)); });
+    child.stderr.on("data", (chunk) => { stderrChunks.push(Buffer.from(chunk)); });
     child.on("error", reject);
     child.on("close", (code) => {
+      const decodeWindowsOutput = (chunks) => {
+        const bytes = Buffer.concat(chunks);
+        const utf8 = bytes.toString("utf8");
+        if (!utf8.includes("\uFFFD")) return utf8;
+        return new TextDecoder("gb18030").decode(bytes);
+      };
+      const stdout = decodeWindowsOutput(stdoutChunks);
+      const stderr = decodeWindowsOutput(stderrChunks);
       if (code !== 0) {
         reject(new Error(stderr.trim() || stdout.trim() || `打包程序退出码 ${code}`));
         return;
@@ -973,7 +1117,7 @@ function runExtensionWorkPackage(body = {}) {
         const separator = line.indexOf("=");
         return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : null;
       }).filter(Boolean));
-      if (body.preview !== true && !/^OK(?:\r?\n|$)/.test(output)) {
+      if (body.preview !== true && !/^OK$/m.test(output)) {
         reject(new Error(output || "打包程序没有返回完成标记"));
         return;
       }
@@ -1778,7 +1922,8 @@ function savePageSettings(body = {}) {
     ...body,
     production: { ...getPageSettings().production, ...(body.production || {}) },
     distribution: { ...getPageSettings().distribution, ...(body.distribution || {}) },
-    backup: { ...getPageSettings().backup, ...(body.backup || {}) }
+    backup: { ...getPageSettings().backup, ...(body.backup || {}) },
+    gptAuto: { ...getPageSettings().gptAuto, ...(body.gptAuto || {}) }
   });
   if (pageSettings.production.templateRoot) {
     const templateRoot = path.resolve(pageSettings.production.templateRoot);
@@ -2623,6 +2768,9 @@ function getTemplateLibrary() {
       : (configuredTemplateRoot && exists(configuredCandidate) ? configuredCandidate : projectCandidate);
     const images = listImages(full, PREVIEW_LIMITS.templateImages);
     const imageCount = listImageEntries(full).length;
+    const textFiles = safeList(full)
+      .filter((entry) => entry.isFile() && textExts.has(path.extname(entry.name).toLowerCase()))
+      .map((entry) => path.join(full, entry.name));
     const descriptor = `${row["模板名称"] || ""} ${row["适用内容"] || ""} ${full}`;
     const productionRecipe = recipeForTemplate(`${descriptor} ${row["备注"] || ""}`);
     const type = /团建小游戏|聚会游戏|破冰游戏|真心话|大冒险|游戏规则|玩法清单/.test(descriptor)
@@ -2640,7 +2788,9 @@ function getTemplateLibrary() {
       productionRecipe,
       path: full,
       images,
-      imageCount
+      imageCount,
+      textCount: textFiles.length,
+      attachments: [...images.map((image) => image.path), ...textFiles].slice(0, 30)
     };
   });
   const customGameRoot = path.join(templateRoot, "定制游模板");
@@ -2649,6 +2799,9 @@ function getTemplateLibrary() {
     .forEach((entry, index) => {
       const full = path.join(customGameRoot, entry.name);
       const images = listImages(full, PREVIEW_LIMITS.templateImages);
+      const textFiles = safeList(full)
+        .filter((file) => file.isFile() && textExts.has(path.extname(file.name).toLowerCase()))
+        .map((file) => path.join(full, file.name));
       if (!images.length) return;
       templates.push({
         id: `G${String(index + 1).padStart(2, "0")}`,
@@ -2661,7 +2814,9 @@ function getTemplateLibrary() {
         note: "多游戏条目和玩法说明模板",
         path: full,
         images,
-        imageCount: listImageEntries(full).length
+        imageCount: listImageEntries(full).length,
+        textCount: textFiles.length,
+        attachments: [...images.map((image) => image.path), ...textFiles].slice(0, 30)
       });
     });
   return { csv, sourceRoot, templates };
@@ -4392,6 +4547,69 @@ async function route(req, res) {
     return sendExtensionJson(req, res, await runExtensionWorkPackage(body));
   }
 
+  if (pathname === "/api/extension/save-generated-image" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 42_000_000) || "{}");
+    const filename = String(body.filename || "").trim();
+    const safeName = path.basename(filename);
+    if (safeName !== filename
+      || !/^chatgpt-workpkg-\d{8}-\d{6}-[a-z0-9]{4}-\d+-of-\d+\.(?:png|jpe?g|webp)$/i.test(safeName)) {
+      return send(res, 400, JSON.stringify({ error: "生成图片文件名无效" }));
+    }
+    if (!/^image\/(?:png|jpe?g|webp)$/i.test(String(body.contentType || ""))) {
+      return send(res, 400, JSON.stringify({ error: "生成图片类型无效" }));
+    }
+    const bytes = Buffer.from(String(body.data || ""), "base64");
+    if (bytes.length < 1_000 || bytes.length > 30_000_000) {
+      return send(res, 400, JSON.stringify({ error: "生成图片大小无效" }));
+    }
+    try {
+      const metadata = await sharp(bytes).metadata();
+      if (!["png", "jpeg", "webp"].includes(String(metadata.format || ""))
+        || Number(metadata.width || 0) < 256 || Number(metadata.height || 0) < 256) {
+        return send(res, 400, JSON.stringify({ error: "生成图片内容校验失败" }));
+      }
+      fs.mkdirSync(DOWNLOAD_ROOT, { recursive: true });
+      const target = path.join(DOWNLOAD_ROOT, safeName);
+      fs.writeFileSync(target, bytes, { flag: "wx" });
+      return sendExtensionJson(req, res, {
+        ok: true,
+        filename: target,
+        bytes: bytes.length,
+        width: metadata.width,
+        height: metadata.height,
+        format: metadata.format
+      });
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        return send(res, 409, JSON.stringify({ error: "同批次图片已经存在，请重新恢复任务" }));
+      }
+      return send(res, 400, JSON.stringify({ error: `生成图片保存失败：${error.message}` }));
+    }
+  }
+
+  if (pathname === "/api/gpt-production/quota" && req.method === "GET") {
+    const accountId = parsed.query.account ? decodeURIComponent(parsed.query.account) : "";
+    return sendExtensionJson(req, res, { ok: true, quota: gptQuotaSnapshot(accountId) });
+  }
+
+  if (pathname === "/api/gpt-production/quota-event" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    try {
+      return sendExtensionJson(req, res, { ok: true, quota: appendGptQuotaEvent(body) });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
+  }
+
+  if (pathname === "/api/gpt-production/archive-material" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    try {
+      return sendExtensionJson(req, res, { ok: true, archive: archiveMaterialAfterProduction(body) });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
+  }
+
   if (pathname === "/api/extension/material-use" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     try {
@@ -4516,6 +4734,26 @@ async function route(req, res) {
   if (pathname === "/api/page-settings" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
     return sendJson(res, { ok: true, settings: savePageSettings(body) });
+  }
+
+  if (pathname === "/api/local-backup/export" && req.method === "GET") {
+    return sendJson(res, { ok: true, backup: buildCloudBackupPayload() });
+  }
+
+  if (pathname === "/api/local-backup/import" && req.method === "POST") {
+    try {
+      const body = JSON.parse(await getBody(req, 8_000_000) || "{}");
+      const payload = body.backup || body;
+      const restored = restoreBackupPayload(payload);
+      return sendJson(res, {
+        ok: true,
+        restoredRecords: restored.restored,
+        localSnapshot: restored.localSnapshot,
+        message: `已恢复 ${restored.restored} 份本地设置和记录`
+      });
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }), "application/json; charset=utf-8");
+    }
   }
 
   if (pathname === "/api/production/plan" && req.method === "POST") {

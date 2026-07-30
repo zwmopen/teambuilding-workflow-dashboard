@@ -57,14 +57,21 @@ let workbenchModelsLoaded = false;
 let productionWorkspace = null;
 const gptTestSelectedMaterials = new Set();
 const gptTestMaterialEntries = new Map();
-let gptTestTemplate = null;
-let gptTestActiveCategoryPath = "";
-let gptTestExpandedCategoryPath = "";
-let gptTestExpandedMaterialPath = "";
+const gptTestSelectedTemplates = new Set();
+const gptTestExpandedCategories = new Set();
+const gptTestExpandedMaterials = new Set();
+const gptTestExpandedTemplates = new Set();
 let gptTestQueue = [];
 let gptTestQueueIndex = 0;
 let gptEmbeddedResizeObserver = null;
 let gptAutoRunning = false;
+let gptAutoPaused = false;
+let gptCurrentManualTask = null;
+let gptLastFailedTask = null;
+let gptLastFailedStage = "";
+let gptLastFailedPercent = 0;
+let gptQuotaSnapshot = null;
+let gptAssistantTimer = null;
 const GPT_ACCOUNTS_STORAGE_KEY = "teambuilding-gpt-accounts";
 const GPT_AUTO_SETTINGS_STORAGE_KEY = "teambuilding-gpt-auto-settings";
 let gptAccounts = loadGptAccounts();
@@ -93,14 +100,20 @@ function saveGptAccounts() {
 
 function loadGptAutoSettings() {
   const defaults = {
+    mode: "automatic",
     autoConfirm: true,
     autoCopy: true,
     autoPackage: true,
     pauseOnFailure: true,
+    autoArchive: true,
+    quotaReminderEnabled: true,
     minDelaySeconds: 25,
     maxDelaySeconds: 55,
     taskTimeoutMinutes: 30,
-    accountTaskLimit: 8
+    accountTaskLimit: 8,
+    uploadLimit: 80,
+    generationLimit: 50,
+    windowHours: 3
   };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(GPT_AUTO_SETTINGS_STORAGE_KEY) || "{}") };
@@ -111,30 +124,65 @@ function loadGptAutoSettings() {
 
 function renderGptAutoSettings() {
   const values = gptAutoSettings;
+  if ($("#gptProductionMode")) $("#gptProductionMode").value = values.mode === "manual" ? "manual" : "automatic";
+  if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = values.mode === "manual" ? "manual" : "automatic";
   if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
   if ($("#gptAutoCopyEnabled")) $("#gptAutoCopyEnabled").checked = values.autoCopy !== false;
   if ($("#gptAutoPackageEnabled")) $("#gptAutoPackageEnabled").checked = values.autoPackage !== false;
   if ($("#gptAutoPauseOnFailure")) $("#gptAutoPauseOnFailure").checked = values.pauseOnFailure !== false;
+  if ($("#gptAutoArchiveEnabled")) $("#gptAutoArchiveEnabled").checked = values.autoArchive !== false;
+  if ($("#gptQuotaReminderEnabled")) $("#gptQuotaReminderEnabled").checked = values.quotaReminderEnabled !== false;
   if ($("#gptAutoMinDelay")) $("#gptAutoMinDelay").value = values.minDelaySeconds;
   if ($("#gptAutoMaxDelay")) $("#gptAutoMaxDelay").value = values.maxDelaySeconds;
   if ($("#gptAutoTaskTimeout")) $("#gptAutoTaskTimeout").value = values.taskTimeoutMinutes;
   if ($("#gptAutoAccountLimit")) $("#gptAutoAccountLimit").value = values.accountTaskLimit;
+  if ($("#gptUploadLimit")) $("#gptUploadLimit").value = values.uploadLimit;
+  if ($("#gptGenerationLimit")) $("#gptGenerationLimit").value = values.generationLimit;
+  if ($("#gptQuotaWindowHours")) $("#gptQuotaWindowHours").value = values.windowHours;
 }
 
 function saveGptAutoSettings() {
   const minDelay = Math.max(5, Number($("#gptAutoMinDelay")?.value || 25));
   const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
   gptAutoSettings = {
+    mode: (activePageSettings === "gptAuto" ? $("#gptProductionModeSetting")?.value : $("#gptProductionMode")?.value) === "manual" ? "manual" : "automatic",
     autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
     autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
     autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
     pauseOnFailure: $("#gptAutoPauseOnFailure")?.checked !== false,
+    autoArchive: $("#gptAutoArchiveEnabled")?.checked !== false,
+    quotaReminderEnabled: $("#gptQuotaReminderEnabled")?.checked !== false,
     minDelaySeconds: minDelay,
     maxDelaySeconds: maxDelay,
     taskTimeoutMinutes: Math.max(5, Number($("#gptAutoTaskTimeout")?.value || 30)),
-    accountTaskLimit: Math.max(1, Number($("#gptAutoAccountLimit")?.value || 8))
+    accountTaskLimit: Math.max(1, Number($("#gptAutoAccountLimit")?.value || 8)),
+    uploadLimit: Math.max(1, Number($("#gptUploadLimit")?.value || 80)),
+    generationLimit: Math.max(1, Number($("#gptGenerationLimit")?.value || 50)),
+    windowHours: Math.max(1, Number($("#gptQuotaWindowHours")?.value || 3))
   };
   localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
+  if (dashboard?.workspaceSettings?.pageSettings) {
+    const existingAccounts = dashboard.workspaceSettings.pageSettings.gptAuto?.accounts || [];
+    const accountMap = new Map(existingAccounts.map((account) => [account.id, account]));
+    gptAccounts.forEach((account) => {
+      const previous = accountMap.get(account.id) || {};
+      accountMap.set(account.id, {
+        ...previous,
+        id: account.id,
+        name: account.name,
+        uploadLimit: account.id === activeGptAccountId ? gptAutoSettings.uploadLimit : previous.uploadLimit || 80,
+        generationLimit: account.id === activeGptAccountId ? gptAutoSettings.generationLimit : previous.generationLimit || 50,
+        windowHours: account.id === activeGptAccountId ? gptAutoSettings.windowHours : previous.windowHours || 3
+      });
+    });
+    api("/api/page-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gptAuto: { ...gptAutoSettings, accounts: [...accountMap.values()] } })
+    }).then((result) => {
+      dashboard.workspaceSettings.pageSettings = result.settings;
+    }).catch(() => {});
+  }
 }
 const expandedMaterialPaths = new Set();
 const expandedCollectionNames = new Set();
@@ -435,11 +483,33 @@ function getSavedState() {
 }
 
 async function loadDashboard(force = false, libraryPath = "") {
+  const previousCategories = libraryPath
+    ? new Map((dashboard?.materials?.categories || []).filter((category) => category.loaded !== false).map((category) => [category.path, category]))
+    : null;
   const params = new URLSearchParams();
   if (force) params.set("refresh", force === "materials" ? "materials" : "1");
   if (libraryPath) params.set("library", libraryPath);
   const query = params.toString();
   dashboard = await api(`/api/dashboard${query ? `?${query}` : ""}`);
+  const persistedGptAuto = dashboard?.workspaceSettings?.pageSettings?.gptAuto;
+  if (persistedGptAuto && typeof persistedGptAuto === "object") {
+    const activeAccountSettings = (persistedGptAuto.accounts || []).find((account) => account.id === activeGptAccountId)
+      || persistedGptAuto.accounts?.[0] || {};
+    gptAutoSettings = {
+      ...gptAutoSettings,
+      ...persistedGptAuto,
+      uploadLimit: activeAccountSettings.uploadLimit ?? gptAutoSettings.uploadLimit,
+      generationLimit: activeAccountSettings.generationLimit ?? gptAutoSettings.generationLimit,
+      windowHours: activeAccountSettings.windowHours ?? gptAutoSettings.windowHours
+    };
+    localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
+  }
+  if (previousCategories && dashboard?.materials?.categories) {
+    dashboard.materials.categories = dashboard.materials.categories.map((category) => {
+      const previous = previousCategories.get(category.path);
+      return category.loaded === false && previous ? previous : category;
+    });
+  }
   if (!libraryPath) {
     const saved = getSavedState();
     const loadedCategory = dashboard?.materials?.categories?.find((category) => category.loaded !== false);
@@ -563,6 +633,31 @@ async function saveBackupSettingsFromUi() {
   toast("备份设置已自动保存");
 }
 
+async function exportLocalWorkbenchSettings() {
+  const payload = await api("/api/local-backup/export");
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `团建工作台-本地设置-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  toast("本地设置已导出；不包含 GPT 登录 Cookie");
+}
+
+async function importLocalWorkbenchSettings(file) {
+  if (!file) return;
+  const payload = JSON.parse(await file.text());
+  await api("/api/local-backup/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  await loadDashboard(true);
+  renderWorkspaceSettings();
+  renderPageSettingsValues();
+  toast("本地设置已恢复");
+}
+
 async function savePageSettingsFromUi(section) {
   const payload = {};
   if (section === "production") {
@@ -613,6 +708,7 @@ function openPageSettings(section) {
   if ($("#gptAutoPageSettings")) $("#gptAutoPageSettings").hidden = section !== "gptAuto";
   $("#pageSettingsBackdrop").hidden = false;
   document.body.classList.add("page-settings-open");
+  if ($("#gptProductionTestView")?.classList.contains("active")) window.gptWorkbench?.hide?.().catch(() => {});
   renderPageSettingsValues();
   if (section === "gptAuto") renderGptAutoSettings();
 }
@@ -621,6 +717,7 @@ function closePageSettings() {
   $("#pageSettingsBackdrop").hidden = true;
   document.body.classList.remove("page-settings-open");
   activePageSettings = "";
+  if ($("#gptProductionTestView")?.classList.contains("active")) window.requestAnimationFrame(() => showEmbeddedGptView());
 }
 
 function reserveCategoryLabel(category) {
@@ -645,10 +742,14 @@ function renderDistributionReserveAlert() {
 
 function closeImageLightbox() {
   document.querySelector(".image-lightbox")?.remove();
+  if ($("#gptProductionTestView")?.classList.contains("active") && !document.querySelector(".system-dialog-backdrop") && $("#pageSettingsBackdrop")?.hidden !== false) {
+    window.requestAnimationFrame(() => showEmbeddedGptView());
+  }
 }
 
 function openImageLightbox(imageUrl, caption = "图片预览") {
   closeImageLightbox();
+  if ($("#gptProductionTestView")?.classList.contains("active")) window.gptWorkbench?.hide?.().catch(() => {});
   const backdrop = document.createElement("div");
   backdrop.className = "image-lightbox";
   backdrop.innerHTML = `<section class="image-lightbox-panel" role="dialog" aria-modal="true" aria-label="${escapeHtml(caption)}">
@@ -665,6 +766,7 @@ function openImageLightbox(imageUrl, caption = "图片预览") {
 
 function openTextLightbox(content, caption = "TXT 参考内容") {
   closeImageLightbox();
+  if ($("#gptProductionTestView")?.classList.contains("active")) window.gptWorkbench?.hide?.().catch(() => {});
   const backdrop = document.createElement("div");
   backdrop.className = "image-lightbox text-lightbox";
   backdrop.innerHTML = `<section class="image-lightbox-panel" role="dialog" aria-modal="true" aria-label="${escapeHtml(caption)}">
@@ -695,6 +797,8 @@ async function openWorkbenchTextAsset(textPreview) {
 function openSystemDialog(options = {}) {
   return new Promise((resolve) => {
     document.querySelector(".system-dialog-backdrop")?.remove();
+    const restoreGpt = $("#gptProductionTestView")?.classList.contains("active");
+    if (restoreGpt) window.gptWorkbench?.hide?.().catch(() => {});
     const backdrop = document.createElement("div");
     backdrop.className = "system-dialog-backdrop";
     const details = Array.isArray(options.details) ? options.details : [];
@@ -730,6 +834,9 @@ function openSystemDialog(options = {}) {
       settled = true;
       document.removeEventListener("keydown", onKeydown);
       backdrop.remove();
+      if (restoreGpt && $("#pageSettingsBackdrop")?.hidden !== false && !document.querySelector(".image-lightbox")) {
+        window.requestAnimationFrame(() => showEmbeddedGptView());
+      }
       resolve(result);
     };
     const onKeydown = (event) => {
@@ -1157,60 +1264,50 @@ async function renderProductionWorkbench() {
   restoreLatestProductionTask().catch(() => {});
 }
 
-function currentGptTestMaterials() {
-  const categories = dashboard?.materials?.categories || [];
-  const category = categories.find((item) => item.path === gptTestActiveCategoryPath)
-    || categories.find((item) => item.loaded !== false)
-    || categories[0];
-  const query = String($("#gptTestMaterialSearch")?.value || "").trim().toLowerCase();
-  return {
-    category,
-    items: (category?.items || []).filter((item) => {
-      if (!query) return true;
-      return `${item.name || ""} ${item.preview || ""} ${(item.tags || []).join(" ")}`.toLowerCase().includes(query);
-    }).slice(0, 120)
-  };
-}
-
 function renderGptTestMaterials() {
   const host = $("#gptTestMaterialFolders");
   if (!host) return;
   const categories = dashboard?.materials?.categories || [];
-  if (!categories.some((item) => item.path === gptTestActiveCategoryPath)) {
-    gptTestActiveCategoryPath = categories.find((item) => item.loaded !== false)?.path || categories[0]?.path || "";
-    gptTestExpandedCategoryPath = gptTestActiveCategoryPath;
-  }
-  const { category: activeCategory, items } = currentGptTestMaterials();
-  const posts = items.map((item) => {
-    const selected = gptTestSelectedMaterials.has(item.path);
-    const expanded = gptTestExpandedMaterialPath === item.path;
-    const images = expanded ? (item.images || []).map((image) => (
-      `<button class="asset-thumb-button workbench-material-image" type="button" data-image-preview="${escapeHtml(image.url)}" data-image-caption="${escapeHtml(item.name)}"><img src="${escapeHtml(image.url)}" alt="素材图片预览" loading="lazy" /></button>`
-    )).join("") : "";
-    const texts = expanded ? (item.attachments || []).filter((filePath) => /\.(?:txt|md)$/i.test(filePath)).map((filePath) => {
-      const name = String(filePath).split(/[\\/]/).pop() || "参考内容.txt";
-      return `<button class="workbench-text-asset" type="button" data-workbench-text-path="${escapeHtml(filePath)}" data-workbench-text-caption="${escapeHtml(item.name)}"><b>TXT</b><span>${escapeHtml(name)}</span><small>${escapeHtml(shortText(item.preview || "点击查看参考内容", 54))}</small></button>`;
-    }).join("") : "";
-    return `<section class="workbench-post-branch${expanded ? " active" : ""}">
-      <div class="workbench-post-row${selected ? " selected" : ""}">
-        <input class="material-check" type="checkbox" data-gpt-test-material-check="${escapeHtml(item.id)}" aria-label="选择素材文件夹" ${selected ? "checked" : ""} />
-        <button class="workbench-post-folder" type="button" data-gpt-test-post-folder="${escapeHtml(item.id)}" title="${escapeHtml(item.name)}">
-          <span class="folder-glyph" aria-hidden="true">▸</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.imageCount || 0} 张图 · ${item.textCount || 0} 个文本</small></span>
+  const query = String($("#gptTestMaterialSearch")?.value || "").trim().toLowerCase();
+  host.innerHTML = categories.length ? categories.map((category) => {
+    const expanded = gptTestExpandedCategories.has(category.path);
+    const items = (category.items || []).filter((item) => !query
+      || `${item.name || ""} ${item.preview || ""} ${(item.tags || []).join(" ")}`.toLowerCase().includes(query));
+    const selectedCount = items.filter((item) => gptTestSelectedMaterials.has(item.path)).length;
+    const allSelected = Boolean(items.length && selectedCount === items.length);
+    const partial = selectedCount > 0 && !allSelected;
+    const posts = items.map((item) => {
+      const selected = gptTestSelectedMaterials.has(item.path);
+      const postExpanded = gptTestExpandedMaterials.has(item.path);
+      const images = postExpanded ? (item.images || []).map((image) => (
+        `<button class="asset-thumb-button workbench-material-image" type="button" data-image-preview="${escapeHtml(image.url)}" data-image-caption="${escapeHtml(item.name)}"><img src="${escapeHtml(image.url)}" alt="素材图片预览" loading="lazy" /></button>`
+      )).join("") : "";
+      const texts = postExpanded ? (item.attachments || []).filter((filePath) => /\.(?:txt|md)$/i.test(filePath)).map((filePath) => {
+        const name = String(filePath).split(/[\\/]/).pop() || "参考内容.txt";
+        return `<button class="workbench-text-asset" type="button" data-workbench-text-path="${escapeHtml(filePath)}" data-workbench-text-caption="${escapeHtml(item.name)}"><b>TXT</b><span>${escapeHtml(name)}</span><small>${escapeHtml(shortText(item.preview || "点击查看参考内容", 54))}</small></button>`;
+      }).join("") : "";
+      return `<section class="workbench-post-branch${postExpanded ? " active" : ""}">
+        <div class="workbench-post-row${selected ? " selected" : ""}">
+          <input class="material-check" type="checkbox" data-gpt-test-material-check="${escapeHtml(item.id)}" aria-label="选择素材文件夹" ${selected ? "checked" : ""} />
+          <button class="workbench-post-folder" type="button" data-gpt-test-post-folder="${escapeHtml(item.id)}" title="${escapeHtml(item.name)}">
+            <span class="folder-glyph" aria-hidden="true">${postExpanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.imageCount || 0} 图 · ${item.textCount || 0} TXT · 使用 ${Number(item.usageCount || 0)} 次</small></span>
+          </button>
+          <button class="gpt-post-send-button" type="button" data-gpt-send-post="${escapeHtml(item.id)}" title="只把这个帖子发送到 GPT">发送</button>
+        </div>
+        ${postExpanded ? `<div class="workbench-post-assets">${images}${texts || `<span class="workbench-empty-asset">没有 TXT</span>`}</div>` : ""}
+      </section>`;
+    }).join("");
+    return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
+      <div class="workbench-folder-row${allSelected ? " selected" : ""}">
+        <input class="material-check folder-check" type="checkbox" data-gpt-test-category-check="${escapeHtml(category.path)}" ${allSelected ? "checked" : ""} data-indeterminate="${partial ? "true" : "false"} aria-label="选择此文件夹中的全部帖子" />
+        <button class="workbench-folder-item${expanded ? " active" : ""}" type="button" data-gpt-test-material-category="${escapeHtml(category.path)}">
+          <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(category.name)}（${Number(category.count || category.items?.length || 0)}）</strong></span>
         </button>
       </div>
-      ${expanded ? `<div class="workbench-post-assets">${images}${texts}</div>` : ""}
-    </section>`;
-  }).join("");
-  host.innerHTML = categories.length ? categories.map((category) => {
-    const expanded = category.path === gptTestExpandedCategoryPath;
-    const selected = category.path === gptTestActiveCategoryPath;
-    return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
-      <button class="workbench-folder-item${selected ? " selected" : ""}${expanded ? " active" : ""}" type="button" data-gpt-test-material-category="${escapeHtml(category.path)}">
-        <span class="folder-glyph" aria-hidden="true">▸</span><span><strong>${escapeHtml(category.name)}</strong><small>${escapeHtml(window.MaterialWorkspace.categoryCountLabel(category))}</small></span>
-      </button>
-      ${expanded ? `<div class="workbench-post-list">${category.path === activeCategory?.path ? (posts || `<div class="empty-state"><strong>没有匹配的素材文件夹</strong></div>`) : ""}</div>` : ""}
+      ${expanded ? `<div class="workbench-post-list">${category.loaded === false ? `<div class="tree-loading-state">正在读取文件夹…</div>` : (posts || `<div class="empty-state"><strong>没有匹配的帖子文件夹</strong></div>`)}</div>` : ""}
     </section>`;
   }).join("") : `<div class="empty-state"><strong>没有读取到素材目录</strong></div>`;
+  host.querySelectorAll("[data-indeterminate='true']").forEach((input) => { input.indeterminate = true; });
   $("#gptTestMaterialCount").textContent = `${gptTestSelectedMaterials.size} 个已选`;
   updateGptTestQueueStatus();
 }
@@ -1219,22 +1316,26 @@ function renderGptTestTemplates() {
   const host = $("#gptTestTemplateList");
   if (!host) return;
   const templates = dashboard?.templates?.templates || [];
-  if (!gptTestTemplate || !templates.some((item) => item.id === gptTestTemplate.id)) {
-    gptTestTemplate = templates[0] || null;
-  }
   host.innerHTML = templates.length ? templates.map((template) => {
-    const active = gptTestTemplate?.id === template.id;
-    const previews = active ? (template.images || []).map((image, index) => (
+    const selected = gptTestSelectedTemplates.has(template.id);
+    const expanded = gptTestExpandedTemplates.has(template.id);
+    const previews = expanded ? (template.images || []).map((image, index) => (
       `<button class="template-image-thumb" type="button" data-image-preview="${escapeHtml(image.url)}" data-image-caption="${escapeHtml(`${template.name} · ${index ? `内页 ${index}` : "封面"}`)}"><img src="${escapeHtml(image.url)}" alt="模板图预览" loading="lazy" /></button>`
     )).join("") : "";
-    return `<section class="workbench-folder-branch${active ? " active" : ""}">
-      <button class="workbench-folder-item gpt-test-template-row${active ? " selected active" : ""}" type="button" data-gpt-test-template="${escapeHtml(template.id)}">
-        <span class="folder-glyph" aria-hidden="true">▸</span><span><strong>${escapeHtml(template.name)}</strong><small>${template.imageCount || 0} 张母版图</small></span>
-      </button>
-      ${active ? `<div class="workbench-template-images workbench-inline-previews">${previews || `<div class="empty-state"><strong>没有模板图</strong></div>`}</div>` : ""}
+    const texts = expanded ? (template.attachments || []).filter((filePath) => /\.(?:txt|md)$/i.test(filePath)).map((filePath) => (
+      `<button class="workbench-text-asset" type="button" data-workbench-text-path="${escapeHtml(filePath)}" data-workbench-text-caption="${escapeHtml(template.name)}"><b>TXT</b><span>模板规则</span><small>点击查看全文</small></button>`
+    )).join("") : "";
+    return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
+      <div class="workbench-folder-row${selected ? " selected" : ""}">
+        <input class="material-check folder-check" type="checkbox" data-gpt-test-template-check="${escapeHtml(template.id)}" ${selected ? "checked" : ""} aria-label="选择模板" />
+        <button class="workbench-folder-item gpt-test-template-row${expanded ? " active" : ""}" type="button" data-gpt-test-template="${escapeHtml(template.id)}">
+          <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(template.name)}（${template.imageCount || 0}）</strong></span>
+        </button>
+      </div>
+      ${expanded ? `<div class="workbench-template-images workbench-inline-previews">${previews}${texts}</div>` : ""}
     </section>`;
   }).join("") : `<div class="empty-state"><strong>没有读取到模板</strong></div>`;
-  $("#gptTestTemplateName").textContent = gptTestTemplate?.name || "请选择模板";
+  $("#gptTestTemplateName").textContent = gptTestSelectedTemplates.size ? `${gptTestSelectedTemplates.size} 个已选` : "未选时沿用当前会话";
   updateGptTestQueueStatus();
 }
 
@@ -1246,25 +1347,94 @@ function selectedGptTestEntries() {
   return [...gptTestSelectedMaterials].map((materialPath) => gptTestMaterialEntries.get(materialPath)).filter(Boolean);
 }
 
-function buildGptTestTask(entry) {
-  const templateFiles = (gptTestTemplate?.images || []).slice(0, 2).map((image) => image.path).filter(Boolean);
+function selectedGptTestTemplates() {
+  return (dashboard?.templates?.templates || []).filter((template) => gptTestSelectedTemplates.has(template.id));
+}
+
+function buildGptTemplateInitTask(template) {
+  return {
+    requestId: `gpt-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    taskType: "template-init",
+    templateId: template.id,
+    name: `初始化母版 · ${template.name}`,
+    attachments: [...new Set([...(template.images || []).map((image) => image.path), ...(template.attachments || [])].filter(Boolean))].slice(0, 30),
+    prompt: `${defaultTemplatePrompt(template)}\n\n这些附件是本会话唯一母版。请完整读取并锁定母版结构、页面角色、字体、配色、标题、贴纸、拼图节奏和规则。只确认母版环境初始化完成，不要开始制作新作品。`
+  };
+}
+
+function buildGptTestTask(entry, template = null) {
   const materialFiles = (entry.item.attachments || []).filter(Boolean);
-  const attachments = [...new Set([...templateFiles, ...materialFiles])].slice(0, 30);
+  const attachments = [...new Set(materialFiles)].slice(0, 30);
   const extra = String($("#gptTestExtraPrompt")?.value || "").trim();
   const prompt = [
-    defaultTemplatePrompt(gptTestTemplate),
-    "附件顺序说明：前 1—2 张是母版参考图（第1张封面、第2张内页）；其余附件全部是本次待迁移素材和 TXT 参考内容。",
+    template ? `继续使用当前会话刚初始化的「${template.name}」母版。` : "继续使用当前 GPT 会话里已经沉淀好的母版环境。",
+    "本次附件全部是待迁移素材和 TXT 参考内容，不是新模板。",
     `当前素材文件夹：${entry.item.name}`,
-    "先读取本次附件并沿用当前对话中已沉淀的母版迁移规则。不要把素材当模板，不要省略 TXT；一套模板可以连续处理多个素材文件夹。请先严格按既定格式输出逐页迁移计划，并在结尾明确等待我回复 1，暂时不要出图。",
+    "请读取全部附件，不要省略 TXT。先严格按既定格式输出逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。",
     extra ? `本次补充要求：\n${extra}` : ""
   ].filter(Boolean).join("\n\n");
   return {
     requestId: `gpt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name: `${gptTestTemplate?.name || "母版"} × ${entry.item.name}`,
+    taskType: "material",
+    templateId: template?.id || "",
+    name: `${template?.name || "当前会话母版"} × ${entry.item.name}`,
     materialPath: entry.item.path,
     attachments,
-    prompt
+    prompt,
+    expectedImages: Number(entry.item.imageCount || 0)
   };
+}
+
+function buildGptProductionQueue(entries = selectedGptTestEntries(), templates = selectedGptTestTemplates()) {
+  if (!templates.length) return entries.map((entry) => buildGptTestTask(entry));
+  return templates.flatMap((template) => [
+    { ...buildGptTemplateInitTask(template), navigation: "new-chat" },
+    ...entries.map((entry) => buildGptTestTask(entry, template))
+  ]);
+}
+
+function gptProductionWorkCount() {
+  return gptTestSelectedMaterials.size * Math.max(1, gptTestSelectedTemplates.size);
+}
+
+function updateGptAssistantBubble(message = "") {
+  const bubble = $("#gptSelectionAssistant");
+  if (!bubble) return;
+  const materials = gptTestSelectedMaterials.size;
+  const templates = gptTestSelectedTemplates.size;
+  const works = gptProductionWorkCount();
+  const imageUploads = selectedGptTestEntries().reduce((total, entry) => total + Number(entry.item.imageCount || 0), 0)
+    * Math.max(1, templates)
+    + selectedGptTestTemplates().reduce((total, template) => total + Number(template.imageCount || 0), 0);
+  const quota = gptQuotaSnapshot?.status;
+  bubble.innerHTML = `<button type="button" data-toggle-gpt-log aria-label="查看生产提示">✦</button><div><strong>${escapeHtml(message || `已选 ${materials} 个素材、${templates} 个模板，预计 ${works} 个作品`)}</strong><span>预计上传 ${imageUploads} 张图${quota ? ` · 近${quota.settings?.windowHours || 3}小时上传 ${quota.uploaded}/${quota.settings?.uploadLimit || 80}，生成 ${quota.generated}/${quota.settings?.generationLimit || 50}` : ""}</span></div>`;
+  bubble.hidden = false;
+  bubble.classList.remove("compact");
+  clearTimeout(gptAssistantTimer);
+  gptAssistantTimer = setTimeout(() => bubble.classList.add("compact"), 6500);
+}
+
+async function refreshGptQuota() {
+  try {
+    const result = await api(`/api/gpt-production/quota?account=${encodeURIComponent(activeGptAccountId)}`);
+    gptQuotaSnapshot = { status: result?.quota || result };
+  } catch {
+    gptQuotaSnapshot = null;
+  }
+  updateGptAssistantBubble();
+}
+
+async function ensureGptTaskQuota(task) {
+  if (gptAutoSettings.quotaReminderEnabled === false || task.taskType !== "material") return;
+  await refreshGptQuota();
+  const quota = gptQuotaSnapshot?.status;
+  if (!quota) return;
+  const uploadImages = (task.attachments || []).filter((filePath) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(filePath)).length;
+  const generatedImages = Math.max(1, Number(task.expectedImages || 1));
+  if (uploadImages <= Number(quota.remainingUploads || 0)
+    && generatedImages <= Number(quota.remainingGenerations || 0)) return;
+  const restoreAt = quota.nextExpiryAt ? new Date(quota.nextExpiryAt).toLocaleString("zh-CN", { hour12: false }) : "额度窗口恢复后";
+  throw new Error(`当前账号本地估算额度不足：还可上传 ${quota.remainingUploads} 张、生成 ${quota.remainingGenerations} 张；预计 ${restoreAt} 可继续`);
 }
 
 function updateGptTestQueueStatus(message = "") {
@@ -1272,24 +1442,28 @@ function updateGptTestQueueStatus(message = "") {
   const button = $("#gptTestSendBtn");
   if (!node || !button) return;
   const selectedCount = gptTestSelectedMaterials.size;
+  const mode = gptAutoSettings.mode === "manual" ? "手动" : "自动";
   if (message) node.textContent = message;
-  else if (!gptTestTemplate || !selectedCount) node.textContent = "选择一个模板和至少一个素材文件夹";
-  else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) node.textContent = `还有 ${gptTestQueue.length - gptTestQueueIndex} 套待生产；逐帖闭环，附件不会混组`;
-  else node.textContent = `同一母版将依次对应 ${selectedCount} 个素材文件夹`;
-  button.disabled = !gptTestTemplate || !selectedCount || !window.gptWorkbench?.available;
+  else if (!selectedCount) node.textContent = "请至少选择一个素材文件夹；模板可以不选";
+  else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) node.textContent = `还有 ${gptTestQueue.length - gptTestQueueIndex} 个队列步骤待处理`;
+  else node.textContent = `${mode}模式 · ${selectedCount} 个素材 × ${Math.max(1, gptTestSelectedTemplates.size)} 个母版 = ${gptProductionWorkCount()} 个作品`;
+  button.disabled = !selectedCount || !window.gptWorkbench?.available;
   if (gptAutoRunning) button.disabled = true;
   button.textContent = gptAutoRunning
-    ? `自动生产中 ${Math.min(gptTestQueueIndex + 1, gptTestQueue.length)}/${gptTestQueue.length}`
+    ? `${mode}处理中 ${Math.min(gptTestQueueIndex + 1, gptTestQueue.length)}/${gptTestQueue.length}`
     : gptTestQueue.length && gptTestQueueIndex > 0 && gptTestQueueIndex < gptTestQueue.length
-      ? `继续自动生产 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
-      : "开始自动生产";
+      ? `继续 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
+      : gptAutoSettings.mode === "manual" ? "准备并上传当前一套" : "开始自动生产";
+  $("#gptManualNextBtn")?.toggleAttribute("hidden", gptAutoSettings.mode !== "manual" || !gptCurrentManualTask);
+  $("#gptRetryTaskBtn")?.toggleAttribute("hidden", !gptLastFailedTask || gptAutoRunning);
+  updateGptAssistantBubble(message);
 }
 
 function gptHostBounds() {
   const host = $("#gptEmbeddedHost");
   if (!host) return null;
   const rect = host.getBoundingClientRect();
-  const inset = 4;
+  const inset = 10;
   return {
     x: rect.left + inset,
     y: rect.top + inset,
@@ -1319,9 +1493,20 @@ async function switchGptAccount(accountId) {
   const account = gptAccounts.find((item) => item.id === accountId);
   if (!account || account.id === activeGptAccountId) return;
   activeGptAccountId = account.id;
+  const accountSettings = dashboard?.workspaceSettings?.pageSettings?.gptAuto?.accounts?.find((item) => item.id === account.id);
+  if (accountSettings) {
+    gptAutoSettings = {
+      ...gptAutoSettings,
+      uploadLimit: accountSettings.uploadLimit,
+      generationLimit: accountSettings.generationLimit,
+      windowHours: accountSettings.windowHours
+    };
+    renderGptAutoSettings();
+  }
   saveGptAccounts();
   renderGptAccountTabs();
   await showEmbeddedGptView();
+  refreshGptQuota();
 }
 
 async function addGptAccount() {
@@ -1430,13 +1615,23 @@ function renderGptProductionTest() {
   renderGptTestMaterials();
   renderGptTestTemplates();
   renderGptAccountTabs();
+  renderGptAutoSettings();
+  refreshGptQuota();
   window.requestAnimationFrame(() => showEmbeddedGptView());
+}
+
+async function refreshExpandedGptMaterialTrees() {
+  if (!$("#gptProductionTestView")?.classList.contains("active") || gptAutoRunning) return;
+  for (const categoryPath of [...gptTestExpandedCategories]) {
+    await loadDashboard("materials", categoryPath).catch(() => {});
+  }
+  renderGptTestMaterials();
 }
 
 async function sendNextGptTestTask() {
   if (!window.gptWorkbench?.available || gptAutoRunning) return;
   if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
-    gptTestQueue = selectedGptTestEntries().map(buildGptTestTask);
+    gptTestQueue = buildGptProductionQueue();
     gptTestQueueIndex = 0;
   }
   if (!gptTestQueue.length) return;
@@ -1444,25 +1639,37 @@ async function sendNextGptTestTask() {
   const button = $("#gptTestSendBtn");
   const progressBar = $("#gptAutoProgressBar");
   gptAutoRunning = true;
+  gptAutoPaused = false;
   button.disabled = true;
-  updateGptTestQueueStatus(`开始在${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号"}串行生产 ${gptTestQueue.length} 套作品`);
+  const manualMode = gptAutoSettings.mode === "manual";
+  updateGptTestQueueStatus(`${manualMode ? "手动准备" : "自动生产"} · ${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号"} · ${gptProductionWorkCount()} 个作品`);
   let completedThisRun = 0;
   let failedThisRun = 0;
   try {
     while (gptTestQueueIndex < gptTestQueue.length) {
+      if (gptAutoPaused) throw new Error("已由用户暂停；可以继续剩余队列");
       const accountLimit = Math.max(1, Number(gptAutoSettings.accountTaskLimit || 8));
-      if (completedThisRun >= accountLimit) {
+      if (!manualMode && completedThisRun >= accountLimit) {
         throw new Error(`已完成本轮 ${accountLimit} 套上限；点击“继续自动生产”后从第 ${gptTestQueueIndex + 1} 套续跑`);
       }
       const task = gptTestQueue[gptTestQueueIndex];
+      gptLastFailedStage = "";
+      gptLastFailedPercent = 0;
       task.accountId = runAccountId;
-      task.autoRun = true;
+      task.autoRun = !manualMode;
       task.autoOptions = { ...gptAutoSettings };
+      if (!manualMode) await ensureGptTaskQuota(task);
+      if (task.navigation === "new-chat") {
+        await navigateEmbeddedGpt("new-chat");
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+      }
       let polling = true;
       const poll = async () => {
         while (polling) {
           const status = await window.gptWorkbench.workflowStatus(runAccountId).catch(() => null);
           if (status?.requestId === task.requestId) {
+            gptLastFailedStage = String(status.stage || "");
+            gptLastFailedPercent = Number(status.percent || 0);
             const overall = Math.round(((gptTestQueueIndex + Number(status.percent || 0) / 100) / gptTestQueue.length) * 100);
             if (progressBar) progressBar.style.width = `${overall}%`;
             updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 套 · ${status.stage || "处理中"} ${status.percent || 0}%${status.detail ? ` · ${status.detail}` : ""}`);
@@ -1479,6 +1686,8 @@ async function sendNextGptTestTask() {
         await pollingTask;
       }
       if (!result?.ok) {
+        gptLastFailedStage = String(result?.stage || gptLastFailedStage || "");
+        gptLastFailedPercent = Number(result?.percent || gptLastFailedPercent || 0);
         const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
         if (gptAutoSettings.pauseOnFailure !== false) throw taskError;
         failedThisRun += 1;
@@ -1486,10 +1695,18 @@ async function sendNextGptTestTask() {
         updateGptTestQueueStatus(`第 ${gptTestQueueIndex} 套失败并已记录：${taskError.message}；继续下一套`);
         continue;
       }
+      gptLastFailedTask = null;
+      if (manualMode) {
+        gptCurrentManualTask = task;
+        updateGptTestQueueStatus(`附件与提示词已准备：${task.name}。请在 GPT 中手动发送；完成后点“完成当前，上传下一套”。`);
+        break;
+      }
       gptTestQueueIndex += 1;
-      completedThisRun += 1;
+      if (task.taskType === "material") completedThisRun += 1;
       if (progressBar) progressBar.style.width = `${Math.round(gptTestQueueIndex / gptTestQueue.length * 100)}%`;
-      const completionLabel = gptAutoSettings.autoConfirm === false
+      const completionLabel = task.taskType === "template-init"
+        ? "母版会话已初始化"
+        : gptAutoSettings.autoConfirm === false
         ? "迁移计划已生成"
         : gptAutoSettings.autoCopy === false
           ? "套图已下载"
@@ -1501,7 +1718,7 @@ async function sendNextGptTestTask() {
         : failedThisRun
           ? `本轮结束：成功 ${completedThisRun} 套，失败 ${failedThisRun} 套`
           : `${gptTestQueue.length} 套全部完成：${completionLabel}`);
-      if (gptTestQueueIndex < gptTestQueue.length) {
+      if (gptTestQueueIndex < gptTestQueue.length && task.taskType === "material") {
         const minDelay = Math.max(5, Number(gptAutoSettings.minDelaySeconds || 25));
         const maxDelay = Math.max(minDelay, Number(gptAutoSettings.maxDelaySeconds || 55));
         const delaySeconds = Math.round(minDelay + Math.random() * (maxDelay - minDelay));
@@ -1510,13 +1727,39 @@ async function sendNextGptTestTask() {
       }
     }
   } catch (error) {
+    gptLastFailedTask = gptTestQueue[gptTestQueueIndex] || null;
     updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1} 套已暂停：${error.message}`);
     showSystemNotice("自动生产已暂停", `${error.message}\n已完成的作品不会重复生成，处理当前问题后可继续。`, { tone: "danger" });
   } finally {
     gptAutoRunning = false;
     button.disabled = false;
     updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
+    refreshGptQuota();
   }
+}
+
+function retryCurrentGptTask() {
+  if (gptAutoRunning || !gptLastFailedTask) return;
+  const failedTask = gptLastFailedTask;
+  const previousRequestId = failedTask.requestId;
+  failedTask.requestId = `gpt-retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  failedTask.retryOf = previousRequestId;
+  failedTask.retryFromStage = gptLastFailedStage;
+  failedTask.retryFromPercent = gptLastFailedPercent;
+  gptLastFailedTask = null;
+  updateGptTestQueueStatus(`正在从安全检查点重试：${gptLastFailedStage || "当前任务"}`);
+  sendNextGptTestTask();
+}
+
+function completeCurrentManualGptTask() {
+  if (!gptCurrentManualTask) return;
+  gptCurrentManualTask = null;
+  gptTestQueueIndex += 1;
+  if (gptTestQueueIndex >= gptTestQueue.length) {
+    updateGptTestQueueStatus("手动队列已完成；所有发送、下载与打包由你在网页中完成");
+    return;
+  }
+  sendNextGptTestTask();
 }
 
 function syncWorkbenchProductionSettings() {
@@ -5200,20 +5443,60 @@ function bindEvents() {
     if (gptMaterialCategory) {
       const categoryPath = gptMaterialCategory.dataset.gptTestMaterialCategory;
       const category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
-      gptTestActiveCategoryPath = categoryPath;
-      gptTestExpandedCategoryPath = gptTestExpandedCategoryPath === categoryPath ? "" : categoryPath;
-      gptTestExpandedMaterialPath = "";
-      if (category?.loaded === false) await loadDashboard(false, categoryPath);
-      else renderGptTestMaterials();
+      if (gptTestExpandedCategories.has(categoryPath)) gptTestExpandedCategories.delete(categoryPath);
+      else gptTestExpandedCategories.add(categoryPath);
+      renderGptTestMaterials();
+      if (category?.loaded === false && gptTestExpandedCategories.has(categoryPath)) {
+        await loadDashboard(false, categoryPath);
+        renderGptTestMaterials();
+      }
+      return;
+    }
+    const gptCategoryCheck = event.target.closest("[data-gpt-test-category-check]");
+    if (gptCategoryCheck) {
+      const categoryPath = gptCategoryCheck.dataset.gptTestCategoryCheck;
+      let category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
+      if (category?.loaded === false) {
+        gptTestExpandedCategories.add(categoryPath);
+        await loadDashboard(false, categoryPath);
+        category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
+      }
+      (category?.items || []).forEach((item) => {
+        if (gptCategoryCheck.checked) {
+          gptTestSelectedMaterials.add(item.path);
+          gptTestMaterialEntries.set(item.path, { item, category });
+        } else {
+          gptTestSelectedMaterials.delete(item.path);
+          gptTestMaterialEntries.delete(item.path);
+        }
+      });
+      gptTestQueue = [];
+      gptTestQueueIndex = 0;
+      renderGptTestMaterials();
       return;
     }
     const gptPostFolder = event.target.closest("[data-gpt-test-post-folder]");
     if (gptPostFolder) {
       const entry = findMaterialEntry(gptPostFolder.dataset.gptTestPostFolder);
       if (entry) {
-        gptTestExpandedMaterialPath = gptTestExpandedMaterialPath === entry.item.path ? "" : entry.item.path;
+        if (gptTestExpandedMaterials.has(entry.item.path)) gptTestExpandedMaterials.delete(entry.item.path);
+        else gptTestExpandedMaterials.add(entry.item.path);
         renderGptTestMaterials();
       }
+      return;
+    }
+    const gptSendPost = event.target.closest("[data-gpt-send-post]");
+    if (gptSendPost) {
+      const entry = findMaterialEntry(gptSendPost.dataset.gptSendPost);
+      if (!entry) return;
+      gptTestSelectedMaterials.clear();
+      gptTestMaterialEntries.clear();
+      gptTestSelectedMaterials.add(entry.item.path);
+      gptTestMaterialEntries.set(entry.item.path, entry);
+      gptTestQueue = [];
+      gptTestQueueIndex = 0;
+      renderGptTestMaterials();
+      sendNextGptTestTask();
       return;
     }
     const gptMaterialCheck = event.target.closest("[data-gpt-test-material-check]");
@@ -5232,7 +5515,19 @@ function bindEvents() {
     }
     const gptTemplateButton = event.target.closest("[data-gpt-test-template]");
     if (gptTemplateButton) {
-      gptTestTemplate = dashboard?.templates?.templates?.find((item) => item.id === gptTemplateButton.dataset.gptTestTemplate) || null;
+      const templateId = gptTemplateButton.dataset.gptTestTemplate;
+      if (gptTestExpandedTemplates.has(templateId)) gptTestExpandedTemplates.delete(templateId);
+      else gptTestExpandedTemplates.add(templateId);
+      gptTestQueue = [];
+      gptTestQueueIndex = 0;
+      renderGptTestTemplates();
+      return;
+    }
+    const gptTemplateCheck = event.target.closest("[data-gpt-test-template-check]");
+    if (gptTemplateCheck) {
+      const templateId = gptTemplateCheck.dataset.gptTestTemplateCheck;
+      if (gptTemplateCheck.checked) gptTestSelectedTemplates.add(templateId);
+      else gptTestSelectedTemplates.delete(templateId);
       gptTestQueue = [];
       gptTestQueueIndex = 0;
       renderGptTestTemplates();
@@ -5782,17 +6077,65 @@ function bindEvents() {
     updateGptTestQueueStatus();
   });
   $("#gptTestSendBtn")?.addEventListener("click", () => sendNextGptTestTask());
+  $("#gptManualNextBtn")?.addEventListener("click", completeCurrentManualGptTask);
+  $("#gptPauseQueueBtn")?.addEventListener("click", () => {
+    gptAutoPaused = true;
+    updateGptTestQueueStatus("将在当前阶段安全结束后暂停");
+  });
+  $("#gptRetryTaskBtn")?.addEventListener("click", retryCurrentGptTask);
+  $("#gptSkipTaskBtn")?.addEventListener("click", () => {
+    if (gptAutoRunning) {
+      showSystemNotice("当前阶段仍在执行", "为避免附件或下载串批，请先暂停，当前阶段结束后再跳过。");
+      return;
+    }
+    gptCurrentManualTask = null;
+    gptTestQueueIndex = Math.min(gptTestQueue.length, gptTestQueueIndex + 1);
+    updateGptTestQueueStatus("已跳过当前队列步骤，可以继续剩余任务");
+  });
   $("#gptBrowserBackBtn")?.addEventListener("click", () => navigateEmbeddedGpt("back"));
   $("#gptBrowserForwardBtn")?.addEventListener("click", () => navigateEmbeddedGpt("forward"));
   $("#gptBrowserReloadBtn")?.addEventListener("click", () => navigateEmbeddedGpt("reload"));
   $("#gptBrowserHomeBtn")?.addEventListener("click", () => navigateEmbeddedGpt("home"));
   $("#gptAddAccountBtn")?.addEventListener("click", () => addGptAccount());
+  $("#exportLocalSettingsBtn")?.addEventListener("click", () => exportLocalWorkbenchSettings()
+    .catch((error) => showSystemNotice("本地设置没有导出", error.message, { tone: "danger" })));
+  $("#importLocalSettingsBtn")?.addEventListener("click", () => $("#importLocalSettingsFile")?.click());
+  $("#importLocalSettingsFile")?.addEventListener("change", (event) => {
+    importLocalWorkbenchSettings(event.target.files?.[0])
+      .catch((error) => showSystemNotice("本地设置没有恢复", error.message, { tone: "danger" }))
+      .finally(() => { event.target.value = ""; });
+  });
+  $("#createGptLoginRecoveryBtn")?.addEventListener("click", async () => {
+    if (!window.gptWorkbench?.available) return;
+    if (!window.confirm("登录恢复点包含当前账号的本机浏览器登录资料，只能保存在这台可信电脑。确认创建吗？")) return;
+    try {
+      await window.gptWorkbench.createLoginRecovery(activeGptAccountId);
+      $("#gptLoginRecoveryStatus").textContent = "当前账号的本机 GPT 登录恢复点已创建；它不会上传坚果云。";
+      toast("本机 GPT 登录恢复点已创建");
+    } catch (error) {
+      showSystemNotice("登录恢复点没有创建", error.message, { tone: "danger" });
+    }
+  });
+  $("#restoreGptLoginRecoveryBtn")?.addEventListener("click", async () => {
+    if (!window.gptWorkbench?.available) return;
+    if (!window.confirm("恢复会覆盖当前账号的本机登录分区，并自动重启团建工作台。继续吗？")) return;
+    try {
+      await window.gptWorkbench.restoreLoginRecovery(activeGptAccountId);
+    } catch (error) {
+      showSystemNotice("登录档案没有恢复", error.message, { tone: "danger" });
+    }
+  });
   [
-    "#gptAutoConfirmEnabled", "#gptAutoCopyEnabled", "#gptAutoPackageEnabled", "#gptAutoPauseOnFailure",
-    "#gptAutoMinDelay", "#gptAutoMaxDelay", "#gptAutoTaskTimeout", "#gptAutoAccountLimit"
+    "#gptProductionMode", "#gptAutoConfirmEnabled", "#gptAutoCopyEnabled", "#gptAutoPackageEnabled", "#gptAutoPauseOnFailure",
+    "#gptProductionModeSetting", "#gptAutoArchiveEnabled", "#gptQuotaReminderEnabled", "#gptAutoMinDelay", "#gptAutoMaxDelay",
+    "#gptAutoTaskTimeout", "#gptAutoAccountLimit", "#gptUploadLimit", "#gptGenerationLimit", "#gptQuotaWindowHours"
   ].forEach((selector) => {
     $(selector)?.addEventListener("change", () => {
       saveGptAutoSettings();
+      gptTestQueue = [];
+      gptTestQueueIndex = 0;
+      gptCurrentManualTask = null;
+      updateGptTestQueueStatus();
       toast("自动生产设置已保存");
     });
   });
@@ -6096,6 +6439,7 @@ loadDashboard()
     window.setInterval(() => {
       if (!deviceScanRunning) checkDistributionDevices({ silent: true, refreshInventory: false });
     }, 20_000);
+    window.setInterval(() => refreshExpandedGptMaterialTrees().catch(() => {}), 15_000);
   })
   .catch((error) => {
     console.error(error);

@@ -28,6 +28,27 @@ test("page settings keep safe defaults and clamp DIY values", () => {
   assert.equal(settings.backup.frequency, "daily");
   assert.equal(settings.backup.intervalHours, 24);
   assert.equal(settings.backup.monthlyLargeFileLimitMb, 2560);
+  assert.equal(settings.gptAuto.mode, "automatic");
+  assert.equal(settings.gptAuto.accounts[0].uploadLimit, 80);
+});
+
+test("GPT automatic production settings keep per-account quotas", () => {
+  const settings = normalizePageSettings({
+    gptAuto: {
+      mode: "manual",
+      minDelaySeconds: 1,
+      accounts: [{ id: "account-2", name: "运营号", uploadLimit: 90, generationLimit: 60, windowHours: 4 }]
+    }
+  });
+  assert.equal(settings.gptAuto.mode, "manual");
+  assert.equal(settings.gptAuto.minDelaySeconds, 5);
+  assert.deepEqual(settings.gptAuto.accounts[0], {
+    id: "account-2",
+    name: "运营号",
+    uploadLimit: 90,
+    generationLimit: 60,
+    windowHours: 4
+  });
 });
 
 test("backup settings keep a practical schedule and clamp the monthly upload budget", () => {

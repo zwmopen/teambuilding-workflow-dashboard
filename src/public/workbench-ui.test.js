@@ -11,6 +11,7 @@ const desktopPreload = fs.readFileSync(path.join(__dirname, "..", "desktop", "pr
 const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 const gptSidebar = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "sidebar.js"), "utf8");
 const gptBackground = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "background.js"), "utf8");
+const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
 test("GPT 内置测试把本地素材和模板与持久原生网页合成一个生产界面", () => {
   assert.match(html, /data-tab="gptProductionTest"/);
@@ -19,8 +20,10 @@ test("GPT 内置测试把本地素材和模板与持久原生网页合成一个�
   assert.match(html, /id="gptEmbeddedHost"/);
   assert.match(html, /id="gptTestSendBtn"/);
   assert.match(app, /gptTestSelectedMaterials/);
-  assert.match(app, /一套模板可以连续处理多个素材文件夹/);
-  assert.match(app, /slice\(0, 2\)/);
+  assert.match(app, /gptTestSelectedTemplates/);
+  assert.match(app, /buildGptTemplateInitTask/);
+  assert.match(app, /当前 GPT 会话里已经沉淀好的母版环境/);
+  assert.match(app, /templates\.flatMap/);
   assert.match(app, /window\.gptWorkbench\.sendTask/);
   assert.doesNotMatch(html, /做一套|做一批/);
   assert.match(desktopMain, /new WebContentsView/);
@@ -28,6 +31,10 @@ test("GPT 内置测试把本地素材和模板与持久原生网页合成一个�
   assert.match(desktopMain, /integrations["'], ["']gpt-production-extension/);
   assert.match(desktopMain, /app\.isPackaged \? \[bundled, development\]/);
   assert.match(desktopMain, /loadExtension/);
+  assert.match(serverSource, /\/api\/extension\/save-generated-image/);
+  assert.match(serverSource, /sharp\(bytes\)\.metadata\(\)/);
+  assert.match(serverSource, /new TextDecoder\("gb18030"\)/);
+  assert.match(serverSource, /\/\^OK\$\/m/);
   assert.match(desktopMain, /tb-workbench-upload/);
   assert.match(desktopPreload, /gptWorkbench/);
   assert.match(css, /\.gpt-production-test-grid/);
@@ -61,6 +68,31 @@ test("GPT 自动生产 downloads and packages only the current verified batch", 
   assert.match(server, /"-BatchId", batchId, "-ExpectedImageCount"/);
   assert.match(server, /成品图片核对失败/);
   assert.match(server, /成品文件夹没有 TXT 文案/);
+});
+
+test("GPT automatic production exposes safe retry, quota and real archive controls", () => {
+  assert.match(html, /id="gptRetryTaskBtn"/);
+  assert.match(html, /id="gptAutoArchiveEnabled"/);
+  assert.match(html, /id="gptUploadLimit"/);
+  assert.match(html, /id="gptGenerationLimit"/);
+  assert.match(app, /retryFromStage/);
+  assert.match(app, /retryFromPercent/);
+  assert.match(app, /gpt-production\/quota/);
+  assert.match(gptSidebar, /resumeExistingWorkflow/);
+  assert.match(gptSidebar, /autoArchive/);
+  assert.match(gptSidebar, /gpt-production\/archive-material/);
+  assert.match(server, /function archiveMaterialAfterProduction/);
+});
+
+test("GPT login recovery stays local and never enters ordinary cloud settings export", () => {
+  assert.match(html, /id="createGptLoginRecoveryBtn"/);
+  assert.match(html, /id="restoreGptLoginRecoveryBtn"/);
+  assert.match(desktopPreload, /createLoginRecovery/);
+  assert.match(desktopPreload, /restoreLoginRecovery/);
+  assert.match(desktopMain, /GPT_LOGIN_RECOVERY_ROOT/);
+  assert.match(desktopMain, /GPT_PENDING_RESTORE_FILE/);
+  assert.match(desktopMain, /applyPendingGptLoginRestore/);
+  assert.doesNotMatch(server, /GPT_LOGIN_RECOVERY_ROOT/);
 });
 
 test("production exposes phase, percent, progressbar, status and recent log", () => {

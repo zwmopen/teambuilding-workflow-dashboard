@@ -4384,6 +4384,7 @@ body[data-theme="glass"] .settings-card {
 }
 
 .gpt-production-browser-panel {
+  position: relative;
   padding: 5px;
   border: 1px solid rgba(72, 94, 83, .16);
   border-radius: 20px;
@@ -4399,9 +4400,107 @@ body[data-theme="glass"] .settings-card {
   flex: 1 1 auto;
   height: auto;
   position: relative;
-  border-radius: 15px;
+  margin: 4px;
+  border: 1px solid color-mix(in srgb, var(--accent, #2d7c65) 16%, transparent);
+  border-radius: 18px;
   background: linear-gradient(145deg, rgba(245, 249, 246, .96), rgba(229, 238, 233, .82));
   overflow: hidden;
+  box-shadow: inset 0 0 0 4px color-mix(in srgb, var(--panel, #fff) 74%, transparent);
+}
+
+.gpt-mode-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.gpt-mode-row select { min-height: 34px; }
+
+.gpt-queue-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.gpt-queue-actions button,
+.gpt-test-send-dock .secondary-button {
+  min-height: 34px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.workbench-folder-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  border-radius: 10px;
+}
+
+.workbench-folder-row.selected {
+  background: color-mix(in srgb, var(--selection) 65%, transparent);
+}
+
+.workbench-folder-row .folder-check { margin-inline: 4px; }
+.gpt-test-folder-list .workbench-post-row { grid-template-columns: 20px minmax(0, 1fr) auto; }
+
+.gpt-post-send-button {
+  min-height: 28px;
+  margin-right: 4px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  border-radius: 8px;
+  color: var(--accent-dark);
+  background: color-mix(in srgb, var(--panel-light) 90%, transparent);
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.tree-loading-state,
+.workbench-empty-asset {
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gpt-selection-assistant {
+  position: absolute;
+  z-index: 12;
+  right: 18px;
+  top: 68px;
+  display: flex;
+  align-items: flex-start;
+  max-width: min(420px, calc(100% - 36px));
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
+  border-radius: 15px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--panel-light) 89%, transparent);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--shadow) 18%, transparent);
+  backdrop-filter: blur(18px);
+  transition: width .2s ease, opacity .2s ease;
+}
+
+.gpt-selection-assistant[hidden] { display: none; }
+.gpt-selection-assistant button { display: grid; width: 28px; min-width: 28px; height: 28px; min-height: 28px; place-items: center; padding: 0; border-radius: 50%; }
+.gpt-selection-assistant strong,
+.gpt-selection-assistant span { display: block; }
+.gpt-selection-assistant strong { font-size: 12px; line-height: 1.4; }
+.gpt-selection-assistant span { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.gpt-selection-assistant.compact div { display: none; }
+.gpt-selection-assistant.compact { padding: 5px; border-radius: 50%; }
+
+.gpt-production-test-library .workbench-folder-item strong,
+.gpt-production-test-library .workbench-post-folder strong {
+  font-size: 12px;
+}
+
+.gpt-production-test-library .workbench-post-folder small,
+.gpt-production-test-library .workbench-text-asset span,
+.gpt-production-test-library .workbench-text-asset small {
+  font-size: 11px;
 }
 
 .gpt-browser-toolbar {

@@ -46,5 +46,14 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   },
   workflowStatus(accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-workflow-status", String(accountId || ""));
+  },
+  loginRecoveryStatus(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-login-recovery-status", String(accountId || ""));
+  },
+  createLoginRecovery(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-login-recovery-create", String(accountId || ""));
+  },
+  restoreLoginRecovery(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-login-recovery-restore", String(accountId || ""));
   }
 });

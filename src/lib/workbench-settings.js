@@ -32,6 +32,20 @@ const DEFAULT_PAGE_SETTINGS = Object.freeze({
     intervalHours: 24,
     monthlyLargeFileLimitMb: 2560,
     sourceRoot: ""
+  },
+  gptAuto: {
+    mode: "automatic",
+    autoConfirm: true,
+    autoCopy: true,
+    autoPackage: true,
+    pauseOnFailure: true,
+    autoArchive: true,
+    quotaReminderEnabled: true,
+    minDelaySeconds: 25,
+    maxDelaySeconds: 55,
+    taskTimeoutMinutes: 30,
+    accountTaskLimit: 8,
+    accounts: [{ id: "account-1", name: "账号 1", uploadLimit: 80, generationLimit: 50, windowHours: 3 }]
   }
 });
 
@@ -50,6 +64,7 @@ function normalizePageSettings(value = {}) {
   const production = value.production || {};
   const distribution = value.distribution || {};
   const backup = value.backup || {};
+  const gptAuto = value.gptAuto || {};
   const backupFrequency = ["daily", "weekly", "interval"].includes(backup.frequency)
     ? backup.frequency : DEFAULT_PAGE_SETTINGS.backup.frequency;
   const defaultInterval = backupFrequency === "weekly" ? 168 : 24;
@@ -91,6 +106,29 @@ function normalizePageSettings(value = {}) {
         : defaultInterval,
       monthlyLargeFileLimitMb: clampInteger(backup.monthlyLargeFileLimitMb, 2560, 0, 10240),
       sourceRoot: String(backup.sourceRoot || "").trim().slice(0, 1000)
+    },
+    gptAuto: {
+      mode: gptAuto.mode === "manual" ? "manual" : "automatic",
+      autoConfirm: gptAuto.autoConfirm !== false,
+      autoCopy: gptAuto.autoCopy !== false,
+      autoPackage: gptAuto.autoPackage !== false,
+      pauseOnFailure: gptAuto.pauseOnFailure !== false,
+      autoArchive: gptAuto.autoArchive !== false,
+      quotaReminderEnabled: gptAuto.quotaReminderEnabled !== false,
+      minDelaySeconds: clampInteger(gptAuto.minDelaySeconds, 25, 5, 600),
+      maxDelaySeconds: clampInteger(gptAuto.maxDelaySeconds, 55, 5, 900),
+      taskTimeoutMinutes: clampInteger(gptAuto.taskTimeoutMinutes, 30, 5, 90),
+      accountTaskLimit: clampInteger(gptAuto.accountTaskLimit, 8, 1, 50),
+      accounts: (Array.isArray(gptAuto.accounts) ? gptAuto.accounts : DEFAULT_PAGE_SETTINGS.gptAuto.accounts)
+        .filter((account) => account && /^[a-z0-9_-]+$/i.test(String(account.id || "")))
+        .slice(0, 8)
+        .map((account, index) => ({
+          id: String(account.id),
+          name: String(account.name || `账号 ${index + 1}`).trim().slice(0, 24),
+          uploadLimit: clampInteger(account.uploadLimit, 80, 1, 1000),
+          generationLimit: clampInteger(account.generationLimit, 50, 1, 1000),
+          windowHours: clampInteger(account.windowHours, 3, 1, 24)
+        }))
     }
   };
 }

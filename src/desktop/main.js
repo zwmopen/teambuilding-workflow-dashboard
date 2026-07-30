@@ -5,21 +5,117 @@ const path = require("node:path");
 const http = require("node:http");
 const { version: APP_VERSION } = require("../package.json");
 
+if (process.env.TB_USER_DATA_ROOT) {
+  app.setPath("userData", path.resolve(process.env.TB_USER_DATA_ROOT));
+}
+
 const APP_PORT = String(process.env.PORT || "4327").trim() || "4327";
 const APP_URL = `http://127.0.0.1:${APP_PORT}/`;
 const RUNTIME_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运行数据\\江湖有旅人\\图文生产控制台";
 const DESKTOP_LOG_FILE = path.join(RUNTIME_ROOT, "desktop.log");
+const GPT_LOGIN_RECOVERY_ROOT = path.join(RUNTIME_ROOT, "gpt-login-recovery");
+const GPT_PENDING_BACKUP_FILE = path.join(GPT_LOGIN_RECOVERY_ROOT, "pending-backup.json");
+const GPT_PENDING_RESTORE_FILE = path.join(GPT_LOGIN_RECOVERY_ROOT, "pending-restore.json");
 let serverProcess = null;
 let mainWindow = null;
 const gptAccounts = new Map();
 let activeGptAccountId = "account-1";
 
 const GPT_PARTITION_PREFIX = "persist:teambuilding-gpt-production";
+const WORKBENCH_PARTITION = "persist:teambuilding-workbench-0.12.2";
 const GPT_URL = "https://chatgpt.com/";
 
 function safeGptAccountId(value = "") {
   const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
   return normalized.slice(0, 48) || "account-1";
+}
+
+function gptPartitionDirectory(accountId = activeGptAccountId) {
+  const id = safeGptAccountId(accountId);
+  return path.join(app.getPath("userData"), "Partitions", `teambuilding-gpt-production-${id}`);
+}
+
+function gptRecoveryDirectory(accountId = activeGptAccountId) {
+  return path.join(GPT_LOGIN_RECOVERY_ROOT, safeGptAccountId(accountId), "profile");
+}
+
+function recoveryMetadataFile(accountId = activeGptAccountId) {
+  return path.join(GPT_LOGIN_RECOVERY_ROOT, safeGptAccountId(accountId), "recovery.json");
+}
+
+function isInsideDirectory(parent, target) {
+  const relative = path.relative(path.resolve(parent), path.resolve(target));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function copyDirectorySnapshot(source, target) {
+  if (!fs.existsSync(source)) throw new Error("当前账号还没有可备份的本机登录档案");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  if (fs.existsSync(target)) {
+    if (!isInsideDirectory(GPT_LOGIN_RECOVERY_ROOT, target)) throw new Error("恢复点目录不安全");
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+  fs.cpSync(source, target, { recursive: true, force: true, errorOnExist: false });
+}
+
+async function releaseGptAccountView(accountId = activeGptAccountId) {
+  const id = safeGptAccountId(accountId);
+  const account = gptAccounts.get(id);
+  if (!account) return;
+  await account.session?.flushStorageData?.().catch(() => {});
+  if (account.view && !account.view.webContents.isDestroyed()) {
+    account.view.setVisible(false);
+    try {
+      mainWindow?.contentView.removeChildView(account.view);
+    } catch {
+      // The view may already have been detached.
+    }
+    account.view.webContents.close();
+  }
+  gptAccounts.delete(id);
+}
+
+function applyPendingGptLoginRestore() {
+  if (!fs.existsSync(GPT_PENDING_RESTORE_FILE)) return;
+  const pending = JSON.parse(fs.readFileSync(GPT_PENDING_RESTORE_FILE, "utf8").replace(/^\uFEFF/, ""));
+  const accountId = safeGptAccountId(pending.accountId);
+  const source = gptRecoveryDirectory(accountId);
+  const target = gptPartitionDirectory(accountId);
+  if (!isInsideDirectory(GPT_LOGIN_RECOVERY_ROOT, source)
+    || !isInsideDirectory(path.join(app.getPath("userData"), "Partitions"), target)) {
+    throw new Error("登录档案恢复路径不安全");
+  }
+  if (!fs.existsSync(source)) throw new Error("没有找到这个账号的本机恢复点");
+  const rollback = path.join(GPT_LOGIN_RECOVERY_ROOT, accountId, `rollback-${Date.now()}`);
+  if (fs.existsSync(target)) fs.cpSync(target, rollback, { recursive: true, force: true, errorOnExist: false });
+  if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.cpSync(source, target, { recursive: true, force: true, errorOnExist: false });
+  fs.rmSync(GPT_PENDING_RESTORE_FILE, { force: true });
+  appendDesktopLog("gpt-login-recovery-restored", accountId);
+}
+
+function applyPendingGptLoginBackup() {
+  if (!fs.existsSync(GPT_PENDING_BACKUP_FILE)) return;
+  const pending = JSON.parse(fs.readFileSync(GPT_PENDING_BACKUP_FILE, "utf8").replace(/^\uFEFF/, ""));
+  const accountId = safeGptAccountId(pending.accountId);
+  const source = gptPartitionDirectory(accountId);
+  const target = gptRecoveryDirectory(accountId);
+  if (!isInsideDirectory(path.join(app.getPath("userData"), "Partitions"), source)
+    || !isInsideDirectory(GPT_LOGIN_RECOVERY_ROOT, target)) {
+    throw new Error("登录档案备份路径不安全");
+  }
+  copyDirectorySnapshot(source, target);
+  const metadata = {
+    accountId,
+    createdAt: new Date().toISOString(),
+    appVersion: APP_VERSION,
+    machineOnly: true
+  };
+  fs.mkdirSync(path.dirname(recoveryMetadataFile(accountId)), { recursive: true });
+  fs.writeFileSync(recoveryMetadataFile(accountId), JSON.stringify(metadata, null, 2), "utf8");
+  fs.rmSync(GPT_PENDING_BACKUP_FILE, { force: true });
+  appendDesktopLog("gpt-login-recovery-created", accountId);
 }
 
 function resolveGptExtensionPath() {
@@ -59,6 +155,7 @@ async function ensureGptAccount(accountId = activeGptAccountId) {
   const id = safeGptAccountId(accountId);
   const existing = gptAccounts.get(id);
   if (existing?.view && !existing.view.webContents.isDestroyed()) return existing;
+  if (existing?.initializing) return existing.initializing;
   if (!mainWindow) throw new Error("工作台窗口尚未就绪");
   const account = {
     id,
@@ -66,9 +163,11 @@ async function ensureGptAccount(accountId = activeGptAccountId) {
     session: session.fromPartition(`${GPT_PARTITION_PREFIX}-${id}`),
     view: null,
     extensionInfo: null,
-    extensionError: ""
+    extensionError: "",
+    initializing: null
   };
   gptAccounts.set(id, account);
+  account.initializing = (async () => {
   const extensionPath = resolveGptExtensionPath();
   try {
     if (!fs.existsSync(path.join(extensionPath, "manifest.json"))) throw new Error(`扩展目录不存在：${extensionPath}`);
@@ -98,6 +197,12 @@ async function ensureGptAccount(accountId = activeGptAccountId) {
   await account.view.webContents.loadURL(GPT_URL);
   await initializeEmbeddedGptPage(account);
   return account;
+  })();
+  try {
+    return await account.initializing;
+  } finally {
+    account.initializing = null;
+  }
 }
 
 function activeGptAccount() {
@@ -129,8 +234,14 @@ async function sendTaskToEmbeddedGpt(task = {}) {
     materialPath: String(task.materialPath || ""),
     attachments: Array.isArray(task.attachments) ? task.attachments.slice(0, 30) : [],
     prompt: String(task.prompt || ""),
+    taskType: String(task.taskType || "material"),
+    templateId: String(task.templateId || ""),
+    accountId,
     autoRun: Boolean(task.autoRun),
-    autoOptions: task.autoOptions && typeof task.autoOptions === "object" ? task.autoOptions : {}
+    autoOptions: task.autoOptions && typeof task.autoOptions === "object" ? task.autoOptions : {},
+    retryOf: String(task.retryOf || ""),
+    retryFromStage: String(task.retryFromStage || ""),
+    retryFromPercent: Math.max(0, Math.min(100, Number(task.retryFromPercent || 0)))
   };
   const script = `new Promise((resolve) => {
     const requestId = ${JSON.stringify(requestId)};
@@ -228,7 +339,7 @@ ipcMain.handle("desktop:gpt-navigate", async (_event, input = {}) => {
   const action = String(input.action || "reload");
   if (action === "back" && contents.canGoBack()) contents.goBack();
   else if (action === "forward" && contents.canGoForward()) contents.goForward();
-  else if (action === "home") await contents.loadURL(GPT_URL);
+  else if (action === "home" || action === "new-chat") await contents.loadURL(GPT_URL);
   else contents.reload();
   return {
     ok: true,
@@ -249,6 +360,57 @@ ipcMain.handle("desktop:gpt-workflow-status", async (_event, accountId = activeG
     try { return JSON.parse(document.getElementById("tb-workbench-bridge-progress")?.textContent || "null"); }
     catch { return null; }
   })()`, true).catch(() => null);
+});
+
+ipcMain.handle("desktop:gpt-login-recovery-status", async (_event, accountId = activeGptAccountId) => {
+  const id = safeGptAccountId(accountId);
+  const metadataFile = recoveryMetadataFile(id);
+  let metadata = null;
+  try {
+    metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
+  } catch {
+    metadata = null;
+  }
+  return {
+    ok: true,
+    accountId: id,
+    exists: fs.existsSync(gptRecoveryDirectory(id)),
+    createdAt: metadata?.createdAt || "",
+    machineOnly: true
+  };
+});
+
+ipcMain.handle("desktop:gpt-login-recovery-create", async (_event, accountId = activeGptAccountId) => {
+  const id = safeGptAccountId(accountId);
+  const account = await ensureGptAccount(id);
+  await account.session.flushStorageData();
+  hideAllGptViews();
+  await releaseGptAccountView(id);
+  const request = {
+    accountId: id,
+    requestedAt: new Date().toISOString()
+  };
+  fs.mkdirSync(GPT_LOGIN_RECOVERY_ROOT, { recursive: true });
+  fs.writeFileSync(GPT_PENDING_BACKUP_FILE, JSON.stringify(request, null, 2), "utf8");
+  appendDesktopLog("gpt-login-recovery-scheduled", id);
+  app.relaunch();
+  app.exit(0);
+  return { ok: true, restarting: true, ...request };
+});
+
+ipcMain.handle("desktop:gpt-login-recovery-restore", async (_event, accountId = activeGptAccountId) => {
+  const id = safeGptAccountId(accountId);
+  if (!fs.existsSync(gptRecoveryDirectory(id))) throw new Error("这个账号还没有本机 GPT 登录恢复点");
+  await releaseGptAccountView(id);
+  fs.mkdirSync(GPT_LOGIN_RECOVERY_ROOT, { recursive: true });
+  fs.writeFileSync(GPT_PENDING_RESTORE_FILE, JSON.stringify({
+    accountId: id,
+    requestedAt: new Date().toISOString()
+  }, null, 2), "utf8");
+  appendDesktopLog("gpt-login-recovery-scheduled", id);
+  app.relaunch();
+  app.exit(0);
+  return { ok: true, restarting: true };
 });
 
 if (!app.isPackaged || process.env.TB_DESKTOP_SMOKE === "1") {
@@ -325,11 +487,13 @@ async function createWindow() {
       contextIsolation: true,
       sandbox: true,
       webviewTag: false,
-      partition: `persist:teambuilding-workbench-${APP_VERSION.replace(/[^a-z0-9.-]/gi, "-")}`,
+      partition: WORKBENCH_PARTITION,
       preload: path.join(__dirname, "preload.js")
     }
   });
   mainWindow = window;
+  window.on("minimize", () => hideAllGptViews());
+  window.on("hide", () => hideAllGptViews());
   window.on("closed", () => {
     for (const account of gptAccounts.values()) {
       if (account.view && !account.view.webContents.isDestroyed()) account.view.webContents.close();
@@ -338,7 +502,9 @@ async function createWindow() {
     mainWindow = null;
   });
 
-  window.once("ready-to-show", () => window.show());
+  window.once("ready-to-show", () => {
+    if (process.env.TB_DESKTOP_HIDDEN !== "1") window.show();
+  });
   window.webContents.on("did-fail-load", (_event, code, description, validatedURL, isMainFrame) => {
     appendDesktopLog("shell-load-failed", `code=${code} main=${isMainFrame} url=${validatedURL} ${description}`);
   });
@@ -362,7 +528,11 @@ if (!hasSingleInstanceLock) {
     mainWindow.show();
     mainWindow.focus();
   });
-  app.whenReady().then(createWindow).catch((error) => {
+  app.whenReady().then(() => {
+    applyPendingGptLoginBackup();
+    applyPendingGptLoginRestore();
+    return createWindow();
+  }).catch((error) => {
     appendDesktopLog("startup-failed", error.stack || error.message);
     console.error(error);
     app.quit();
