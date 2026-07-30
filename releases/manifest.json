@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.11.7",
-  "source_commit": "f4c25f9",
+  "version": "0.12.1",
+  "source_commit": "fd37bc1",
   "artifacts": [
+    {
+      "file": "0.12.1/团建工作台-0.12.1-便携版.exe",
+      "sha256": "AFAF237BA25D29E140465C017B3D57F23F79337982542C3E37D2998D9630E0FB",
+      "size": 96137980,
+      "platform": "Windows x64",
+      "built_at": "2026-07-30",
+      "known_limits": "GPT 内置测试已验证正式包、内置扩展和任务桥接；首次使用仍需用户本人登录 ChatGPT，登录后原生附件与实际生成需完成一次人工验收。图片 API 生产继续采用首图校准并由用户确认后续跑。"
+    },
     {
       "file": "0.11.7/团建工作台-0.11.7-便携版.exe",
       "sha256": "E4C1D4D209F2CBD689DC8E960C527FB1DBDE7CD2488B001BA69B1FB0886A8E40",
