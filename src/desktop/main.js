@@ -20,8 +20,13 @@ const GPT_PARTITION = "persist:teambuilding-gpt-production";
 const GPT_URL = "https://chatgpt.com/";
 
 function resolveGptExtensionPath() {
-  return process.env.TEAMBUILDING_GPT_EXTENSION
-    || path.resolve(__dirname, "..", "..", "..", "teambuilding-gpt-production-extension", "src");
+  const configured = String(process.env.TEAMBUILDING_GPT_EXTENSION || "").trim();
+  const bundled = path.resolve(__dirname, "..", "integrations", "gpt-production-extension");
+  const development = path.resolve(__dirname, "..", "..", "..", "teambuilding-gpt-production-extension", "src");
+  const candidates = configured
+    ? [configured, bundled, development]
+    : (app.isPackaged ? [bundled, development] : [development, bundled]);
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, "manifest.json"))) || candidates[0];
 }
 
 function safeGptBounds(input = {}) {

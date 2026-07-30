@@ -22,6 +22,8 @@ test("GPT 内置测试把本地素材和模板与持久原生网页合成一个�
   assert.doesNotMatch(html, /做一套|做一批/);
   assert.match(desktopMain, /new WebContentsView/);
   assert.match(desktopMain, /persist:teambuilding-gpt-production/);
+  assert.match(desktopMain, /integrations["'], ["']gpt-production-extension/);
+  assert.match(desktopMain, /app\.isPackaged \? \[bundled, development\]/);
   assert.match(desktopMain, /loadExtension/);
   assert.match(desktopMain, /tb-workbench-upload/);
   assert.match(desktopPreload, /gptWorkbench/);
