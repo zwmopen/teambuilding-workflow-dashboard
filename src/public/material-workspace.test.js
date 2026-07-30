@@ -35,6 +35,7 @@ test("旧版总览状态会迁移到素材生产", () => {
   assert.equal(resolveInitialTab("products"), "dashboard");
   assert.equal(resolveInitialTab("conversion"), "conversion");
   assert.equal(resolveInitialTab("plugins"), "plugins");
+  assert.equal(resolveInitialTab("gptProductionTest"), "gptProductionTest");
   assert.equal(resolveInitialTab(""), "dashboard");
 });
 

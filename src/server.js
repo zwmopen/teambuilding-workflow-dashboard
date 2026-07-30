@@ -1215,6 +1215,7 @@ async function createProductionPlans(body) {
 }
 
 function publicProductionJob(job) {
+  const imageResults = (job.results || []).filter((item) => item.type === "image");
   return {
     id: job.id,
     planId: job.planId,
@@ -1224,6 +1225,16 @@ function publicProductionJob(job) {
     message: job.message,
     progress: job.progress,
     total: job.total,
+    remaining: Math.max(0, Number(job.total || 0) - Number(job.progress || 0)),
+    runScope: job.options?.runScope || "full",
+    generationRequestCount: imageResults.reduce(
+      (sum, item) => sum + Number(item.requestMeta?.requestCount || 0),
+      0
+    ),
+    generationAttemptCount: imageResults.reduce(
+      (sum, item) => sum + Number(item.requestMeta?.attemptCount || 0),
+      0
+    ),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     startedAt: job.startedAt || "",
@@ -1240,7 +1251,7 @@ function publicProductionJob(job) {
     })),
     failures: job.failures || [],
     qualityReports: job.qualityReports || [],
-    resumable: ["interrupted", "failed", "needs-rework", "cancelled"].includes(job.status),
+    resumable: ["calibration-ready", "interrupted", "failed", "needs-rework", "cancelled"].includes(job.status),
     cancelable: job.status === "running",
     error: job.error || ""
   };
@@ -1255,8 +1266,45 @@ function safeProductionOptions(options = {}) {
     quality: String(options.quality || "严格母版").slice(0, 100),
     prompt: String(options.prompt || "").slice(0, 30_000),
     textModel: String(options.textModel || "gpt-5.6-terra").slice(0, 200),
-    outputPrefix: safeOutputName(String(options.outputPrefix || "")).slice(0, 40)
+    outputPrefix: safeOutputName(String(options.outputPrefix || "")).slice(0, 40),
+    runScope: String(options.runScope || "") === "calibration" ? "calibration" : "full"
   };
+}
+
+function productionRequestSummary(results, work) {
+  const images = (results || []).filter((item) => item.type === "image" && item.work === work);
+  return {
+    imageCount: images.length,
+    paidGenerationRequests: images.reduce(
+      (sum, item) => sum + Number(item.requestMeta?.requestCount || 0),
+      0
+    ),
+    generationAttempts: images.reduce(
+      (sum, item) => sum + Number(item.requestMeta?.attemptCount || 0),
+      0
+    ),
+    automaticPaidRetries: 0,
+    pages: images.map((item) => ({
+      page: item.page,
+      provider: item.provider,
+      model: item.model,
+      referenceCount: Number(item.requestMeta?.referenceCount || 0),
+      providerRequestId: item.requestMeta?.providerRequestId || "",
+      attempts: item.requestMeta?.attempts || [],
+      usage: item.requestMeta?.usage || null,
+      durationMs: item.durationMs
+    }))
+  };
+}
+
+function productionResumeScope(job = {}) {
+  if (job.status === "calibration-ready") return "full";
+  return job.options?.runScope === "calibration" ? "calibration" : "full";
+}
+
+function productionPageAllowed(runScope, planIndex, pageCode, firstPageCode) {
+  if (runScope !== "calibration") return true;
+  return Number(planIndex) === 0 && String(pageCode || "") === String(firstPageCode || "");
 }
 
 function saveProductionJob(job) {
@@ -1300,6 +1348,7 @@ async function runProductionJob(job, planBundle, options) {
   productionAbortControllers.set(job.id, abortController);
   job.planBundle = planBundle;
   job.options = safeProductionOptions(options);
+  const calibrationOnly = job.options.runScope === "calibration";
   const uniqueResults = new Map();
   for (const item of job.results || []) {
     if (!item?.type || !item?.outputFile || !exists(item.outputFile)) continue;
@@ -1312,17 +1361,20 @@ async function runProductionJob(job, planBundle, options) {
   job.failures = [];
   job.qualityReports = [];
   job.cancelRequested = false;
-  job.startedAt = new Date().toISOString();
+  job.startedAt ||= new Date().toISOString();
   job.finishedAt = "";
   updateProductionJob(job, {
     status: "running",
     phase: "starting",
-    message: "正在核对已完成页面并继续生产",
+    message: calibrationOnly
+      ? "省钱校准模式：本次只生成第一套作品的首张封面，只发起 1 次付费生图请求"
+      : "首图已确认，正在核对已完成页面并继续生成剩余内容",
     error: ""
   });
   let completed = job.results.filter((item) => item.type === "image").length;
   for (const [planIndex, plan] of planBundle.plans.entries()) {
     if (job.cancelRequested) break;
+    if (calibrationOnly && planIndex > 0) break;
     const facts = materialFacts(plan.materialPath);
     const templateImages = collectReferenceImages(plan.templatePath, 5);
     const materialImages = collectReferenceImages(plan.materialPath, 10);
@@ -1343,6 +1395,7 @@ async function runProductionJob(job, planBundle, options) {
     writeJson(path.join(outputRoot, "出图计划.json"), plan);
     for (const page of plan.pages) {
       if (job.cancelRequested) break;
+      if (!productionPageAllowed(job.options.runScope, planIndex, page.code, planBundle.plans[0]?.pages[0]?.code)) break;
       const existing = (job.results || []).find((item) => (
         item.type === "image"
         && item.work === plan.materialName
@@ -1350,6 +1403,16 @@ async function runProductionJob(job, planBundle, options) {
         && exists(item.outputFile)
       ));
       if (existing) {
+        if (calibrationOnly) {
+          updateProductionJob(job, {
+            status: "calibration-ready",
+            phase: "calibration-ready",
+            finishedAt: new Date().toISOString(),
+            message: `首张校准图已存在。本批剩余 ${Math.max(0, job.total - completed)} 张尚未调用接口；确认后再继续。`,
+            progress: completed
+          });
+          return;
+        }
         updateProductionJob(job, {
           phase: "resuming",
           message: `${plan.materialName} · ${page.code} 已完成，继续下一页`,
@@ -1374,6 +1437,7 @@ async function runProductionJob(job, planBundle, options) {
       // image is enough to lock the layout while preserving the real scene.
       const referencePaths = [templateRef, pageMaterial];
       const prompt = buildPagePrompt(plan, page, facts, options.prompt, options.quality);
+      const failedAttemptAudit = [];
       try {
         const generated = await generateImages({
           config,
@@ -1382,6 +1446,11 @@ async function runProductionJob(job, planBundle, options) {
           referencePaths: [...new Set(referencePaths.filter(Boolean))].slice(0, 8),
           outputRoot,
           count: 1,
+          retryOptions: {
+            attempts: 1,
+            delays: [],
+            onAttempt: (entry) => failedAttemptAudit.push(entry)
+          },
           signal: abortController.signal
         });
         const original = generated[0];
@@ -1400,17 +1469,82 @@ async function runProductionJob(job, planBundle, options) {
           height: original.height,
           provider: original.provider,
           model: original.model,
+          requestMeta: original.requestMeta || {
+            requestCount: 1,
+            attemptCount: 1,
+            attempts: [],
+            referenceCount: referencePaths.filter(Boolean).length,
+            usage: null
+          },
           durationMs: Date.now() - pageStartedAt
         });
         completed += 1;
+        if (calibrationOnly) {
+          writeJson(path.join(outputRoot, "生产记录.json"), {
+            status: "calibration-ready",
+            createdAt: new Date().toISOString(),
+            plan,
+            provider: config.provider,
+            imageModel: config.model,
+            textModel: options.textModel || "gpt-5.6-terra",
+            requestSummary: productionRequestSummary(job.results, plan.materialName),
+            note: "省钱校准模式只生成首张封面。确认首图后才会生成剩余页面与文案。",
+            officialLibraryWritten: false,
+            files: job.results.filter((item) => item.work === plan.materialName).map((item) => item.outputFile)
+          });
+          updateProductionJob(job, {
+            status: "calibration-ready",
+            phase: "calibration-ready",
+            progress: completed,
+            finishedAt: new Date().toISOString(),
+            message: `首张校准图已生成。本次仅调用 1 次、未自动重试；剩余 ${Math.max(0, job.total - completed)} 张尚未调用接口。请先看图，再决定是否继续整套。`
+          });
+          return;
+        }
         updateProductionJob(job, { progress: completed });
       } catch (error) {
         job.failures.push({
           work: plan.materialName,
           page: page.code,
           phase: "image",
-          message: String(error?.message || error).slice(0, 500)
+          message: String(error?.message || error).slice(0, 500),
+          requestMeta: {
+            requestCount: 1,
+            attemptCount: failedAttemptAudit.length,
+            attempts: failedAttemptAudit,
+            referenceCount: [...new Set(referencePaths.filter(Boolean))].length,
+            provider: config.provider,
+            model: config.model,
+            automaticPaidRetries: 0
+          }
         });
+        if (calibrationOnly) {
+          writeJson(path.join(outputRoot, "生产记录.json"), {
+            status: "calibration-failed",
+            createdAt: new Date().toISOString(),
+            plan,
+            provider: config.provider,
+            imageModel: config.model,
+            requestSummary: {
+              paidGenerationRequests: 1,
+              generationAttempts: failedAttemptAudit.length,
+              automaticPaidRetries: 0,
+              failedPage: page.code,
+              attempts: failedAttemptAudit
+            },
+            failure: String(error?.message || error).slice(0, 500),
+            officialLibraryWritten: false,
+            files: []
+          });
+          updateProductionJob(job, {
+            status: "failed",
+            phase: "calibration-failed",
+            finishedAt: new Date().toISOString(),
+            message: `${plan.materialName} · ${page.code} 首张校准图生成失败；为避免继续扣费，后续页面没有调用接口。`,
+            progress: completed
+          });
+          return;
+        }
         updateProductionJob(job, {
           message: `${plan.materialName} · ${page.code} 生成失败，已记录并继续下一页`,
           progress: completed
@@ -1472,6 +1606,8 @@ async function runProductionJob(job, planBundle, options) {
       provider: config.provider,
       imageModel: config.model,
       textModel: options.textModel || "gpt-5.6-terra",
+      requestSummary: productionRequestSummary(job.results, plan.materialName),
+      failedRequests: job.failures.filter((item) => item.work === plan.materialName && item.phase === "image"),
       quality,
       officialLibraryWritten: false,
       files: job.results.filter((item) => item.work === plan.materialName).map((item) => item.outputFile)
@@ -4375,14 +4511,14 @@ async function route(req, res) {
       qualityReports: [],
       workRoots: {},
       planBundle,
-      options: safeProductionOptions(body),
+      options: safeProductionOptions({ ...body, runScope: "calibration" }),
       cancelRequested: false,
       error: ""
     };
     productionJobs.set(job.id, job);
     saveProductionJob(job);
     pendingProductionPlans.delete(planBundle.id);
-    runProductionJob(job, planBundle, body).catch((error) => {
+    runProductionJob(job, planBundle, { ...body, runScope: "calibration" }).catch((error) => {
       updateProductionJob(job, {
         status: "failed",
         phase: "failed",
@@ -4408,12 +4544,14 @@ async function route(req, res) {
     if (job.status === "running") return send(res, 409, JSON.stringify({ error: "这次任务仍在生产中" }));
     if (!job.planBundle || !job.options) return send(res, 409, JSON.stringify({ error: "旧任务没有可恢复的生产计划" }));
     const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const resumeScope = productionResumeScope(job);
     const retryOptions = safeProductionOptions({
       ...job.options,
       ...body,
       prompt: body.prompt || job.options.prompt,
       quality: body.quality || job.options.quality,
-      outputPrefix: job.options.outputPrefix
+      outputPrefix: job.options.outputPrefix,
+      runScope: resumeScope
     });
     job.cancelRequested = false;
     runProductionJob(job, job.planBundle, retryOptions).catch((error) => {
@@ -4974,6 +5112,8 @@ module.exports = {
   rewriteIntegratedConversionDocument,
   parseOnlineDeviceStatus,
   mergeDevicePresence,
+  productionPageAllowed,
+  productionResumeScope,
   publicDedupStatus,
   runExtensionWorkPackage,
   scanPostFolders,

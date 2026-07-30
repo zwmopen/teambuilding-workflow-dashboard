@@ -55,6 +55,15 @@ let workbenchExpandedMaterialCategoryPath = "";
 let workbenchExpandedMaterialPath = "";
 let workbenchModelsLoaded = false;
 let productionWorkspace = null;
+const gptTestSelectedMaterials = new Set();
+const gptTestMaterialEntries = new Map();
+let gptTestTemplate = null;
+let gptTestActiveCategoryPath = "";
+let gptTestExpandedCategoryPath = "";
+let gptTestExpandedMaterialPath = "";
+let gptTestQueue = [];
+let gptTestQueueIndex = 0;
+let gptEmbeddedResizeObserver = null;
 const expandedMaterialPaths = new Set();
 const expandedCollectionNames = new Set();
 let materialTreeInitialized = false;
@@ -386,6 +395,7 @@ async function loadDashboard(force = false, libraryPath = "") {
   renderMaterialQuickSelect();
   renderMaterials();
   await renderProductionWorkbench();
+  renderGptProductionTest();
   renderPrompts();
   renderWorkspaceSettings();
   loadCloudBackupStatus();
@@ -1071,6 +1081,217 @@ async function renderProductionWorkbench() {
   restoreLatestProductionTask().catch(() => {});
 }
 
+function currentGptTestMaterials() {
+  const categories = dashboard?.materials?.categories || [];
+  const category = categories.find((item) => item.path === gptTestActiveCategoryPath)
+    || categories.find((item) => item.loaded !== false)
+    || categories[0];
+  const query = String($("#gptTestMaterialSearch")?.value || "").trim().toLowerCase();
+  return {
+    category,
+    items: (category?.items || []).filter((item) => {
+      if (!query) return true;
+      return `${item.name || ""} ${item.preview || ""} ${(item.tags || []).join(" ")}`.toLowerCase().includes(query);
+    }).slice(0, 120)
+  };
+}
+
+function renderGptTestMaterials() {
+  const host = $("#gptTestMaterialFolders");
+  if (!host) return;
+  const categories = dashboard?.materials?.categories || [];
+  if (!categories.some((item) => item.path === gptTestActiveCategoryPath)) {
+    gptTestActiveCategoryPath = categories.find((item) => item.loaded !== false)?.path || categories[0]?.path || "";
+    gptTestExpandedCategoryPath = gptTestActiveCategoryPath;
+  }
+  const { category: activeCategory, items } = currentGptTestMaterials();
+  const posts = items.map((item) => {
+    const selected = gptTestSelectedMaterials.has(item.path);
+    const expanded = gptTestExpandedMaterialPath === item.path;
+    const images = expanded ? (item.images || []).map((image) => (
+      `<button class="asset-thumb-button workbench-material-image" type="button" data-image-preview="${escapeHtml(image.url)}" data-image-caption="${escapeHtml(item.name)}"><img src="${escapeHtml(image.url)}" alt="素材图片预览" loading="lazy" /></button>`
+    )).join("") : "";
+    const texts = expanded ? (item.attachments || []).filter((filePath) => /\.(?:txt|md)$/i.test(filePath)).map((filePath) => {
+      const name = String(filePath).split(/[\\/]/).pop() || "参考内容.txt";
+      return `<button class="workbench-text-asset" type="button" data-workbench-text-path="${escapeHtml(filePath)}" data-workbench-text-caption="${escapeHtml(item.name)}"><b>TXT</b><span>${escapeHtml(name)}</span><small>${escapeHtml(shortText(item.preview || "点击查看参考内容", 54))}</small></button>`;
+    }).join("") : "";
+    return `<section class="workbench-post-branch${expanded ? " active" : ""}">
+      <div class="workbench-post-row${selected ? " selected" : ""}">
+        <input class="material-check" type="checkbox" data-gpt-test-material-check="${escapeHtml(item.id)}" aria-label="选择素材文件夹" ${selected ? "checked" : ""} />
+        <button class="workbench-post-folder" type="button" data-gpt-test-post-folder="${escapeHtml(item.id)}" title="${escapeHtml(item.name)}">
+          <span class="folder-glyph" aria-hidden="true">▸</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.imageCount || 0} 张图 · ${item.textCount || 0} 个文本</small></span>
+        </button>
+      </div>
+      ${expanded ? `<div class="workbench-post-assets">${images}${texts}</div>` : ""}
+    </section>`;
+  }).join("");
+  host.innerHTML = categories.length ? categories.map((category) => {
+    const expanded = category.path === gptTestExpandedCategoryPath;
+    const selected = category.path === gptTestActiveCategoryPath;
+    return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
+      <button class="workbench-folder-item${selected ? " selected" : ""}${expanded ? " active" : ""}" type="button" data-gpt-test-material-category="${escapeHtml(category.path)}">
+        <span class="folder-glyph" aria-hidden="true">▸</span><span><strong>${escapeHtml(category.name)}</strong><small>${escapeHtml(window.MaterialWorkspace.categoryCountLabel(category))}</small></span>
+      </button>
+      ${expanded ? `<div class="workbench-post-list">${category.path === activeCategory?.path ? (posts || `<div class="empty-state"><strong>没有匹配的素材文件夹</strong></div>`) : ""}</div>` : ""}
+    </section>`;
+  }).join("") : `<div class="empty-state"><strong>没有读取到素材目录</strong></div>`;
+  $("#gptTestMaterialCount").textContent = `${gptTestSelectedMaterials.size} 个已选`;
+  updateGptTestQueueStatus();
+}
+
+function renderGptTestTemplates() {
+  const host = $("#gptTestTemplateList");
+  if (!host) return;
+  const templates = dashboard?.templates?.templates || [];
+  if (!gptTestTemplate || !templates.some((item) => item.id === gptTestTemplate.id)) {
+    gptTestTemplate = templates[0] || null;
+  }
+  host.innerHTML = templates.length ? templates.map((template) => {
+    const active = gptTestTemplate?.id === template.id;
+    const previews = active ? (template.images || []).map((image, index) => (
+      `<button class="template-image-thumb" type="button" data-image-preview="${escapeHtml(image.url)}" data-image-caption="${escapeHtml(`${template.name} · ${index ? `内页 ${index}` : "封面"}`)}"><img src="${escapeHtml(image.url)}" alt="模板图预览" loading="lazy" /></button>`
+    )).join("") : "";
+    return `<section class="workbench-folder-branch${active ? " active" : ""}">
+      <button class="workbench-folder-item gpt-test-template-row${active ? " selected active" : ""}" type="button" data-gpt-test-template="${escapeHtml(template.id)}">
+        <span class="folder-glyph" aria-hidden="true">▸</span><span><strong>${escapeHtml(template.name)}</strong><small>${template.imageCount || 0} 张母版图</small></span>
+      </button>
+      ${active ? `<div class="workbench-template-images workbench-inline-previews">${previews || `<div class="empty-state"><strong>没有模板图</strong></div>`}</div>` : ""}
+    </section>`;
+  }).join("") : `<div class="empty-state"><strong>没有读取到模板</strong></div>`;
+  $("#gptTestTemplateName").textContent = gptTestTemplate?.name || "请选择模板";
+  updateGptTestQueueStatus();
+}
+
+function selectedGptTestEntries() {
+  const loaded = (dashboard?.materials?.categories || []).flatMap((category) => (category.items || []).map((item) => ({ item, category })));
+  loaded.forEach((entry) => {
+    if (gptTestSelectedMaterials.has(entry.item.path)) gptTestMaterialEntries.set(entry.item.path, entry);
+  });
+  return [...gptTestSelectedMaterials].map((materialPath) => gptTestMaterialEntries.get(materialPath)).filter(Boolean);
+}
+
+function buildGptTestTask(entry) {
+  const templateFiles = (gptTestTemplate?.images || []).slice(0, 2).map((image) => image.path).filter(Boolean);
+  const materialFiles = (entry.item.attachments || []).filter(Boolean);
+  const attachments = [...new Set([...templateFiles, ...materialFiles])].slice(0, 30);
+  const extra = String($("#gptTestExtraPrompt")?.value || "").trim();
+  const prompt = [
+    defaultTemplatePrompt(gptTestTemplate),
+    "附件顺序说明：前 1—2 张是母版参考图（第1张封面、第2张内页）；其余附件全部是本次待迁移素材和 TXT 参考内容。",
+    `当前素材文件夹：${entry.item.name}`,
+    "先读取本次附件并沿用当前对话中已沉淀的母版迁移规则。不要把素材当模板，不要省略 TXT；一套模板可以连续处理多个素材文件夹。先把附件和要求放入输入框，由我在右侧 GPT 中继续确认和生成。",
+    extra ? `本次补充要求：\n${extra}` : ""
+  ].filter(Boolean).join("\n\n");
+  return {
+    requestId: `gpt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name: `${gptTestTemplate?.name || "母版"} × ${entry.item.name}`,
+    materialPath: entry.item.path,
+    attachments,
+    prompt
+  };
+}
+
+function updateGptTestQueueStatus(message = "") {
+  const node = $("#gptTestQueueStatus");
+  const button = $("#gptTestSendBtn");
+  if (!node || !button) return;
+  const selectedCount = gptTestSelectedMaterials.size;
+  if (message) node.textContent = message;
+  else if (!gptTestTemplate || !selectedCount) node.textContent = "选择一个模板和至少一个素材文件夹";
+  else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) node.textContent = `待送入 ${gptTestQueue.length - gptTestQueueIndex} 组；每次送一组，避免附件混在一起`;
+  else node.textContent = `同一母版将依次对应 ${selectedCount} 个素材文件夹`;
+  button.disabled = !gptTestTemplate || !selectedCount || !window.gptWorkbench?.available;
+  button.textContent = gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length
+    ? `送入下一组 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
+    : "送入右侧 GPT";
+}
+
+function gptHostBounds() {
+  const host = $("#gptEmbeddedHost");
+  if (!host) return null;
+  const rect = host.getBoundingClientRect();
+  return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+}
+
+async function showEmbeddedGptView() {
+  const state = $("#gptEmbeddedState");
+  if (!window.gptWorkbench?.available) {
+    if (state) {
+      state.textContent = "请在桌面测试版中使用";
+      state.dataset.tone = "danger";
+    }
+    updateGptTestQueueStatus();
+    return;
+  }
+  const bounds = gptHostBounds();
+  if (!bounds || bounds.width < 100 || bounds.height < 100) return;
+  if (state) {
+    state.textContent = "正在打开 GPT";
+    state.dataset.tone = "busy";
+  }
+  try {
+    const result = await window.gptWorkbench.show(bounds);
+    if (state) {
+      const needsLogin = /\/auth\/(?:login|signup)/i.test(result.url || "");
+      state.textContent = needsLogin
+        ? "请先登录 GPT · 登录状态会保留"
+        : result.extensionLoaded ? "GPT 已就绪 · 生产助手已接入" : "GPT 已打开 · 生产助手未加载";
+      state.dataset.tone = needsLogin ? "warning" : result.extensionLoaded ? "success" : "warning";
+      state.title = result.extensionError || "";
+    }
+  } catch (error) {
+    if (state) {
+      state.textContent = "GPT 打开失败";
+      state.dataset.tone = "danger";
+      state.title = error.message;
+    }
+  }
+  if (!gptEmbeddedResizeObserver && $("#gptEmbeddedHost")) {
+    gptEmbeddedResizeObserver = new ResizeObserver(() => {
+      if ($("#gptProductionTestView")?.classList.contains("active")) {
+        const nextBounds = gptHostBounds();
+        if (nextBounds) window.gptWorkbench.show(nextBounds).catch(() => {});
+      }
+    });
+    gptEmbeddedResizeObserver.observe($("#gptEmbeddedHost"));
+  }
+  updateGptTestQueueStatus();
+}
+
+function renderGptProductionTest() {
+  if (!$("#gptProductionTestView")) return;
+  renderGptTestMaterials();
+  renderGptTestTemplates();
+  window.requestAnimationFrame(() => showEmbeddedGptView());
+}
+
+async function sendNextGptTestTask() {
+  if (!window.gptWorkbench?.available) return;
+  if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
+    gptTestQueue = selectedGptTestEntries().map(buildGptTestTask);
+    gptTestQueueIndex = 0;
+  }
+  const task = gptTestQueue[gptTestQueueIndex];
+  if (!task) return;
+  const button = $("#gptTestSendBtn");
+  button.disabled = true;
+  updateGptTestQueueStatus(`正在把第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 组附件送入 GPT…`);
+  try {
+    const result = await window.gptWorkbench.sendTask(task);
+    if (!result?.ok) throw new Error(result?.detail || result?.error || "附件没有成功进入 GPT");
+    gptTestQueueIndex += 1;
+    updateGptTestQueueStatus(gptTestQueueIndex < gptTestQueue.length
+      ? `第 ${gptTestQueueIndex} 组已放入输入框；确认无误后再送下一组`
+      : `已完成 ${gptTestQueue.length} 组附件送入；可在右侧继续对话和生成`);
+  } catch (error) {
+    updateGptTestQueueStatus(`本组未送入：${error.message}`);
+    showSystemNotice("GPT 附件没有送入", error.message, { tone: "danger" });
+  } finally {
+    button.disabled = false;
+    updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
+  }
+}
+
 function syncWorkbenchProductionSettings() {
   if ($("#productionPageCount")) $("#productionPageCount").value = $("#workbenchPageCount")?.value || "";
   if ($("#productionQuality")) $("#productionQuality").value = $("#workbenchQuality")?.value || "严格母版";
@@ -1253,6 +1474,11 @@ function renderProductionPlan(planBundle) {
     <div class="production-plan-safeguards">
       ${(planBundle.plans[0]?.safeguards || []).map((item) => `<span>✓ ${escapeHtml(item)}</span>`).join("")}
     </div>
+    <div class="production-plan-safeguards">
+      <span>省钱校准：下一步只生成第 1 套作品的 P1 封面</span>
+      <span>只发起 1 次付费生图请求，失败不自动重试</span>
+      <span>首图通过后，再由你点击继续生成剩余 ${Math.max(0, Number(planBundle.totals.images || 0) - 1)} 张</span>
+    </div>
   `;
   ["#productionPlanPanel", "#workbenchPlanPanel"].forEach((selector) => {
     const panel = $(selector);
@@ -1260,8 +1486,8 @@ function renderProductionPlan(planBundle) {
     panel.hidden = false;
     panel.innerHTML = markup;
   });
-  if ($("#workbenchStartProductionBtn")) $("#workbenchStartProductionBtn").textContent = "确认并开始生成";
-  if ($("#createProductionPlanBtn")) $("#createProductionPlanBtn").textContent = "确认并开始生成";
+  if ($("#workbenchStartProductionBtn")) $("#workbenchStartProductionBtn").textContent = "生成首张校准图（仅1次调用）";
+  if ($("#createProductionPlanBtn")) $("#createProductionPlanBtn").textContent = "生成首张校准图（仅1次调用）";
   if ($("#workbenchEditPlanBtn")) $("#workbenchEditPlanBtn").hidden = false;
   $("#workbenchPlanPanel")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -1293,7 +1519,7 @@ async function createProductionPlan() {
     activeProductionPlan = result.plan;
     renderProductionPlan(result.plan);
     if ($("#cancelProductionPlanBtn")) $("#cancelProductionPlanBtn").hidden = false;
-    setProductionLiveStatus(`计划已生成：${result.plan.totals.works} 套、${result.plan.totals.images} 张独立图片。请看清页面清单后确认。`, "", 25, "等待确认");
+    setProductionLiveStatus(`计划已生成：整批共 ${result.plan.totals.images} 张。下一步只生成第 1 张封面，成功后暂停。`, "", 25, "等待首图校准");
   } catch (error) {
     setProductionLiveStatus(error.message, "error", workbenchProgressValue, "需要处理");
   } finally {
@@ -1310,7 +1536,7 @@ async function confirmProductionPlan() {
   if ($("#workbenchStartProductionBtn")) $("#workbenchStartProductionBtn").disabled = true;
   if ($("#createProductionPlanBtn")) $("#createProductionPlanBtn").disabled = true;
   if ($("#workbenchEditPlanBtn")) $("#workbenchEditPlanBtn").disabled = true;
-  setProductionLiveStatus("已确认计划，正在启动生产任务……", "running", 30, "启动生产");
+  setProductionLiveStatus("正在生成首张校准图：只调用 1 次，失败不自动重试……", "running", 30, "首图校准");
   try {
     const result = await api("/api/production/run", {
       method: "POST",
@@ -1319,6 +1545,7 @@ async function confirmProductionPlan() {
         ...currentImageApiPayload(),
         planId: activeProductionPlan.id,
         confirmed: true,
+        runScope: "calibration",
         quality: $("#productionQuality")?.value || "严格母版",
         prompt: $("#productionPrompt")?.value || "",
         textModel: $("#workbenchTextModel")?.value || $("#productionTextModel")?.value || "gpt-5.6-terra"
@@ -1341,6 +1568,7 @@ function renderProductionJob(job) {
   const finished = ["review-ready", "needs-rework"].includes(job.status);
   const overallPercent = finished ? 100 : job.status === "running" ? 30 + Math.round(percent * 0.7) : workbenchProgressValue;
   const phaseLabels = {
+    "calibration-ready": "等待确认首图",
     "review-ready": "生产完成",
     "needs-rework": "需要补做",
     interrupted: "可继续",
@@ -1353,6 +1581,24 @@ function renderProductionJob(job) {
   renderProductionOutputs(job);
   renderProductionTaskActions(job);
   renderProductionQualitySummary(job);
+  if (job.status === "calibration-ready") {
+    activeProductionJobId = "";
+    activeProductionPlan = null;
+    if ($("#productionPlanPanel")) $("#productionPlanPanel").hidden = true;
+    if ($("#workbenchPlanPanel")) $("#workbenchPlanPanel").hidden = true;
+    if ($("#workbenchEditPlanBtn")) {
+      $("#workbenchEditPlanBtn").hidden = true;
+      $("#workbenchEditPlanBtn").disabled = false;
+    }
+    if ($("#workbenchStartProductionBtn")) {
+      $("#workbenchStartProductionBtn").textContent = "首图已生成，请在下方确认";
+      $("#workbenchStartProductionBtn").disabled = true;
+    }
+    if ($("#createProductionPlanBtn")) {
+      $("#createProductionPlanBtn").textContent = "首图已生成，请在下方确认";
+      $("#createProductionPlanBtn").disabled = true;
+    }
+  }
   if (finished) {
     activeProductionJobId = "";
     activeProductionPlan = null;
@@ -1386,7 +1632,12 @@ function renderProductionTaskActions(job) {
   actions.hidden = false;
   const buttons = [];
   if (job.cancelable) buttons.push(`<button type="button" data-production-cancel="${escapeHtml(job.id)}">完成当前页后停止</button>`);
-  if (job.resumable) buttons.push(`<button class="primary-button" type="button" data-production-resume="${escapeHtml(job.id)}">继续未完成页面</button>`);
+  if (job.status === "calibration-ready") {
+    buttons.push(`<button class="primary-button" type="button" data-production-resume="${escapeHtml(job.id)}">首图确认无误，继续生成剩余 ${Number(job.remaining || 0)} 张</button>`);
+  } else if (job.resumable) {
+    const label = job.runScope === "calibration" ? "重试首张校准图（仍只调用1次）" : "继续未完成页面";
+    buttons.push(`<button class="primary-button" type="button" data-production-resume="${escapeHtml(job.id)}">${label}</button>`);
+  }
   if (job.outputRoots?.[0]) buttons.push(`<button type="button" data-production-open="${escapeHtml(job.outputRoots[0])}">打开本次待审目录</button>`);
   const report = job.qualityReports?.find((item) => item.reportFile);
   if (report) buttons.push(`<button type="button" data-production-report="${escapeHtml(report.reportFile)}">查看质量报告</button>`);
@@ -1420,7 +1671,8 @@ async function resumeProductionJob(jobId) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...currentImageApiPayload(),
-      textModel: $("#workbenchTextModel")?.value || "gpt-5.6-terra"
+      textModel: $("#workbenchTextModel")?.value || "gpt-5.6-terra",
+      action: "continue"
     })
   });
   activeProductionJobId = result.job.id;
@@ -1445,7 +1697,7 @@ async function restoreLatestProductionTask() {
     startProductionJobPolling();
     return;
   }
-  if (["interrupted", "failed", "needs-rework", "cancelled"].includes(latest.status)) {
+  if (["calibration-ready", "interrupted", "failed", "needs-rework", "cancelled"].includes(latest.status)) {
     renderProductionJob(latest);
   }
 }
@@ -4260,6 +4512,11 @@ function activateTab(name) {
   $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
   $$(".view").forEach((view) => view.classList.remove("active"));
   $(`#${name}View`)?.classList.add("active");
+  if (name === "gptProductionTest") {
+    renderGptProductionTest();
+  } else if (window.gptWorkbench?.available) {
+    window.gptWorkbench.hide().catch(() => {});
+  }
   if (name === "products") {
     renderCollections();
     productsRendered = true;
@@ -4710,6 +4967,48 @@ function bindEvents() {
       event.preventDefault();
       event.stopPropagation();
       await openWorkbenchTextAsset(workbenchTextPreview);
+      return;
+    }
+    const gptMaterialCategory = event.target.closest("[data-gpt-test-material-category]");
+    if (gptMaterialCategory) {
+      const categoryPath = gptMaterialCategory.dataset.gptTestMaterialCategory;
+      const category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
+      gptTestActiveCategoryPath = categoryPath;
+      gptTestExpandedCategoryPath = gptTestExpandedCategoryPath === categoryPath ? "" : categoryPath;
+      gptTestExpandedMaterialPath = "";
+      if (category?.loaded === false) await loadDashboard(false, categoryPath);
+      else renderGptTestMaterials();
+      return;
+    }
+    const gptPostFolder = event.target.closest("[data-gpt-test-post-folder]");
+    if (gptPostFolder) {
+      const entry = findMaterialEntry(gptPostFolder.dataset.gptTestPostFolder);
+      if (entry) {
+        gptTestExpandedMaterialPath = gptTestExpandedMaterialPath === entry.item.path ? "" : entry.item.path;
+        renderGptTestMaterials();
+      }
+      return;
+    }
+    const gptMaterialCheck = event.target.closest("[data-gpt-test-material-check]");
+    if (gptMaterialCheck) {
+      const entry = findMaterialEntry(gptMaterialCheck.dataset.gptTestMaterialCheck);
+      if (entry) {
+        if (gptMaterialCheck.checked) gptTestSelectedMaterials.add(entry.item.path);
+        else gptTestSelectedMaterials.delete(entry.item.path);
+        if (gptMaterialCheck.checked) gptTestMaterialEntries.set(entry.item.path, entry);
+        else gptTestMaterialEntries.delete(entry.item.path);
+        gptTestQueue = [];
+        gptTestQueueIndex = 0;
+        renderGptTestMaterials();
+      }
+      return;
+    }
+    const gptTemplateButton = event.target.closest("[data-gpt-test-template]");
+    if (gptTemplateButton) {
+      gptTestTemplate = dashboard?.templates?.templates?.find((item) => item.id === gptTemplateButton.dataset.gptTestTemplate) || null;
+      gptTestQueue = [];
+      gptTestQueueIndex = 0;
+      renderGptTestTemplates();
       return;
     }
     const jump = event.target.closest("[data-jump]");
@@ -5248,6 +5547,24 @@ function bindEvents() {
     await loadDashboard(false, categoryPath);
     renderWorkbenchMaterials();
     toast("已切换素材分类");
+  });
+  $("#gptTestMaterialSearch")?.addEventListener("input", renderGptTestMaterials);
+  $("#gptTestExtraPrompt")?.addEventListener("input", () => {
+    gptTestQueue = [];
+    gptTestQueueIndex = 0;
+    updateGptTestQueueStatus();
+  });
+  $("#gptTestSendBtn")?.addEventListener("click", () => sendNextGptTestTask());
+  $("#gptEmbeddedReloadBtn")?.addEventListener("click", async () => {
+    if (!window.gptWorkbench?.available) return;
+    const state = $("#gptEmbeddedState");
+    if (state) state.textContent = "正在重新载入 GPT";
+    await window.gptWorkbench.reload();
+  });
+  window.addEventListener("resize", () => {
+    if (!$("#gptProductionTestView")?.classList.contains("active") || !window.gptWorkbench?.available) return;
+    const bounds = gptHostBounds();
+    if (bounds) window.gptWorkbench.show(bounds).catch(() => {});
   });
   $("#workbenchOpenTemplateBtn")?.addEventListener("click", () => selectedTemplate && openPath(selectedTemplate.path));
   $("#workbenchSavePromptBtn")?.addEventListener("click", () => {

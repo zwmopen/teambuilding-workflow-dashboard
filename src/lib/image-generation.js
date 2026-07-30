@@ -44,7 +44,7 @@ async function readJsonResponse(response) {
   try { data = JSON.parse(raw); } catch { data = null; }
   if (!response.ok) {
     if ([408, 429, 500, 502, 503, 504].includes(response.status)) {
-      throw new Error(`生图服务暂时不可用（HTTP ${response.status}），已自动重试；请稍后重试当前任务`);
+      throw new Error(`生图服务暂时不可用（HTTP ${response.status}）；本次付费请求没有自动重试`);
     }
     const detail = data?.error?.message || data?.error || data?.base_resp?.status_msg || raw || `HTTP ${response.status}`;
     throw new Error(String(detail).slice(0, 500));
@@ -62,26 +62,64 @@ async function wait(delayMs) {
 }
 
 async function fetchWithRetry(url, options, fetchImpl = networkFetch, retryOptions = {}) {
-  const attempts = Math.max(1, Number(retryOptions.attempts || 3));
+  const attempts = Math.max(1, Number(retryOptions.attempts ?? 3));
   const delays = retryOptions.delays || [1200, 3500];
   const timeoutMs = Math.max(1_000, Number(retryOptions.timeoutMs || 480_000));
+  const onAttempt = typeof retryOptions.onAttempt === "function" ? retryOptions.onAttempt : null;
+  const reportAttempt = (entry) => {
+    try { onAttempt?.(entry); } catch { /* Audit callbacks must never break a request. */ }
+  };
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const startedAt = Date.now();
     try {
       const response = await fetchImpl(url, {
         ...options,
         signal: options?.signal || AbortSignal.timeout(timeoutMs)
       });
+      reportAttempt({
+        attempt,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        transient: isTransientStatus(response.status)
+      });
       if (!isTransientStatus(response.status) || attempt === attempts) return response;
       lastError = new Error(`HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
+      reportAttempt({
+        attempt,
+        status: 0,
+        durationMs: Date.now() - startedAt,
+        transient: true,
+        error: String(error?.message || error).slice(0, 300)
+      });
       if (options?.signal?.aborted) throw error;
       if (attempt === attempts) throw error;
     }
     await wait(Number(delays[Math.min(attempt - 1, delays.length - 1)] || 0));
   }
   throw lastError || new Error("生图服务连接失败");
+}
+
+function providerRequestId(response) {
+  const names = ["x-request-id", "x-oneapi-request-id", "request-id", "trace-id", "x-trace-id"];
+  for (const name of names) {
+    const value = response.headers.get(name);
+    if (value) return String(value).slice(0, 300);
+  }
+  return "";
+}
+
+function safeUsage(value) {
+  if (!value || typeof value !== "object") return null;
+  try {
+    const json = JSON.stringify(value);
+    if (json.length > 20_000) return { truncated: true };
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
 }
 
 function imageExtension(bytes, contentType = "") {
@@ -233,30 +271,85 @@ async function generateOpenAiCompatible({
     headers["Content-Type"] = "application/json";
     body = JSON.stringify({ model: config.model, prompt, n: 1, size: "1024x1536", response_format: "b64_json" });
   }
-  const response = await fetchWithRetry(endpoint, { method: "POST", headers, body, signal }, fetchImpl, retryOptions);
+  const generationAttempts = [];
+  const externalAttemptReporter = typeof retryOptions.onAttempt === "function" ? retryOptions.onAttempt : null;
+  const response = await fetchWithRetry(
+    endpoint,
+    { method: "POST", headers, body, signal },
+    fetchImpl,
+    {
+      ...retryOptions,
+      onAttempt: (entry) => {
+        generationAttempts.push(entry);
+        externalAttemptReporter?.(entry);
+      }
+    }
+  );
   const data = await readJsonResponse(response);
   const item = data.data?.[0];
   if (!item?.b64_json && !item?.url) throw new Error("接口没有返回图片数据");
-  if (item.b64_json) return { bytes: Buffer.from(item.b64_json, "base64"), contentType: "image/png" };
-  return fetchImageBytes(item.url, fetchImpl, retryOptions);
+  const requestMeta = {
+    requestCount: 1,
+    attemptCount: generationAttempts.length,
+    attempts: generationAttempts,
+    providerRequestId: providerRequestId(response),
+    referenceCount: referencePaths.length,
+    endpoint: new URL(endpoint).pathname,
+    usage: safeUsage(data.usage || item.usage)
+  };
+  if (item.b64_json) {
+    return {
+      bytes: Buffer.from(item.b64_json, "base64"),
+      contentType: "image/png",
+      requestMeta
+    };
+  }
+  return {
+    ...await fetchImageBytes(item.url, fetchImpl, retryOptions),
+    requestMeta
+  };
 }
 
 async function generateMinimax({ config, apiKey, prompt, fetchImpl = networkFetch, retryOptions = {}, signal }) {
   const endpoint = `${config.baseUrl}/image_generation`;
   assertSafeUrl(endpoint);
-  const response = await fetchWithRetry(endpoint, {
-    method: "POST",
-    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: config.model, prompt, aspect_ratio: "3:4", response_format: "url", n: 1, prompt_optimizer: true }),
-    signal
-  }, fetchImpl, retryOptions);
+  const generationAttempts = [];
+  const externalAttemptReporter = typeof retryOptions.onAttempt === "function" ? retryOptions.onAttempt : null;
+  const response = await fetchWithRetry(
+    endpoint,
+    {
+      method: "POST",
+      headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: config.model, prompt, aspect_ratio: "3:4", response_format: "url", n: 1, prompt_optimizer: true }),
+      signal
+    },
+    fetchImpl,
+    {
+      ...retryOptions,
+      onAttempt: (entry) => {
+        generationAttempts.push(entry);
+        externalAttemptReporter?.(entry);
+      }
+    }
+  );
   const data = await readJsonResponse(response);
   if (data.base_resp && Number(data.base_resp.status_code) !== 0) {
     throw new Error(String(data.base_resp.status_msg || `MiniMax 状态码 ${data.base_resp.status_code}`).slice(0, 500));
   }
   const imageUrl = data.data?.image_urls?.[0];
   if (!imageUrl) throw new Error("MiniMax 没有返回图片地址");
-  return fetchImageBytes(imageUrl, fetchImpl, retryOptions);
+  return {
+    ...await fetchImageBytes(imageUrl, fetchImpl, retryOptions),
+    requestMeta: {
+      requestCount: 1,
+      attemptCount: generationAttempts.length,
+      attempts: generationAttempts,
+      providerRequestId: providerRequestId(response),
+      referenceCount: 0,
+      endpoint: new URL(endpoint).pathname,
+      usage: safeUsage(data.usage)
+    }
+  };
 }
 
 async function generateText({ config, apiKey, prompt, model = "gpt-5.6-terra", fetchImpl = networkFetch }) {
@@ -292,7 +385,8 @@ async function generateImages(options) {
     results.push({
       ...await saveBytes(generated.bytes, options.outputRoot, index, generated.contentType),
       provider: config.provider,
-      model: config.model
+      model: config.model,
+      requestMeta: generated.requestMeta || null
     });
   }
   return results;

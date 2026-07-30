@@ -14,3 +14,22 @@ contextBridge.exposeInMainWorld("desktopDialogs", {
     });
   }
 });
+
+contextBridge.exposeInMainWorld("gptWorkbench", {
+  available: true,
+  status() {
+    return ipcRenderer.invoke("desktop:gpt-status");
+  },
+  show(bounds) {
+    return ipcRenderer.invoke("desktop:gpt-show", bounds);
+  },
+  hide() {
+    return ipcRenderer.invoke("desktop:gpt-hide");
+  },
+  reload() {
+    return ipcRenderer.invoke("desktop:gpt-reload");
+  },
+  sendTask(task) {
+    return ipcRenderer.invoke("desktop:gpt-send-task", task);
+  }
+});

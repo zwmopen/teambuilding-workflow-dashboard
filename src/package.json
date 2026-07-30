@@ -1,6 +1,6 @@
 {
   "name": "teambuilding-workflow-dashboard",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "private": true,
   "description": "江湖有旅人内容生产、分发与流量转化本地工作台",
   "main": "desktop/main.js",
@@ -9,7 +9,7 @@
     "start": "node server.js",
     "desktop": "electron desktop/main.js",
     "dist:portable": "node node_modules/electron-builder/out/cli/cli.js --win portable",
-    "test": "node --test path-security.test.js material-scanner.test.js lib/dedup-ledger.test.js lib/distribution-data.test.js lib/transfer-progress.test.js lib/image-generation.test.js lib/production-recipes.test.js lib/production-quality.test.js lib/webdav-backup.test.js lib/workbench-settings.test.js public/distribution-ui.test.js public/material-workspace.test.js public/workbench-ui.test.js",
+    "test": "node --test path-security.test.js material-scanner.test.js production-calibration.test.js lib/dedup-ledger.test.js lib/distribution-data.test.js lib/transfer-progress.test.js lib/image-generation.test.js lib/production-recipes.test.js lib/production-quality.test.js lib/webdav-backup.test.js lib/workbench-settings.test.js public/distribution-ui.test.js public/material-workspace.test.js public/workbench-ui.test.js",
     "mcp:juguang": "node mcp/juguang-mcp.js",
     "check:juguang": "node -e \"const d=require('./lib/juguang-data').getJuguangSnapshot(); console.log(JSON.stringify({mode:d.mode,counts:d.counts,recommendations:d.recommendations.length},null,2))\""
   },
@@ -30,7 +30,7 @@
       "package.json"
     ],
     "directories": {
-      "output": "../releases/0.12.0"
+      "output": "../releases/0.12.1"
     },
     "win": {
       "icon": "desktop/团建工作台.ico",

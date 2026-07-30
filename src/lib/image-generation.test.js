@@ -25,9 +25,16 @@ test("ByteCat Image 2.0 uses the official OpenAI-compatible gateway", () => {
 test("OpenAI-compatible generation accepts base64 images", async () => {
   const result = await generateOpenAiCompatible({
     config: normalizeImageApiConfig({}), apiKey: "secret", prompt: "团建封面",
-    fetchImpl: async () => new Response(JSON.stringify({ data: [{ b64_json: Buffer.from("image").toString("base64") }] }), { status: 200 })
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{ b64_json: Buffer.from("image").toString("base64") }],
+      usage: { input_tokens: 12, output_tokens: 34 }
+    }), { status: 200, headers: { "x-request-id": "req-image-1" } })
   });
   assert.equal(result.bytes.toString(), "image");
+  assert.equal(result.requestMeta.requestCount, 1);
+  assert.equal(result.requestMeta.attemptCount, 1);
+  assert.equal(result.requestMeta.providerRequestId, "req-image-1");
+  assert.deepEqual(result.requestMeta.usage, { input_tokens: 12, output_tokens: 34 });
 });
 
 test("local image edits send template and material as JSON image references", async () => {
@@ -150,6 +157,31 @@ test("transient image gateway errors are retried before succeeding", async () =>
   }, { attempts: 3, delays: [0, 0] });
   assert.equal(response.status, 200);
   assert.equal(calls, 3);
+});
+
+test("paid image requests can explicitly disable automatic retries", async () => {
+  let calls = 0;
+  const attempts = [];
+  await assert.rejects(
+    generateOpenAiCompatible({
+      config: normalizeImageApiConfig({ provider: "bytecat" }),
+      apiKey: "secret",
+      prompt: "只生成一张校准封面",
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response("gateway timeout", { status: 504 });
+      },
+      retryOptions: {
+        attempts: 1,
+        delays: [],
+        onAttempt: (entry) => attempts.push(entry)
+      }
+    }),
+    /没有自动重试/
+  );
+  assert.equal(calls, 1);
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].status, 504);
 });
 
 test("an explicit stop aborts the current request without retrying it", async () => {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.12.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.12.1" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -22,6 +22,10 @@
         <button class="tab rail-tab active" data-tab="dashboard" type="button" title="内容制作">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z"/><path d="m18.5 16 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/></svg>
           <span>内容制作</span>
+        </button>
+        <button class="tab rail-tab rail-tab-test" data-tab="gptProductionTest" type="button" title="内容制作（GPT内置测试）">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H9l-4 4v-14Z"/><path d="m10 8 1 2.6 2.6 1-2.6 1L10 15l-1-2.4-2.6-1 2.6-1L10 8Z"/><path d="M15 8h2M15 11h2"/></svg>
+          <span>内容制作（GPT内置测试）</span><small>TEST</small>
         </button>
         <button class="tab rail-tab" data-tab="distribution" type="button" title="内容分发">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/><path d="m3 9 2-2 2 2M21 13l-2 2-2-2"/></svg>
@@ -331,6 +335,58 @@
         </section>
       </section>
 
+      <section class="view" id="gptProductionTestView">
+        <section class="gpt-production-test-shell">
+          <header class="gpt-production-test-heading">
+            <div>
+              <p class="label">开发测试入口</p>
+              <h2>本地素材与模板 × GPT 网页生产</h2>
+              <p>左侧选择真实素材和母版，右侧保留原生 GPT 网页；上传、下载、打包与查重继续复用既有生产助手。</p>
+            </div>
+            <div class="gpt-production-test-actions">
+              <span id="gptEmbeddedState" class="gpt-embedded-state" data-tone="idle">等待打开 GPT</span>
+              <button id="gptEmbeddedReloadBtn" type="button">重新载入</button>
+            </div>
+          </header>
+
+          <div class="gpt-production-test-grid">
+            <aside class="gpt-production-test-library">
+              <section class="workbench-card gpt-test-material-card">
+                <header class="workbench-card-head">
+                  <div><span class="workbench-step">01</span><strong>素材区</strong><small id="gptTestMaterialCount">0 个已选</small></div>
+                </header>
+                <input id="gptTestMaterialSearch" class="workbench-search" type="search" placeholder="搜索帖子文件夹" />
+                <nav id="gptTestMaterialFolders" class="workbench-folder-list gpt-test-folder-list" aria-label="GPT测试素材区"></nav>
+              </section>
+
+              <section class="workbench-card gpt-test-template-card">
+                <header class="workbench-card-head">
+                  <div><span class="workbench-step">02</span><strong>模板区</strong><small id="gptTestTemplateName">请选择模板</small></div>
+                </header>
+                <nav id="gptTestTemplateList" class="workbench-folder-list gpt-test-template-list" aria-label="GPT测试模板区"></nav>
+              </section>
+
+              <section class="gpt-test-send-dock">
+                <label for="gptTestExtraPrompt">本次补充要求</label>
+                <textarea id="gptTestExtraPrompt" rows="3" placeholder="可留空；模板规则和素材 TXT 会自动带入"></textarea>
+                <button id="gptTestSendBtn" class="primary-button" type="button">送入右侧 GPT</button>
+                <p id="gptTestQueueStatus">选择一个模板和至少一个素材文件夹</p>
+              </section>
+            </aside>
+
+            <section class="gpt-production-browser-panel">
+              <div id="gptEmbeddedHost" class="gpt-embedded-host" aria-label="GPT网页显示区域">
+                <div class="gpt-embedded-placeholder">
+                  <span class="gpt-orbit" aria-hidden="true"></span>
+                  <strong>正在准备 GPT 网页</strong>
+                  <p>桌面测试版会在这里加载独立、可持续登录的 GPT 会话。</p>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </section>
+
       <section class="view" id="productsView">
         <section class="collection-layout">
           <header class="page-heading">
@@ -612,8 +668,8 @@
       <button id="contextRename" type="button">重命名</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.12.0"></script>
-    <script src="/material-workspace.js?v=0.12.0"></script>
-    <script src="/app.js?v=0.12.0"></script>
+    <script src="/distribution-ui.js?v=0.12.1"></script>
+    <script src="/material-workspace.js?v=0.12.1"></script>
+    <script src="/app.js?v=0.12.1"></script>
   </body>
 </html>

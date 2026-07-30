@@ -6,6 +6,27 @@ const path = require("node:path");
 const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 const app = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const css = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
+const desktopMain = fs.readFileSync(path.join(__dirname, "..", "desktop", "main.js"), "utf8");
+const desktopPreload = fs.readFileSync(path.join(__dirname, "..", "desktop", "preload.js"), "utf8");
+
+test("GPT 内置测试把本地素材和模板与持久原生网页合成一个生产界面", () => {
+  assert.match(html, /data-tab="gptProductionTest"/);
+  assert.match(html, /id="gptTestMaterialFolders"/);
+  assert.match(html, /id="gptTestTemplateList"/);
+  assert.match(html, /id="gptEmbeddedHost"/);
+  assert.match(html, /id="gptTestSendBtn"/);
+  assert.match(app, /gptTestSelectedMaterials/);
+  assert.match(app, /一套模板可以连续处理多个素材文件夹/);
+  assert.match(app, /slice\(0, 2\)/);
+  assert.match(app, /window\.gptWorkbench\.sendTask/);
+  assert.doesNotMatch(html, /做一套|做一批/);
+  assert.match(desktopMain, /new WebContentsView/);
+  assert.match(desktopMain, /persist:teambuilding-gpt-production/);
+  assert.match(desktopMain, /loadExtension/);
+  assert.match(desktopMain, /tb-workbench-upload/);
+  assert.match(desktopPreload, /gptWorkbench/);
+  assert.match(css, /\.gpt-production-test-grid/);
+});
 
 test("production exposes phase, percent, progressbar, status and recent log", () => {
   assert.match(html, /id="workbenchProgressPhase"/);
@@ -33,11 +54,14 @@ test("status surfaces have a compact visual reminder", () => {
   assert.match(css, /#imageApiStatus::before/);
 });
 
-test("production confirmation stays in the main action dock instead of a hidden panel footer", () => {
+test("production confirmation stays in the main action dock and starts with one paid calibration image", () => {
   assert.match(html, /class="workbench-action-dock"/);
   assert.match(html, /id="workbenchPlanPanel"[^>]*hidden[\s\S]*id="workbenchEditPlanBtn"[^>]*hidden[\s\S]*id="workbenchStartProductionBtn"/);
   assert.match(app, /activeProductionPlan\s*\?\s*confirmProductionPlan\(\)\s*:\s*createProductionPlan\(\)/);
-  assert.match(app, /workbenchStartProductionBtn"\)\.textContent = "确认并开始生成"/);
+  assert.match(app, /workbenchStartProductionBtn"\)\.textContent = "生成首张校准图（仅1次调用）"/);
+  assert.match(app, /runScope: "calibration"/);
+  assert.match(app, /首图确认无误，继续生成剩余/);
+  assert.match(app, /失败不自动重试/);
   assert.match(app, /workbenchPlanPanel"\)\?\.scrollIntoView/);
   assert.doesNotMatch(app, /data-confirm-production-plan/);
   assert.match(css, /\.workbench-action-dock\{position:sticky/);

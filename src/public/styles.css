@@ -4205,6 +4205,204 @@ body[data-theme="glass"] .settings-card {
   }
 }
 
+/* GPT 内置测试：只增加生产入口，不改变现有页面的视觉与交互。 */
+.rail-tab-test {
+  position: relative;
+  min-height: 58px;
+  height: auto;
+}
+
+.rail-tab-test > span {
+  white-space: normal;
+  line-height: 1.2;
+  text-align: left;
+}
+
+.rail-tab-test small {
+  margin-left: auto;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent, #2d7c65) 28%, transparent);
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: .05em;
+}
+
+.gpt-production-test-shell {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 36px);
+  min-height: 680px;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.gpt-production-test-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 18px;
+  border: 1px solid var(--line-soft, rgba(70, 91, 79, .14));
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel, #fff) 84%, transparent);
+  box-shadow: 0 14px 36px rgba(29, 50, 41, .08);
+  backdrop-filter: blur(18px);
+}
+
+.gpt-production-test-heading h2 {
+  margin: 2px 0 3px;
+  font-size: clamp(20px, 1.65vw, 28px);
+  line-height: 1.18;
+}
+
+.gpt-production-test-heading p {
+  margin: 0;
+  max-width: 850px;
+  color: var(--text-soft, #64766d);
+  font-size: 13px;
+}
+
+.gpt-production-test-heading .label {
+  color: var(--accent, #2d7c65);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+
+.gpt-production-test-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 9px;
+}
+
+.gpt-production-test-actions button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.gpt-embedded-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(58, 83, 72, .08);
+  color: var(--text-soft, #64766d);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.gpt-embedded-state[data-tone="success"] { background: rgba(39, 143, 97, .12); color: #1c7952; }
+.gpt-embedded-state[data-tone="warning"] { background: rgba(196, 136, 32, .13); color: #966413; }
+.gpt-embedded-state[data-tone="danger"] { background: rgba(190, 65, 65, .12); color: #a53737; }
+.gpt-embedded-state[data-tone="busy"] { background: rgba(45, 124, 101, .12); color: var(--accent, #2d7c65); }
+
+.gpt-production-test-grid {
+  display: grid;
+  grid-template-columns: minmax(290px, 350px) minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 12px;
+}
+
+.gpt-production-test-library {
+  display: grid;
+  grid-template-rows: minmax(240px, 1.15fr) minmax(190px, .85fr) auto;
+  min-height: 0;
+  gap: 10px;
+}
+
+.gpt-production-test-library .workbench-card {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.gpt-test-folder-list,
+.gpt-test-template-list {
+  min-height: 0;
+  overflow: auto;
+}
+
+.gpt-test-template-row {
+  width: 100%;
+  border: 0;
+  text-align: left;
+}
+
+.gpt-test-send-dock {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line-soft, rgba(70, 91, 79, .14));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel, #fff) 88%, transparent);
+  box-shadow: 0 12px 28px rgba(29, 50, 41, .07);
+}
+
+.gpt-test-send-dock label {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.gpt-test-send-dock textarea {
+  width: 100%;
+  min-height: 62px;
+  max-height: 110px;
+  resize: vertical;
+}
+
+.gpt-test-send-dock p {
+  margin: 0;
+  color: var(--text-soft, #64766d);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.gpt-production-browser-panel,
+.gpt-embedded-host {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.gpt-production-browser-panel {
+  padding: 5px;
+  border: 1px solid rgba(72, 94, 83, .16);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, .56);
+  box-shadow: 0 18px 46px rgba(29, 50, 41, .11);
+  overflow: hidden;
+}
+
+.gpt-embedded-host {
+  position: relative;
+  border-radius: 15px;
+  background: linear-gradient(145deg, rgba(245, 249, 246, .96), rgba(229, 238, 233, .82));
+  overflow: hidden;
+}
+
+.gpt-embedded-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: #496157;
+  text-align: center;
+}
+
+.gpt-embedded-placeholder p { margin: 0; color: #71847b; font-size: 13px; }
+.gpt-orbit { width: 34px; height: 34px; border: 2px solid rgba(45, 124, 101, .22); border-top-color: #2d7c65; border-radius: 50%; animation: gpt-orbit 1s linear infinite; }
+@keyframes gpt-orbit { to { transform: rotate(360deg); } }
+
+@media (max-width: 1050px) {
+  .gpt-production-test-grid { grid-template-columns: minmax(260px, 310px) minmax(540px, 1fr); }
+  .gpt-production-test-heading p:not(.label) { display: none; }
+}
+
 /* 0.12.0 production recovery, cloud recovery and final density pass */
 .workbench-task-actions {
   display: flex;
