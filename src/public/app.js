@@ -1419,7 +1419,7 @@ function renderGptTestMaterials() {
     }).join("");
     return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
       <div class="workbench-folder-row${allSelected ? " selected" : ""}">
-        <input class="material-check folder-check" type="checkbox" data-gpt-test-category-check="${escapeHtml(category.path)}" ${allSelected ? "checked" : ""} data-indeterminate="${partial ? "true" : "false"} aria-label="选择此文件夹中的全部帖子"${gptAutoRunning ? " disabled" : ""} />
+        <input class="material-check folder-check" type="checkbox" data-gpt-test-category-check="${escapeHtml(category.path)}" ${allSelected ? "checked" : ""} data-indeterminate="${partial ? "true" : "false"}" aria-label="选择此文件夹中的全部帖子"${gptAutoRunning ? " disabled" : ""} />
         <button class="workbench-folder-item${expanded ? " active" : ""}" type="button" data-gpt-test-material-category="${escapeHtml(category.path)}">
           <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(category.name)}（${category.countKnown === false ? "…" : Number(category.count ?? categoryItems.length)}）</strong></span>
         </button>

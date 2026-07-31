@@ -259,6 +259,10 @@ test("GPT production exposes real paths, minimum image checks, tool toggles and 
   assert.match(server, /requestedProductRoot/);
 });
 
+test("GPT material parent checkbox keeps valid independent accessibility attributes", () => {
+  assert.match(app, /data-indeterminate="\$\{partial \? "true" : "false"\}" aria-label="选择此文件夹中的全部帖子"/);
+});
+
 test("distribution package selection lifts the whole row and actions share one height", () => {
   assert.match(css, /\.distribution-package-row\.active[\s\S]*transform: translateY\(-3px\)/);
   assert.match(css, /\.distribution-package-row \.device-actions > :is\(button, label\)/);
