@@ -4531,6 +4531,14 @@ body[data-theme="glass"] .settings-card {
 }
 
 .gpt-browser-nav button:disabled { opacity: .38; cursor: default; }
+.gpt-add-account {
+  display: inline-flex;
+  width: auto;
+  min-width: 108px;
+  padding: 0 11px;
+  font-size: 12px;
+  white-space: nowrap;
+}
 
 .gpt-account-tabs {
   display: flex;
@@ -4539,6 +4547,34 @@ body[data-theme="glass"] .settings-card {
   gap: 5px;
   overflow-x: auto;
   scrollbar-width: thin;
+}
+
+.gpt-browser-manager {
+  display: grid;
+  gap: 8px;
+}
+
+.gpt-browser-manager-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(110px, .8fr) repeat(4, auto);
+  gap: 7px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-light) 86%, transparent);
+}
+
+.gpt-browser-manager-row input,
+.gpt-browser-manager-row button {
+  min-width: 0;
+  min-height: 34px;
+}
+
+.danger-text-button { color: var(--danger, #a4463e); }
+
+@media (max-width: 1260px) {
+  .gpt-browser-manager-row { grid-template-columns: 1fr 1fr; }
 }
 
 .gpt-account-tab {
@@ -4959,7 +4995,9 @@ body[data-theme="glass"] .workbench-card{border-color:rgba(255,255,255,.68);back
 .workbench-assistant-launcher {
   position: fixed;
   right: 24px;
-  bottom: 22px;
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
   z-index: 109;
   display: grid;
   width: 54px;
@@ -4976,9 +5014,48 @@ body[data-theme="glass"] .workbench-card{border-color:rgba(255,255,255,.68);back
 
 .workbench-assistant-launcher:hover,
 .workbench-assistant-launcher[aria-expanded="true"] {
-  transform: translateY(-3px) scale(1.03);
+  transform: translateY(-50%) scale(1.03);
   box-shadow: 0 20px 44px rgba(24, 56, 46, .36), inset 0 1px 0 rgba(255, 255, 255, .5);
 }
+
+.workbench-assistant-launcher.is-dragging {
+  cursor: grabbing;
+  transform: scale(1.04);
+}
+
+.workbench-assistant-bubble {
+  position: fixed;
+  right: 92px;
+  top: 50%;
+  z-index: 110;
+  width: min(320px, calc(100vw - 120px));
+  padding: 11px 13px;
+  color: var(--ink);
+  border: 1px solid rgba(255, 255, 255, .78);
+  border-radius: 16px 16px 5px 16px;
+  background: color-mix(in srgb, var(--panel-light) 96%, transparent);
+  box-shadow: 0 16px 36px rgba(26, 52, 44, .18), inset 0 1px 0 rgba(255,255,255,.58);
+  backdrop-filter: blur(18px) saturate(.92);
+  font-size: 13px;
+  line-height: 1.5;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.workbench-assistant-bubble::after {
+  content: "";
+  position: absolute;
+  right: -7px;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  background: inherit;
+  border-top: 1px solid rgba(255, 255, 255, .78);
+  border-right: 1px solid rgba(255, 255, 255, .78);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.workbench-assistant-bubble[hidden] { display: none; }
 
 .workbench-assistant-launcher svg {
   width: 27px;
@@ -4992,8 +5069,9 @@ body[data-theme="glass"] .workbench-card{border-color:rgba(255,255,255,.68);back
 
 .workbench-assistant-panel {
   position: fixed;
-  right: 24px;
-  bottom: 88px;
+  right: 92px;
+  top: 50%;
+  bottom: auto;
   z-index: 108;
   width: min(380px, calc(100vw - 32px));
   overflow: hidden;
@@ -5002,6 +5080,7 @@ body[data-theme="glass"] .workbench-card{border-color:rgba(255,255,255,.68);back
   background: color-mix(in srgb, var(--panel-light) 94%, transparent);
   box-shadow: 0 26px 70px rgba(26, 52, 44, .27), inset 0 1px 0 rgba(255, 255, 255, .64);
   backdrop-filter: blur(20px) saturate(.92);
+  transform: translateY(-50%);
 }
 
 .workbench-assistant-panel[hidden] {

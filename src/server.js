@@ -1049,6 +1049,24 @@ function runExtensionWorkPackage(body = {}) {
   if (!clipboardText.trim()) {
     throw new Error("请先复制本次作品文案，再执行打包");
   }
+  const requestedDownloadRoot = String(body.downloadRoot || "").trim();
+  const requestedProductRoot = String(body.productRoot || "").trim();
+  if (requestedDownloadRoot || requestedProductRoot) {
+    const configPath = path.join(DOWNLOAD_ROOT, "workpkg_config.json");
+    const config = readJson(configPath, {});
+    if (requestedDownloadRoot) {
+      if (!path.isAbsolute(requestedDownloadRoot)) throw new Error("下载暂存目录必须是完整路径");
+      fs.mkdirSync(requestedDownloadRoot, { recursive: true });
+      config.image_inbox_path = path.resolve(requestedDownloadRoot);
+    }
+    if (requestedProductRoot) {
+      if (!path.isAbsolute(requestedProductRoot)) throw new Error("成品库目录必须是完整路径");
+      fs.mkdirSync(requestedProductRoot, { recursive: true });
+      config.library_path = path.resolve(requestedProductRoot);
+      config.portfolio_output_path = path.resolve(requestedProductRoot);
+    }
+    writeJson(configPath, config);
+  }
   const batchId = String(body.batchId || "").trim();
   const expectedImageCount = Math.max(0, Number(body.expectedImageCount || 0));
   if (batchId && !/^\d{8}-\d{6}-[a-z0-9]{4}$/i.test(batchId)) {

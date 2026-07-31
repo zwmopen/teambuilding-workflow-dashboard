@@ -208,6 +208,55 @@ test("workbench assistant explains its capabilities and safely falls back to mod
   assert.match(app, /function executeInterpretedWorkbenchAssistant\(/);
   assert.match(app, /\/api\/workbench-assistant\/interpret/);
   assert.match(app, /options\.allowModel === false/);
+  assert.match(html, /id="workbenchAssistantBubble"/);
+  assert.match(app, /function setupWorkbenchAssistantDrag\(/);
+  assert.match(app, /tb-workbench-assistant-position/);
+  assert.match(app, /showWorkbenchAssistantBubble\(/);
+});
+
+test("GPT production locks selection while running and exposes a real pause/continue state", () => {
+  assert.match(app, /function blockGptSelectionDuringRun\(/);
+  assert.match(app, /if \(blockGptSelectionDuringRun\(\)\) return;/);
+  assert.match(app, /let gptQueuePaused = false/);
+  assert.match(app, /继续自动生产/);
+  assert.match(app, /pauseButton\.textContent = gptAutoRunning/);
+  assert.match(app, /gptQueuePaused = true/);
+});
+
+test("GPT production keeps a recoverable queue and supports multiple permanent browser workers", () => {
+  assert.match(app, /GPT_QUEUE_STORAGE_KEY/);
+  assert.match(app, /function persistGptQueue\(/);
+  assert.match(app, /function restoreGptQueue\(/);
+  assert.match(app, /sendMultiWindowGptTasks/);
+  assert.match(app, /parallelWorkers/);
+  assert.match(html, /value="multi">多窗口轮询/);
+  assert.match(html, /添加浏览器/);
+  assert.match(html, /id="gptBrowserManager"/);
+  assert.match(desktopMain, /gpt-browser-profiles\.json/);
+  assert.match(desktopMain, /desktop:gpt-profile-save/);
+});
+
+test("desktop close goes to tray without clearing GPT cache or login partitions", () => {
+  assert.match(desktopMain, /new Tray\(/);
+  assert.match(desktopMain, /打开团建工作台/);
+  assert.match(desktopMain, /彻底退出/);
+  assert.match(desktopMain, /event\.preventDefault\(\)/);
+  assert.match(desktopMain, /window\.hide\(\)/);
+  assert.doesNotMatch(desktopMain, /\.clearCache\(\)/);
+  assert.match(desktopMain, /persist:teambuilding-gpt-production/);
+});
+
+test("GPT production exposes real paths, minimum image checks, tool toggles and scheduled start", () => {
+  assert.match(html, /id="gptMinimumImageCount"/);
+  assert.match(html, /id="gptDownloadRoot"/);
+  assert.match(html, /id="gptProductRoot"/);
+  assert.match(html, /id="gptPromptLibraryEnabled"/);
+  assert.match(html, /id="gptMessageDownloadsEnabled"/);
+  assert.match(html, /id="gptScheduledEnabled"/);
+  assert.match(app, /checkScheduledGptProduction/);
+  assert.match(app, /scheduleGptQuotaReminder/);
+  assert.match(server, /requestedDownloadRoot/);
+  assert.match(server, /requestedProductRoot/);
 });
 
 test("distribution package selection lifts the whole row and actions share one height", () => {

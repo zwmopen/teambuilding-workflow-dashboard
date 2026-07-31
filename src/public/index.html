@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.13.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.14.0" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -370,6 +370,7 @@
                 <div class="gpt-mode-row">
                   <label for="gptProductionMode">生产模式</label>
                   <select id="gptProductionMode">
+                    <option value="multi">多窗口轮询</option>
                     <option value="automatic">自动闭环</option>
                     <option value="manual">手动准备</option>
                   </select>
@@ -399,7 +400,7 @@
                   <button id="gptBrowserHomeBtn" type="button" title="打开 ChatGPT 首页" aria-label="打开 ChatGPT 首页">⌂</button>
                 </div>
                 <nav id="gptAccountTabs" class="gpt-account-tabs" aria-label="GPT账号切换"></nav>
-                <button id="gptAddAccountBtn" class="gpt-add-account" type="button" title="增加独立账号" aria-label="增加独立账号">＋</button>
+                <button id="gptAddAccountBtn" class="gpt-add-account" type="button" title="添加浏览器" aria-label="添加浏览器">＋ 添加浏览器</button>
               </header>
               <div id="gptEmbeddedHost" class="gpt-embedded-host" aria-label="GPT网页显示区域">
                 <div class="gpt-embedded-placeholder">
@@ -687,7 +688,7 @@
         <section id="gptAutoPageSettings" class="page-settings-section" hidden>
           <div class="settings-group">
             <h3>模式与归档</h3>
-            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="automatic">自动闭环</option><option value="manual">手动准备</option></select></label>
+            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="automatic">单窗口自动</option><option value="multi">多窗口轮询</option><option value="manual">手动准备</option></select></label>
             <label class="switch-setting"><span><b>成功后归档原素材</b><small>仅在图片、TXT 和作品包全部校验成功后移动到“已上传 N 次”</small></span><input id="gptAutoArchiveEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>显示账号额度提醒</b><small>按本地滚动账本估算，网页实际限流优先</small></span><input id="gptQuotaReminderEnabled" type="checkbox" checked /></label>
           </div>
@@ -705,11 +706,27 @@
               <label><span>生产间隔最长（秒）</span><input id="gptAutoMaxDelay" type="number" min="5" max="900" value="55" /></label>
               <label><span>单帖最长等待（分钟）</span><input id="gptAutoTaskTimeout" type="number" min="5" max="60" value="30" /></label>
               <label><span>每轮最多生产（套）</span><input id="gptAutoAccountLimit" type="number" min="1" max="30" value="8" /></label>
+              <label><span>并行浏览器</span><input id="gptParallelWorkers" type="number" min="1" max="5" value="3" /></label>
               <label><span>3小时上传上限（图）</span><input id="gptUploadLimit" type="number" min="1" max="500" value="80" /></label>
               <label><span>3小时生成上限（图）</span><input id="gptGenerationLimit" type="number" min="1" max="500" value="50" /></label>
               <label><span>滚动窗口（小时）</span><input id="gptQuotaWindowHours" type="number" min="1" max="24" value="3" /></label>
+              <label><span>最低完整图片数</span><input id="gptMinimumImageCount" type="number" min="1" max="30" value="4" /></label>
+              <label><span>自动确认文字</span><input id="gptConfirmText" type="text" value="1" /></label>
+              <label><span>文案请求词</span><input id="gptCopyPrompt" type="text" value="给我一份小红书文案" /></label>
+              <label><span>闲置网页释放（分钟）</span><input id="gptIdleUnloadMinutes" type="number" min="5" max="240" value="30" /></label>
+              <label><span>定时启动时间</span><input id="gptScheduledTime" type="time" value="09:30" /></label>
+              <label><span>启动延迟范围（分钟）</span><input id="gptScheduledJitter" type="number" min="0" max="60" value="10" /></label>
+              <label><span>下载暂存目录</span><input id="gptDownloadRoot" type="text" value="D:\Download" /></label>
+              <label><span>成品库目录</span><input id="gptProductRoot" type="text" value="D:\AICode\项目推进\projects\江湖有旅人\主项目\成品库（GPT+本地脚本制作）" /></label>
             </div>
+            <label class="switch-setting"><span><b>网页内提示词库</b><small>在 GPT 输入区显示可点击的提示词入口</small></span><input id="gptPromptLibraryEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>网页内下载与打包按钮</b><small>按当前回复绑定下载本组和下载并打包</small></span><input id="gptMessageDownloadsEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>定时启动</b><small>到点后只启动已经准备好的队列；可设置小范围稳定延迟</small></span><input id="gptScheduledEnabled" type="checkbox" /></label>
             <p class="settings-footnote">每套完成后会在最短与最长时间之间随机等待，让任务节奏更稳定；遇到登录验证、限流或异常提示会立即暂停。</p>
+          </div>
+          <div class="settings-group">
+            <h3>浏览器档案</h3>
+            <div id="gptBrowserManager" class="gpt-browser-manager"></div>
           </div>
         </section>
       </aside>
@@ -718,6 +735,7 @@
     <button class="workbench-assistant-launcher" id="workbenchAssistantLauncher" type="button" aria-label="打开团建中控助手" aria-expanded="false">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8.5h10a4 4 0 0 1 4 4v2a4 4 0 0 1-4 4h-5l-4 2v-2H7a4 4 0 0 1-4-4v-2a4 4 0 0 1 4-4Z"/><path d="M9 8.5V6a3 3 0 0 1 6 0v2.5M8 13h.01M12 13h.01M16 13h.01"/></svg>
     </button>
+    <div class="workbench-assistant-bubble" id="workbenchAssistantBubble" role="status" aria-live="polite" hidden></div>
     <aside class="workbench-assistant-panel" id="workbenchAssistantPanel" hidden aria-label="团建中控助手">
       <header><div><strong>团建中控助手</strong><span>本地安全执行</span></div><button id="closeWorkbenchAssistant" type="button" aria-label="关闭">×</button></header>
       <div class="workbench-assistant-messages" id="workbenchAssistantMessages">
@@ -733,8 +751,8 @@
       <button id="contextRename" type="button">重命名</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.13.0"></script>
-    <script src="/material-workspace.js?v=0.13.0"></script>
-    <script src="/app.js?v=0.13.0"></script>
+    <script src="/distribution-ui.js?v=0.14.0"></script>
+    <script src="/material-workspace.js?v=0.14.0"></script>
+    <script src="/app.js?v=0.14.0"></script>
   </body>
 </html>

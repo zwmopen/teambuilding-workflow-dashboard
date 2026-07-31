@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   hide() {
     return ipcRenderer.invoke("desktop:gpt-hide");
   },
+  releaseIdle(minutes = 30) {
+    return ipcRenderer.invoke("desktop:gpt-release-idle", { minutes: Number(minutes || 30) });
+  },
   navigate(action, accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-navigate", {
       action: String(action || "reload"),
@@ -55,5 +58,35 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   },
   restoreLoginRecovery(accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-login-recovery-restore", String(accountId || ""));
+  },
+  profiles() {
+    return ipcRenderer.invoke("desktop:gpt-profiles");
+  },
+  saveProfile(profile = {}) {
+    return ipcRenderer.invoke("desktop:gpt-profile-save", profile);
+  },
+  hideProfile(profile = {}) {
+    return ipcRenderer.invoke("desktop:gpt-profile-hide", profile);
+  },
+  removeProfile(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-profile-remove", String(accountId || ""));
+  },
+  deleteProfileLogin(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-profile-delete-login", String(accountId || ""));
+  },
+  setProductionActive(active = false) {
+    return ipcRenderer.invoke("desktop:production-active", Boolean(active));
+  },
+  notify(input = "", body = "") {
+    const payload = input && typeof input === "object"
+      ? input
+      : { title: String(input || ""), body: String(body || "") };
+    return ipcRenderer.invoke("desktop:notify", payload);
+  },
+  onPauseProduction(callback) {
+    if (typeof callback !== "function") return () => {};
+    const listener = () => callback();
+    ipcRenderer.on("desktop:pause-production", listener);
+    return () => ipcRenderer.removeListener("desktop:pause-production", listener);
   }
 });

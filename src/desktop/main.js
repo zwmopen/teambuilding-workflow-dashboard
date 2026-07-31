@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, dialog, ipcMain, session } = require("electron");
+const { app, BrowserWindow, WebContentsView, dialog, ipcMain, session, Tray, Menu, Notification } = require("electron");
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -18,12 +18,66 @@ const GPT_PENDING_BACKUP_FILE = path.join(GPT_LOGIN_RECOVERY_ROOT, "pending-back
 const GPT_PENDING_RESTORE_FILE = path.join(GPT_LOGIN_RECOVERY_ROOT, "pending-restore.json");
 let serverProcess = null;
 let mainWindow = null;
+let tray = null;
+let isExplicitQuit = false;
+let productionTaskActive = false;
 const gptAccounts = new Map();
 let activeGptAccountId = "account-1";
 
 const GPT_PARTITION_PREFIX = "persist:teambuilding-gpt-production";
 const WORKBENCH_PARTITION = "persist:teambuilding-workbench-0.12.2";
 const GPT_URL = "https://chatgpt.com/";
+const GPT_BROWSER_PROFILES_FILE = "gpt-browser-profiles.json";
+
+function gptBrowserProfilesFile() {
+  return path.join(app.getPath("userData"), GPT_BROWSER_PROFILES_FILE);
+}
+
+function defaultBrowserProfiles() {
+  return {
+    version: 1,
+    activeId: "account-1",
+    profiles: [{
+      id: "account-1",
+      name: "浏览器 1",
+      quotaGroup: "account-1",
+      hidden: false,
+      createdAt: new Date().toISOString(),
+      lastOpenedAt: new Date().toISOString()
+    }]
+  };
+}
+
+function readBrowserProfiles() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(gptBrowserProfilesFile(), "utf8").replace(/^\uFEFF/, ""));
+    const profiles = Array.isArray(parsed.profiles)
+      ? parsed.profiles.filter((profile) => profile && safeGptAccountId(profile.id)).map((profile, index) => ({
+        id: safeGptAccountId(profile.id),
+        name: String(profile.name || `浏览器 ${index + 1}`).slice(0, 24),
+        quotaGroup: safeGptAccountId(profile.quotaGroup || profile.id),
+        hidden: Boolean(profile.hidden),
+        createdAt: String(profile.createdAt || new Date().toISOString()),
+        lastOpenedAt: String(profile.lastOpenedAt || "")
+      })).slice(0, 8)
+      : [];
+    if (!profiles.length) return writeBrowserProfiles(defaultBrowserProfiles());
+    return {
+      version: 1,
+      activeId: profiles.some((profile) => profile.id === parsed.activeId) ? parsed.activeId : profiles[0].id,
+      profiles
+    };
+  } catch {
+    return writeBrowserProfiles(defaultBrowserProfiles());
+  }
+}
+
+function writeBrowserProfiles(value) {
+  const file = gptBrowserProfilesFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+  return value;
+}
 
 function safeGptAccountId(value = "") {
   const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -164,6 +218,7 @@ async function ensureGptAccount(accountId = activeGptAccountId) {
     view: null,
     extensionInfo: null,
     extensionError: "",
+    lastUsedAt: Date.now(),
     initializing: null
   };
   gptAccounts.set(id, account);
@@ -225,6 +280,8 @@ async function ensureGptView(accountId = activeGptAccountId) {
 async function sendTaskToEmbeddedGpt(task = {}) {
   const accountId = safeGptAccountId(task.accountId || activeGptAccountId);
   const view = await ensureGptView(accountId);
+  const account = gptAccounts.get(accountId);
+  if (account) account.lastUsedAt = Date.now();
   const requestId = String(task.requestId || `workbench-${Date.now()}`);
   const payload = {
     source: "teambuilding-workbench",
@@ -237,11 +294,13 @@ async function sendTaskToEmbeddedGpt(task = {}) {
     taskType: String(task.taskType || "material"),
     templateId: String(task.templateId || ""),
     accountId,
+    quotaAccountId: String(task.quotaAccountId || accountId),
     autoRun: Boolean(task.autoRun),
     autoOptions: task.autoOptions && typeof task.autoOptions === "object" ? task.autoOptions : {},
     retryOf: String(task.retryOf || ""),
     retryFromStage: String(task.retryFromStage || ""),
-    retryFromPercent: Math.max(0, Math.min(100, Number(task.retryFromPercent || 0)))
+    retryFromPercent: Math.max(0, Math.min(100, Number(task.retryFromPercent || 0))),
+    expectedImages: Math.max(0, Number(task.expectedImages || task.expectedImageCount || 0))
   };
   const script = `new Promise((resolve) => {
     const requestId = ${JSON.stringify(requestId)};
@@ -292,6 +351,76 @@ ipcMain.handle("desktop:pick-folder", async (_event, options = {}) => {
   return result.canceled ? "" : String(result.filePaths?.[0] || "");
 });
 
+ipcMain.handle("desktop:gpt-profiles", async () => readBrowserProfiles());
+
+ipcMain.handle("desktop:gpt-profile-save", async (_event, input = {}) => {
+  const state = readBrowserProfiles();
+  const id = safeGptAccountId(input.id);
+  const existing = state.profiles.find((profile) => profile.id === id);
+  const profile = {
+    id,
+    name: String(input.name || existing?.name || `浏览器 ${state.profiles.length + 1}`).trim().slice(0, 24),
+    quotaGroup: safeGptAccountId(input.quotaGroup || existing?.quotaGroup || id),
+    hidden: Boolean(input.hidden ?? existing?.hidden),
+    createdAt: existing?.createdAt || new Date().toISOString(),
+    lastOpenedAt: String(input.lastOpenedAt || existing?.lastOpenedAt || new Date().toISOString())
+  };
+  if (existing) Object.assign(existing, profile);
+  else if (state.profiles.length < 8) state.profiles.push(profile);
+  else throw new Error("最多保留 8 个浏览器档案");
+  state.activeId = input.active === false ? state.activeId : id;
+  writeBrowserProfiles(state);
+  return state;
+});
+
+ipcMain.handle("desktop:gpt-profile-hide", async (_event, input = {}) => {
+  const state = readBrowserProfiles();
+  const id = safeGptAccountId(input.id);
+  const profile = state.profiles.find((item) => item.id === id);
+  if (!profile) throw new Error("没有找到浏览器档案");
+  profile.hidden = Boolean(input.hidden);
+  if (state.activeId === id && profile.hidden) {
+    state.activeId = state.profiles.find((item) => !item.hidden)?.id || id;
+  }
+  writeBrowserProfiles(state);
+  if (profile.hidden) hideAllGptViews();
+  return state;
+});
+
+ipcMain.handle("desktop:gpt-profile-remove", async (_event, accountId = "") => {
+  const state = readBrowserProfiles();
+  const id = safeGptAccountId(accountId);
+  if (state.profiles.length <= 1) throw new Error("至少保留一个浏览器档案");
+  state.profiles = state.profiles.filter((profile) => profile.id !== id);
+  if (state.activeId === id) state.activeId = state.profiles.find((profile) => !profile.hidden)?.id || state.profiles[0].id;
+  writeBrowserProfiles(state);
+  await releaseGptAccountView(id);
+  return state;
+});
+
+ipcMain.handle("desktop:gpt-profile-delete-login", async (_event, accountId = "") => {
+  const id = safeGptAccountId(accountId);
+  await releaseGptAccountView(id);
+  const profileSession = session.fromPartition(gptPartition(id));
+  await profileSession.clearStorageData();
+  return { ok: true, id };
+});
+
+ipcMain.handle("desktop:production-active", async (_event, active = false) => {
+  productionTaskActive = Boolean(active);
+  refreshTrayMenu();
+  return { ok: true, active: productionTaskActive };
+});
+
+ipcMain.handle("desktop:notify", async (_event, input = {}) => {
+  if (!Notification.isSupported()) return { ok: false };
+  new Notification({
+    title: String(input.title || "团建工作台"),
+    body: String(input.body || "").slice(0, 300)
+  }).show();
+  return { ok: true };
+});
+
 ipcMain.handle("desktop:gpt-status", async (_event, accountId = activeGptAccountId) => {
   const id = safeGptAccountId(accountId);
   const account = gptAccounts.get(id);
@@ -312,6 +441,7 @@ ipcMain.handle("desktop:gpt-show", async (_event, input = {}) => {
   const accountId = safeGptAccountId(input.accountId || activeGptAccountId);
   activeGptAccountId = accountId;
   const account = await ensureGptAccount(accountId);
+  account.lastUsedAt = Date.now();
   const view = account.view;
   hideAllGptViews(accountId);
   view.setBounds(safeGptBounds(input.bounds || input));
@@ -330,6 +460,18 @@ ipcMain.handle("desktop:gpt-show", async (_event, input = {}) => {
 ipcMain.handle("desktop:gpt-hide", async () => {
   hideAllGptViews();
   return { ok: true };
+});
+
+ipcMain.handle("desktop:gpt-release-idle", async (_event, input = {}) => {
+  if (productionTaskActive) return { ok: true, released: [] };
+  const idleMs = Math.max(5, Number(input.minutes || 30)) * 60 * 1000;
+  const released = [];
+  for (const [id, account] of [...gptAccounts]) {
+    if (id === activeGptAccountId || Date.now() - Number(account.lastUsedAt || Date.now()) < idleMs) continue;
+    await releaseGptAccountView(id);
+    released.push(id);
+  }
+  return { ok: true, released };
 });
 
 ipcMain.handle("desktop:gpt-navigate", async (_event, input = {}) => {
@@ -427,6 +569,55 @@ function appendDesktopLog(event, detail = "") {
   }
 }
 
+function restoreMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+async function requestExplicitQuit() {
+  if (productionTaskActive && mainWindow) {
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      title: "自动生产仍在运行",
+      message: "彻底退出会中断当前自动生产任务。",
+      detail: "普通关闭窗口只会退到后台。确定仍要彻底退出吗？",
+      buttons: ["留在后台", "彻底退出"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+    if (result.response !== 1) return;
+  }
+  isExplicitQuit = true;
+  app.quit();
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "打开团建工作台", click: restoreMainWindow },
+    {
+      label: productionTaskActive ? "暂停自动生产" : "当前没有自动任务",
+      enabled: productionTaskActive,
+      click: () => mainWindow?.webContents.send("desktop:pause-production")
+    },
+    { type: "separator" },
+    { label: "彻底退出", click: () => requestExplicitQuit() }
+  ]));
+  tray.setToolTip(productionTaskActive ? "团建工作台 · 自动生产中" : "团建工作台 · 后台运行");
+}
+
+function createTray() {
+  if (tray) return tray;
+  tray = new Tray(path.join(__dirname, "团建工作台.ico"));
+  tray.on("click", restoreMainWindow);
+  tray.on("double-click", restoreMainWindow);
+  refreshTrayMenu();
+  return tray;
+}
+
 
 function canReachServer() {
   return new Promise((resolve) => {
@@ -494,6 +685,19 @@ async function createWindow() {
   mainWindow = window;
   window.on("minimize", () => hideAllGptViews());
   window.on("hide", () => hideAllGptViews());
+  window.on("close", (event) => {
+    if (isExplicitQuit) return;
+    event.preventDefault();
+    hideAllGptViews();
+    window.hide();
+    appendDesktopLog("desktop-background", productionTaskActive ? "production-active" : "idle");
+    if (Notification.isSupported()) {
+      new Notification({
+        title: "团建工作台仍在后台运行",
+        body: productionTaskActive ? "自动生产没有中断，可从右下角托盘重新打开。" : "可从右下角托盘重新打开或彻底退出。"
+      }).show();
+    }
+  });
   window.on("closed", () => {
     for (const account of gptAccounts.values()) {
       if (account.view && !account.view.webContents.isDestroyed()) account.view.webContents.close();
@@ -512,7 +716,6 @@ async function createWindow() {
     appendDesktopLog("shell-render-gone", `${details.reason} exitCode=${details.exitCode}`);
   });
 
-  await window.webContents.session.clearCache();
   const versionedUrl = new URL(APP_URL);
   versionedUrl.searchParams.set("appVersion", APP_VERSION);
   await window.loadURL(versionedUrl.toString());
@@ -531,6 +734,7 @@ if (!hasSingleInstanceLock) {
   app.whenReady().then(() => {
     applyPendingGptLoginBackup();
     applyPendingGptLoginRestore();
+    createTray();
     return createWindow();
   }).catch((error) => {
     appendDesktopLog("startup-failed", error.stack || error.message);
@@ -540,8 +744,12 @@ if (!hasSingleInstanceLock) {
 }
 
 app.on("window-all-closed", () => {
+  if (isExplicitQuit && serverProcess && !serverProcess.killed) serverProcess.kill();
+});
+
+app.on("before-quit", () => {
+  isExplicitQuit = true;
   if (serverProcess && !serverProcess.killed) serverProcess.kill();
-  if (process.platform !== "darwin") app.quit();
 });
 
 app.on("activate", () => {

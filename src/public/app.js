@@ -64,19 +64,64 @@ const gptTestExpandedTemplates = new Set();
 let gptTestQueue = [];
 let gptTestQueueIndex = 0;
 let gptEmbeddedResizeObserver = null;
+let gptEmbeddedResizeTimer = null;
+let gptLastShowSignature = "";
+let gptShowInFlight = null;
 let gptAutoRunning = false;
 let gptAutoPaused = false;
+let gptQueuePaused = false;
 let gptCurrentManualTask = null;
 let gptLastFailedTask = null;
 let gptLastFailedStage = "";
 let gptLastFailedPercent = 0;
 let gptQuotaSnapshot = null;
 let gptAssistantTimer = null;
+let assistantBubbleTimer = null;
+let lastAssistantBubbleMessage = "";
+let assistantDragState = null;
 const GPT_ACCOUNTS_STORAGE_KEY = "teambuilding-gpt-accounts";
 const GPT_AUTO_SETTINGS_STORAGE_KEY = "teambuilding-gpt-auto-settings";
+const GPT_QUEUE_STORAGE_KEY = "teambuilding-gpt-queue-v1";
 let gptAccounts = loadGptAccounts();
 let activeGptAccountId = gptAccounts[0]?.id || "account-1";
 let gptAutoSettings = loadGptAutoSettings();
+
+function persistGptQueue() {
+  if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
+    localStorage.removeItem(GPT_QUEUE_STORAGE_KEY);
+    return;
+  }
+  localStorage.setItem(GPT_QUEUE_STORAGE_KEY, JSON.stringify({
+    version: 1,
+    savedAt: new Date().toISOString(),
+    index: gptTestQueueIndex,
+    paused: gptQueuePaused || gptAutoPaused,
+    tasks: gptTestQueue.map((task) => ({
+      ...task,
+      _status: task._status || "queued",
+      _stage: task._stage || "",
+      _percent: Number(task._percent || 0)
+    }))
+  }));
+}
+
+function restoreGptQueue() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(GPT_QUEUE_STORAGE_KEY) || "null");
+    if (!saved || !Array.isArray(saved.tasks) || !saved.tasks.length) return;
+    gptTestQueue = saved.tasks;
+    gptTestQueueIndex = Math.max(0, Math.min(saved.tasks.length, Number(saved.index || 0)));
+    gptTestQueue.forEach((task) => {
+      if (task._status === "running") task._status = "paused";
+    });
+    gptQueuePaused = gptTestQueueIndex < gptTestQueue.length;
+    if (gptQueuePaused) {
+      showWorkbenchAssistantBubble(`发现上次未完成队列：从第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 套继续。`, { duration: 0 });
+    }
+  } catch {
+    localStorage.removeItem(GPT_QUEUE_STORAGE_KEY);
+  }
+}
 
 function loadGptAccounts() {
   try {
@@ -86,16 +131,49 @@ function loadGptAccounts() {
       : [];
     if (accounts.length) return accounts.map((item, index) => ({
       id: String(item.id),
-      name: String(item.name || `账号 ${index + 1}`).slice(0, 18)
+      name: String(item.name || `浏览器 ${index + 1}`).slice(0, 24),
+      quotaGroup: String(item.quotaGroup || item.id),
+      hidden: Boolean(item.hidden)
     }));
   } catch {
     // Fall back to the first isolated account.
   }
-  return [{ id: "account-1", name: "账号 1" }];
+  return [{ id: "account-1", name: "浏览器 1", quotaGroup: "account-1", hidden: false }];
 }
 
 function saveGptAccounts() {
   localStorage.setItem(GPT_ACCOUNTS_STORAGE_KEY, JSON.stringify(gptAccounts));
+}
+
+async function hydrateGptBrowserProfiles() {
+  if (!window.gptWorkbench?.profiles) return;
+  try {
+    let state = await window.gptWorkbench.profiles();
+    const known = new Set((state.profiles || []).map((profile) => profile.id));
+    for (const local of gptAccounts) {
+      if (known.has(local.id)) continue;
+      state = await window.gptWorkbench.saveProfile({
+        ...local,
+        name: local.name || `浏览器 ${state.profiles.length + 1}`,
+        active: false
+      });
+      known.add(local.id);
+    }
+    gptAccounts = (state.profiles || []).map((profile, index) => ({
+      id: String(profile.id),
+      name: String(profile.name || `浏览器 ${index + 1}`),
+      quotaGroup: String(profile.quotaGroup || profile.id),
+      hidden: Boolean(profile.hidden)
+    }));
+    activeGptAccountId = gptAccounts.some((profile) => profile.id === state.activeId && !profile.hidden)
+      ? state.activeId
+      : gptAccounts.find((profile) => !profile.hidden)?.id || gptAccounts[0]?.id || "account-1";
+    saveGptAccounts();
+    renderGptAccountTabs();
+    renderGptBrowserManager();
+  } catch (error) {
+    console.warn("浏览器档案读取失败，暂用本地标签", error);
+  }
 }
 
 function loadGptAutoSettings() {
@@ -111,9 +189,22 @@ function loadGptAutoSettings() {
     maxDelaySeconds: 55,
     taskTimeoutMinutes: 30,
     accountTaskLimit: 8,
+    parallelWorkers: 3,
+    maximumWorkers: 5,
     uploadLimit: 80,
     generationLimit: 50,
-    windowHours: 3
+    windowHours: 3,
+    confirmText: "1",
+    copyPrompt: "给我一份小红书文案",
+    minimumImageCount: 4,
+    idleUnloadMinutes: 30,
+    downloadRoot: "D:\\Download",
+    productRoot: "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目\\成品库（GPT+本地脚本制作）",
+    promptLibraryEnabled: true,
+    messageDownloadsEnabled: true,
+    scheduledEnabled: false,
+    scheduledTime: "09:30",
+    scheduledJitterMinutes: 10
   };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(GPT_AUTO_SETTINGS_STORAGE_KEY) || "{}") };
@@ -124,8 +215,9 @@ function loadGptAutoSettings() {
 
 function renderGptAutoSettings() {
   const values = gptAutoSettings;
-  if ($("#gptProductionMode")) $("#gptProductionMode").value = values.mode === "manual" ? "manual" : "automatic";
-  if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = values.mode === "manual" ? "manual" : "automatic";
+  const mode = ["manual", "multi"].includes(values.mode) ? values.mode : "automatic";
+  if ($("#gptProductionMode")) $("#gptProductionMode").value = mode;
+  if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = mode;
   if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
   if ($("#gptAutoCopyEnabled")) $("#gptAutoCopyEnabled").checked = values.autoCopy !== false;
   if ($("#gptAutoPackageEnabled")) $("#gptAutoPackageEnabled").checked = values.autoPackage !== false;
@@ -136,16 +228,30 @@ function renderGptAutoSettings() {
   if ($("#gptAutoMaxDelay")) $("#gptAutoMaxDelay").value = values.maxDelaySeconds;
   if ($("#gptAutoTaskTimeout")) $("#gptAutoTaskTimeout").value = values.taskTimeoutMinutes;
   if ($("#gptAutoAccountLimit")) $("#gptAutoAccountLimit").value = values.accountTaskLimit;
+  if ($("#gptParallelWorkers")) $("#gptParallelWorkers").value = values.parallelWorkers;
   if ($("#gptUploadLimit")) $("#gptUploadLimit").value = values.uploadLimit;
   if ($("#gptGenerationLimit")) $("#gptGenerationLimit").value = values.generationLimit;
   if ($("#gptQuotaWindowHours")) $("#gptQuotaWindowHours").value = values.windowHours;
+  if ($("#gptMinimumImageCount")) $("#gptMinimumImageCount").value = values.minimumImageCount;
+  if ($("#gptConfirmText")) $("#gptConfirmText").value = values.confirmText;
+  if ($("#gptCopyPrompt")) $("#gptCopyPrompt").value = values.copyPrompt;
+  if ($("#gptIdleUnloadMinutes")) $("#gptIdleUnloadMinutes").value = values.idleUnloadMinutes;
+  if ($("#gptScheduledEnabled")) $("#gptScheduledEnabled").checked = Boolean(values.scheduledEnabled);
+  if ($("#gptScheduledTime")) $("#gptScheduledTime").value = values.scheduledTime || "09:30";
+  if ($("#gptScheduledJitter")) $("#gptScheduledJitter").value = values.scheduledJitterMinutes ?? 10;
+  if ($("#gptDownloadRoot")) $("#gptDownloadRoot").value = values.downloadRoot;
+  if ($("#gptProductRoot")) $("#gptProductRoot").value = values.productRoot;
+  if ($("#gptPromptLibraryEnabled")) $("#gptPromptLibraryEnabled").checked = values.promptLibraryEnabled !== false;
+  if ($("#gptMessageDownloadsEnabled")) $("#gptMessageDownloadsEnabled").checked = values.messageDownloadsEnabled !== false;
+  renderGptBrowserManager();
 }
 
 function saveGptAutoSettings() {
   const minDelay = Math.max(5, Number($("#gptAutoMinDelay")?.value || 25));
   const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
+  const selectedMode = activePageSettings === "gptAuto" ? $("#gptProductionModeSetting")?.value : $("#gptProductionMode")?.value;
   gptAutoSettings = {
-    mode: (activePageSettings === "gptAuto" ? $("#gptProductionModeSetting")?.value : $("#gptProductionMode")?.value) === "manual" ? "manual" : "automatic",
+    mode: ["manual", "multi"].includes(selectedMode) ? selectedMode : "automatic",
     autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
     autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
     autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
@@ -156,9 +262,22 @@ function saveGptAutoSettings() {
     maxDelaySeconds: maxDelay,
     taskTimeoutMinutes: Math.max(5, Number($("#gptAutoTaskTimeout")?.value || 30)),
     accountTaskLimit: Math.max(1, Number($("#gptAutoAccountLimit")?.value || 8)),
+    parallelWorkers: Math.max(1, Math.min(5, Number($("#gptParallelWorkers")?.value || 3))),
+    maximumWorkers: 5,
     uploadLimit: Math.max(1, Number($("#gptUploadLimit")?.value || 80)),
     generationLimit: Math.max(1, Number($("#gptGenerationLimit")?.value || 50)),
-    windowHours: Math.max(1, Number($("#gptQuotaWindowHours")?.value || 3))
+    windowHours: Math.max(1, Number($("#gptQuotaWindowHours")?.value || 3)),
+    confirmText: String($("#gptConfirmText")?.value || "1").trim() || "1",
+    copyPrompt: String($("#gptCopyPrompt")?.value || "给我一份小红书文案").trim() || "给我一份小红书文案",
+    minimumImageCount: Math.max(1, Number($("#gptMinimumImageCount")?.value || 4)),
+    idleUnloadMinutes: Math.max(5, Number($("#gptIdleUnloadMinutes")?.value || 30)),
+    downloadRoot: String($("#gptDownloadRoot")?.value || "D:\\Download").trim(),
+    productRoot: String($("#gptProductRoot")?.value || "").trim(),
+    promptLibraryEnabled: $("#gptPromptLibraryEnabled")?.checked !== false,
+    messageDownloadsEnabled: $("#gptMessageDownloadsEnabled")?.checked !== false,
+    scheduledEnabled: Boolean($("#gptScheduledEnabled")?.checked),
+    scheduledTime: String($("#gptScheduledTime")?.value || "09:30"),
+    scheduledJitterMinutes: Math.max(0, Math.min(60, Number($("#gptScheduledJitter")?.value || 0)))
   };
   localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
   if (dashboard?.workspaceSettings?.pageSettings) {
@@ -1289,18 +1408,18 @@ function renderGptTestMaterials() {
       }).join("") : "";
       return `<section class="workbench-post-branch${postExpanded ? " active" : ""}">
         <div class="workbench-post-row${selected ? " selected" : ""}">
-          <input class="material-check" type="checkbox" data-gpt-test-material-check="${escapeHtml(item.id)}" aria-label="选择素材文件夹" ${selected ? "checked" : ""} />
+          <input class="material-check" type="checkbox" data-gpt-test-material-check="${escapeHtml(item.id)}" aria-label="选择素材文件夹" ${selected ? "checked" : ""}${gptAutoRunning ? " disabled" : ""} />
           <button class="workbench-post-folder" type="button" data-gpt-test-post-folder="${escapeHtml(item.id)}" title="${escapeHtml(item.name)}">
             <span class="folder-glyph" aria-hidden="true">${postExpanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.imageCount || 0} 图 · ${item.textCount || 0} TXT · 使用 ${Number(item.usageCount || 0)} 次</small></span>
           </button>
-          <button class="gpt-post-send-button" type="button" data-gpt-send-post="${escapeHtml(item.id)}" title="只把这个帖子发送到 GPT">发送</button>
+          <button class="gpt-post-send-button" type="button" data-gpt-send-post="${escapeHtml(item.id)}" title="只把这个帖子发送到 GPT"${gptAutoRunning ? " disabled" : ""}>发送</button>
         </div>
         ${postExpanded ? `<div class="workbench-post-assets">${images}${texts || `<span class="workbench-empty-asset">没有 TXT</span>`}</div>` : ""}
       </section>`;
     }).join("");
     return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
       <div class="workbench-folder-row${allSelected ? " selected" : ""}">
-        <input class="material-check folder-check" type="checkbox" data-gpt-test-category-check="${escapeHtml(category.path)}" ${allSelected ? "checked" : ""} data-indeterminate="${partial ? "true" : "false"} aria-label="选择此文件夹中的全部帖子" />
+        <input class="material-check folder-check" type="checkbox" data-gpt-test-category-check="${escapeHtml(category.path)}" ${allSelected ? "checked" : ""} data-indeterminate="${partial ? "true" : "false"} aria-label="选择此文件夹中的全部帖子"${gptAutoRunning ? " disabled" : ""} />
         <button class="workbench-folder-item${expanded ? " active" : ""}" type="button" data-gpt-test-material-category="${escapeHtml(category.path)}">
           <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(category.name)}（${category.countKnown === false ? "…" : Number(category.count ?? categoryItems.length)}）</strong></span>
         </button>
@@ -1328,7 +1447,7 @@ function renderGptTestTemplates() {
     )).join("") : "";
     return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
       <div class="workbench-folder-row${selected ? " selected" : ""}">
-        <input class="material-check folder-check" type="checkbox" data-gpt-test-template-check="${escapeHtml(template.id)}" ${selected ? "checked" : ""} aria-label="选择模板" />
+        <input class="material-check folder-check" type="checkbox" data-gpt-test-template-check="${escapeHtml(template.id)}" ${selected ? "checked" : ""} aria-label="选择模板"${gptAutoRunning ? " disabled" : ""} />
         <button class="workbench-folder-item gpt-test-template-row${expanded ? " active" : ""}" type="button" data-gpt-test-template="${escapeHtml(template.id)}">
           <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(template.name)}（${template.imageCount || 0}）</strong></span>
         </button>
@@ -1413,11 +1532,16 @@ function updateGptAssistantBubble(message = "") {
   bubble.classList.remove("compact");
   clearTimeout(gptAssistantTimer);
   gptAssistantTimer = setTimeout(() => bubble.classList.add("compact"), 6500);
+  const globalMessage = message || `已选 ${materials} 个素材、${templates} 个模板，预计 ${works} 个作品`;
+  if (globalMessage !== lastAssistantBubbleMessage) {
+    lastAssistantBubbleMessage = globalMessage;
+    showWorkbenchAssistantBubble(globalMessage);
+  }
 }
 
-async function refreshGptQuota() {
+async function refreshGptQuota(accountId = activeGptAccountId) {
   try {
-    const result = await api(`/api/gpt-production/quota?account=${encodeURIComponent(activeGptAccountId)}`);
+    const result = await api(`/api/gpt-production/quota?account=${encodeURIComponent(accountId)}`);
     gptQuotaSnapshot = { status: result?.quota || result };
   } catch {
     gptQuotaSnapshot = null;
@@ -1425,17 +1549,65 @@ async function refreshGptQuota() {
   updateGptAssistantBubble();
 }
 
-async function ensureGptTaskQuota(task) {
+async function ensureGptTaskQuota(task, quotaAccountId = activeGptAccountId) {
   if (gptAutoSettings.quotaReminderEnabled === false || task.taskType !== "material") return;
-  await refreshGptQuota();
-  const quota = gptQuotaSnapshot?.status;
+  const result = await api(`/api/gpt-production/quota?account=${encodeURIComponent(quotaAccountId)}`).catch(() => null);
+  const quota = result?.quota || result;
   if (!quota) return;
   const uploadImages = (task.attachments || []).filter((filePath) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(filePath)).length;
   const generatedImages = Math.max(1, Number(task.expectedImages || 1));
   if (uploadImages <= Number(quota.remainingUploads || 0)
     && generatedImages <= Number(quota.remainingGenerations || 0)) return;
   const restoreAt = quota.nextExpiryAt ? new Date(quota.nextExpiryAt).toLocaleString("zh-CN", { hour12: false }) : "额度窗口恢复后";
+  scheduleGptQuotaReminder(quota.nextExpiryAt, quotaAccountId);
   throw new Error(`当前账号本地估算额度不足：还可上传 ${quota.remainingUploads} 张、生成 ${quota.remainingGenerations} 张；预计 ${restoreAt} 可继续`);
+}
+
+const gptQuotaReminderTimers = new Map();
+let gptScheduledLaunchTimer = null;
+let gptScheduledDayKey = "";
+
+function scheduleGptQuotaReminder(nextExpiryAt, accountId) {
+  const timestamp = Date.parse(String(nextExpiryAt || ""));
+  if (!Number.isFinite(timestamp) || timestamp <= Date.now()) return;
+  const key = String(accountId || activeGptAccountId);
+  clearTimeout(gptQuotaReminderTimers.get(key));
+  const delay = Math.min(timestamp - Date.now() + 1500, 2_147_000_000);
+  gptQuotaReminderTimers.set(key, setTimeout(() => {
+    const account = gptAccounts.find((item) => item.id === key || item.quotaGroup === key);
+    const message = `${account?.name || "GPT 账号"}的本地估算额度已逐笔释放，可以继续检查生产队列。`;
+    showWorkbenchAssistantBubble(message, { duration: 0 });
+    window.gptWorkbench?.notify?.({ title: "额度已恢复", body: message }).catch(() => {});
+    refreshGptQuota(key);
+  }, delay));
+}
+
+function checkScheduledGptProduction() {
+  if (!gptAutoSettings.scheduledEnabled || gptAutoRunning || gptScheduledLaunchTimer) return;
+  const now = new Date();
+  const dayKey = now.toISOString().slice(0, 10);
+  if (gptScheduledDayKey === dayKey) return;
+  const [hour, minute] = String(gptAutoSettings.scheduledTime || "09:30").split(":").map(Number);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return;
+  const target = new Date(now);
+  target.setHours(hour, minute, 0, 0);
+  if (now < target || now.getTime() - target.getTime() > 65_000) return;
+  const hasReadyQueue = gptTestQueueIndex < gptTestQueue.length || gptTestSelectedMaterials.size > 0;
+  if (!hasReadyQueue) {
+    gptScheduledDayKey = dayKey;
+    showWorkbenchAssistantBubble("已到定时生产时间，但当前没有准备好的素材队列，本次未启动。", { duration: 0 });
+    return;
+  }
+  const jitterMinutes = Math.max(0, Number(gptAutoSettings.scheduledJitterMinutes || 0));
+  const delay = Math.round(Math.random() * jitterMinutes * 60_000);
+  gptScheduledDayKey = dayKey;
+  showWorkbenchAssistantBubble(delay
+    ? `定时任务已到点，将在 ${Math.ceil(delay / 60_000)} 分钟内稳定启动。`
+    : "定时任务已到点，正在启动准备好的生产队列。", { duration: 0 });
+  gptScheduledLaunchTimer = setTimeout(() => {
+    gptScheduledLaunchTimer = null;
+    sendNextGptTestTask();
+  }, delay);
 }
 
 function updateGptTestQueueStatus(message = "") {
@@ -1443,7 +1615,7 @@ function updateGptTestQueueStatus(message = "") {
   const button = $("#gptTestSendBtn");
   if (!node || !button) return;
   const selectedCount = gptTestSelectedMaterials.size;
-  const mode = gptAutoSettings.mode === "manual" ? "手动" : "自动";
+  const mode = gptAutoSettings.mode === "manual" ? "手动" : gptAutoSettings.mode === "multi" ? "多窗口" : "自动";
   if (message) node.textContent = message;
   else if (!selectedCount) node.textContent = "请至少选择一个素材文件夹；模板可以不选";
   else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) node.textContent = `还有 ${gptTestQueue.length - gptTestQueueIndex} 个队列步骤待处理`;
@@ -1452,12 +1624,27 @@ function updateGptTestQueueStatus(message = "") {
   if (gptAutoRunning) button.disabled = true;
   button.textContent = gptAutoRunning
     ? `${mode}处理中 ${Math.min(gptTestQueueIndex + 1, gptTestQueue.length)}/${gptTestQueue.length}`
+    : gptQueuePaused && gptTestQueueIndex < gptTestQueue.length
+      ? `继续自动生产 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
     : gptTestQueue.length && gptTestQueueIndex > 0 && gptTestQueueIndex < gptTestQueue.length
       ? `继续 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
       : gptAutoSettings.mode === "manual" ? "准备并上传当前一套" : "开始自动生产";
+  const pauseButton = $("#gptPauseQueueBtn");
+  if (pauseButton) {
+    pauseButton.hidden = !gptAutoRunning && !gptQueuePaused;
+    pauseButton.disabled = false;
+    pauseButton.textContent = gptAutoRunning ? (gptAutoPaused ? "暂停中…" : "暂停") : "继续";
+  }
+  $("#gptSkipTaskBtn")?.toggleAttribute("disabled", gptAutoRunning || !gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length);
   $("#gptManualNextBtn")?.toggleAttribute("hidden", gptAutoSettings.mode !== "manual" || !gptCurrentManualTask);
   $("#gptRetryTaskBtn")?.toggleAttribute("hidden", !gptLastFailedTask || gptAutoRunning);
   updateGptAssistantBubble(message);
+}
+
+function blockGptSelectionDuringRun() {
+  if (!gptAutoRunning) return false;
+  showWorkbenchAssistantBubble("自动生产正在进行中，已锁定素材和模板选择；请先暂停，再调整队列。", { duration: 5200 });
+  return true;
 }
 
 function gptHostBounds() {
@@ -1476,13 +1663,27 @@ function gptHostBounds() {
 function renderGptAccountTabs() {
   const host = $("#gptAccountTabs");
   if (!host) return;
-  host.innerHTML = gptAccounts.map((account) => `
+  host.innerHTML = gptAccounts.filter((account) => !account.hidden).map((account) => `
     <button class="gpt-account-tab${account.id === activeGptAccountId ? " active" : ""}"
       type="button" data-gpt-account="${escapeHtml(account.id)}"
       title="${escapeHtml(account.name)} · 独立登录状态">
       <span>${escapeHtml(account.name)}</span>
-      ${gptAccounts.length > 1 ? `<i data-remove-gpt-account="${escapeHtml(account.id)}" title="移除这个账号">×</i>` : ""}
     </button>
+  `).join("");
+}
+
+function renderGptBrowserManager() {
+  const host = $("#gptBrowserManager");
+  if (!host) return;
+  host.innerHTML = gptAccounts.map((account) => `
+    <section class="gpt-browser-manager-row" data-browser-profile="${escapeHtml(account.id)}">
+      <input type="text" value="${escapeHtml(account.name)}" data-browser-name="${escapeHtml(account.id)}" aria-label="浏览器名称" />
+      <input type="text" value="${escapeHtml(account.quotaGroup || account.id)}" data-browser-quota-group="${escapeHtml(account.id)}" aria-label="额度组" />
+      <button type="button" data-browser-toggle="${escapeHtml(account.id)}">${account.hidden ? "重新打开" : "隐藏标签"}</button>
+      <button type="button" data-browser-recovery="${escapeHtml(account.id)}">创建恢复点</button>
+      ${gptAccounts.length > 1 ? `<button type="button" class="danger-text-button" data-browser-remove="${escapeHtml(account.id)}">移除记录</button>` : ""}
+      <button type="button" class="danger-text-button" data-browser-delete-login="${escapeHtml(account.id)}">删除登录数据</button>
+    </section>
   `).join("");
 }
 
@@ -1494,6 +1695,7 @@ async function switchGptAccount(accountId) {
   const account = gptAccounts.find((item) => item.id === accountId);
   if (!account || account.id === activeGptAccountId) return;
   activeGptAccountId = account.id;
+  window.gptWorkbench?.saveProfile?.({ ...account, active: true, lastOpenedAt: new Date().toISOString() }).catch(() => {});
   const accountSettings = dashboard?.workspaceSettings?.pageSettings?.gptAuto?.accounts?.find((item) => item.id === account.id);
   if (accountSettings) {
     gptAutoSettings = {
@@ -1506,6 +1708,7 @@ async function switchGptAccount(accountId) {
   }
   saveGptAccounts();
   renderGptAccountTabs();
+  gptLastShowSignature = "";
   await showEmbeddedGptView();
   refreshGptQuota();
 }
@@ -1522,11 +1725,17 @@ async function addGptAccount() {
   const used = new Set(gptAccounts.map((item) => item.id));
   let sequence = 1;
   while (used.has(`account-${sequence}`)) sequence += 1;
-  const account = { id: `account-${sequence}`, name: `账号 ${sequence}` };
+  const account = { id: `account-${sequence}`, name: `浏览器 ${sequence}`, quotaGroup: `account-${sequence}`, hidden: false };
   gptAccounts.push(account);
   activeGptAccountId = account.id;
+  if (window.gptWorkbench?.saveProfile) {
+    const state = await window.gptWorkbench.saveProfile({ ...account, active: true });
+    gptAccounts = state.profiles.map((profile) => ({ ...profile }));
+  }
   saveGptAccounts();
   renderGptAccountTabs();
+  renderGptBrowserManager();
+  gptLastShowSignature = "";
   await showEmbeddedGptView();
 }
 
@@ -1536,11 +1745,36 @@ async function removeGptAccount(accountId) {
     return;
   }
   if (gptAccounts.length <= 1) return;
-  gptAccounts = gptAccounts.filter((item) => item.id !== accountId);
-  if (activeGptAccountId === accountId) activeGptAccountId = gptAccounts[0].id;
+  if (!window.confirm("移除后顶部不再显示，但不会删除 GPT 登录数据。确定移除这个浏览器记录吗？")) return;
+  if (!window.confirm("再次确认：只移除记录，登录分区仍保留。")) return;
+  if (window.gptWorkbench?.removeProfile) {
+    const state = await window.gptWorkbench.removeProfile(accountId);
+    gptAccounts = state.profiles.map((profile) => ({ ...profile }));
+    activeGptAccountId = state.activeId;
+  } else {
+    gptAccounts = gptAccounts.filter((item) => item.id !== accountId);
+    if (activeGptAccountId === accountId) activeGptAccountId = gptAccounts[0].id;
+  }
   saveGptAccounts();
   renderGptAccountTabs();
+  renderGptBrowserManager();
+  gptLastShowSignature = "";
   await showEmbeddedGptView();
+}
+
+async function deleteGptAccountLogin(accountId) {
+  if (gptAutoRunning) {
+    showSystemNotice("自动生产进行中", "完成或暂停后再处理登录数据。");
+    return;
+  }
+  const account = gptAccounts.find((item) => item.id === accountId);
+  if (!account || !window.gptWorkbench?.deleteProfileLogin) return;
+  if (!window.confirm(`危险操作：这会清除“${account.name}”的 GPT/Google 本机登录状态。确定继续吗？`)) return;
+  if (!window.confirm("最后确认：清除后需要重新登录，现有浏览器记录仍保留。")) return;
+  await window.gptWorkbench.deleteProfileLogin(accountId);
+  gptLastShowSignature = "";
+  if (accountId === activeGptAccountId) await showEmbeddedGptView();
+  showSystemNotice("登录数据已清除", `${account.name} 的本机登录状态已删除，浏览器档案仍保留。`, { tone: "success" });
 }
 
 async function navigateEmbeddedGpt(action) {
@@ -1576,12 +1810,17 @@ async function showEmbeddedGptView() {
   }
   const bounds = gptHostBounds();
   if (!bounds || bounds.width < 100 || bounds.height < 100) return;
-  if (state) {
+  const signature = `${activeGptAccountId}:${Math.round(bounds.x)}:${Math.round(bounds.y)}:${Math.round(bounds.width)}:${Math.round(bounds.height)}`;
+  if (signature === gptLastShowSignature && !gptShowInFlight) return;
+  if (gptShowInFlight) return gptShowInFlight;
+  if (state && !gptLastShowSignature) {
     state.textContent = "正在打开 GPT";
     state.dataset.tone = "busy";
   }
+  gptShowInFlight = (async () => {
   try {
     const result = await window.gptWorkbench.show(bounds, activeGptAccountId);
+    gptLastShowSignature = signature;
     if (state) {
       const needsLogin = /\/auth\/(?:login|signup)/i.test(result.url || "");
       state.textContent = needsLogin
@@ -1593,17 +1832,27 @@ async function showEmbeddedGptView() {
     if ($("#gptBrowserBackBtn")) $("#gptBrowserBackBtn").disabled = !result.canGoBack;
     if ($("#gptBrowserForwardBtn")) $("#gptBrowserForwardBtn").disabled = !result.canGoForward;
   } catch (error) {
+    gptLastShowSignature = "";
     if (state) {
       state.textContent = "GPT 打开失败";
       state.dataset.tone = "danger";
       state.title = error.message;
     }
   }
+  })();
+  try {
+    await gptShowInFlight;
+  } finally {
+    gptShowInFlight = null;
+  }
   if (!gptEmbeddedResizeObserver && $("#gptEmbeddedHost")) {
     gptEmbeddedResizeObserver = new ResizeObserver(() => {
       if ($("#gptProductionTestView")?.classList.contains("active")) {
-        const nextBounds = gptHostBounds();
-        if (nextBounds) window.gptWorkbench.show(nextBounds, activeGptAccountId).catch(() => {});
+        clearTimeout(gptEmbeddedResizeTimer);
+        gptEmbeddedResizeTimer = setTimeout(() => {
+          gptLastShowSignature = "";
+          showEmbeddedGptView().catch(() => {});
+        }, 120);
       }
     });
     gptEmbeddedResizeObserver.observe($("#gptEmbeddedHost"));
@@ -1629,18 +1878,158 @@ async function refreshExpandedGptMaterialTrees() {
   renderGptTestMaterials();
 }
 
+function gptTaskGroupsForMultiWindow() {
+  if (gptQueuePaused && gptTestQueue.some((task) => task._status !== "completed")) {
+    const pending = gptTestQueue.filter((task) => task._status !== "completed");
+    const groups = [];
+    for (const task of pending) {
+      if (task.taskType === "template-init") groups.push([task]);
+      else if (groups.length && groups[groups.length - 1][0]?.taskType === "template-init") groups[groups.length - 1].push(task);
+      else groups.push([task]);
+    }
+    return groups;
+  }
+  const entries = selectedGptTestEntries();
+  const templates = selectedGptTestTemplates();
+  if (!templates.length) return entries.map((entry) => [buildGptTestTask(entry)]);
+  return templates.map((template) => [
+    { ...buildGptTemplateInitTask(template), navigation: "new-chat" },
+    ...entries.map((entry) => buildGptTestTask(entry, template))
+  ]);
+}
+
+async function runGptTaskOnBrowser(task, account, tracker) {
+  task.accountId = account.id;
+  task.quotaAccountId = account.quotaGroup || account.id;
+  task.autoRun = true;
+  task.autoOptions = { ...gptAutoSettings, quotaAccountId: task.quotaAccountId };
+  task._status = "running";
+  persistGptQueue();
+  if (task.taskType === "material") await ensureGptTaskQuota(task, task.quotaAccountId);
+  if (task.navigation === "new-chat") {
+    await window.gptWorkbench.navigate("new-chat", account.id);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+  let polling = true;
+  const poll = (async () => {
+    while (polling) {
+      const status = await window.gptWorkbench.workflowStatus(account.id).catch(() => null);
+      if (status?.requestId === task.requestId) {
+        task._stage = String(status.stage || "");
+        task._percent = Number(status.percent || 0);
+        persistGptQueue();
+        const overall = Math.round(((tracker.completed + tracker.failed + task._percent / 100) / tracker.total) * 100);
+        if ($("#gptAutoProgressBar")) $("#gptAutoProgressBar").style.width = `${overall}%`;
+        updateGptTestQueueStatus(`${account.name} · ${task.name} · ${task._stage || "处理中"} ${task._percent || 0}% · 全批 ${tracker.completed + tracker.failed}/${tracker.total}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  })();
+  let result;
+  try {
+    result = await window.gptWorkbench.sendTask(task);
+  } finally {
+    polling = false;
+    await poll;
+  }
+  if (!result?.ok) {
+    task._status = "failed";
+    task._error = result?.detail || result?.error || "自动生产没有完整结束";
+    tracker.failed += 1;
+    persistGptQueue();
+    throw new Error(`${account.name}：${task._error}`);
+  }
+  task._status = "completed";
+  tracker.completed += 1;
+  persistGptQueue();
+  return result;
+}
+
+async function sendMultiWindowGptTasks() {
+  if (gptAutoRunning) return;
+  const groups = gptTaskGroupsForMultiWindow();
+  if (!groups.length) return;
+  const visibleAccounts = gptAccounts.filter((account) => !account.hidden);
+  const workerCount = Math.max(1, Math.min(
+    Number(gptAutoSettings.parallelWorkers || 3),
+    Number(gptAutoSettings.maximumWorkers || 5),
+    visibleAccounts.length
+  ));
+  const workers = visibleAccounts.slice(0, workerCount);
+  const allTasks = groups.flat();
+  const existingCompleted = gptQueuePaused ? gptTestQueue.filter((task) => task._status === "completed").length : 0;
+  const tracker = { completed: existingCompleted, failed: 0, total: existingCompleted + allTasks.length };
+  let nextGroup = 0;
+  if (!gptQueuePaused) {
+    gptTestQueue = allTasks;
+    gptTestQueueIndex = 0;
+  }
+  gptAutoRunning = true;
+  gptAutoPaused = false;
+  gptQueuePaused = false;
+  window.gptWorkbench?.setProductionActive?.(true).catch(() => {});
+  persistGptQueue();
+  updateGptTestQueueStatus(`多窗口轮询已启动 · ${workers.length} 个浏览器 · ${gptProductionWorkCount()} 个作品`);
+  const runWorker = async (account) => {
+    while (!gptAutoPaused) {
+      const groupIndex = nextGroup;
+      nextGroup += 1;
+      const group = groups[groupIndex];
+      if (!group) return;
+      for (const task of group) {
+        if (gptAutoPaused) return;
+        try {
+          await runGptTaskOnBrowser(task, account, tracker);
+          const nextPending = gptTestQueue.findIndex((item) => item._status !== "completed");
+          gptTestQueueIndex = nextPending < 0 ? gptTestQueue.length : nextPending;
+          persistGptQueue();
+        } catch (error) {
+          gptLastFailedTask = task;
+          gptLastFailedStage = task._stage || "";
+          gptLastFailedPercent = task._percent || 0;
+          if (gptAutoSettings.pauseOnFailure !== false) {
+            gptAutoPaused = true;
+            gptQueuePaused = true;
+            persistGptQueue();
+            showWorkbenchAssistantBubble(`${error.message}；多窗口队列已停在安全检查点。`, { duration: 0 });
+            return;
+          }
+        }
+      }
+    }
+  };
+  try {
+    await Promise.all(workers.map(runWorker));
+    updateGptTestQueueStatus(gptAutoPaused
+      ? `多窗口队列已暂停 · 完成 ${tracker.completed} · 失败 ${tracker.failed}`
+      : `多窗口队列完成 · 成功 ${tracker.completed} · 失败 ${tracker.failed}`);
+  } finally {
+    gptAutoRunning = false;
+    window.gptWorkbench?.setProductionActive?.(false).catch(() => {});
+    persistGptQueue();
+    updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
+    refreshGptQuota();
+  }
+}
+
 async function sendNextGptTestTask() {
   if (!window.gptWorkbench?.available || gptAutoRunning) return;
+  if (gptAutoSettings.mode === "multi") return sendMultiWindowGptTasks();
   if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
     gptTestQueue = buildGptProductionQueue();
     gptTestQueueIndex = 0;
+    persistGptQueue();
   }
   if (!gptTestQueue.length) return;
+  const resuming = gptQueuePaused && gptTestQueueIndex < gptTestQueue.length;
   const runAccountId = activeGptAccountId;
   const button = $("#gptTestSendBtn");
   const progressBar = $("#gptAutoProgressBar");
   gptAutoRunning = true;
   gptAutoPaused = false;
+  gptQueuePaused = false;
+  window.gptWorkbench?.setProductionActive?.(true).catch(() => {});
+  persistGptQueue();
   button.disabled = true;
   const manualMode = gptAutoSettings.mode === "manual";
   updateGptTestQueueStatus(`${manualMode ? "手动准备" : "自动生产"} · ${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号"} · ${gptProductionWorkCount()} 个作品`);
@@ -1671,6 +2060,10 @@ async function sendNextGptTestTask() {
           if (status?.requestId === task.requestId) {
             gptLastFailedStage = String(status.stage || "");
             gptLastFailedPercent = Number(status.percent || 0);
+            task._stage = gptLastFailedStage;
+            task._percent = gptLastFailedPercent;
+            task._status = "running";
+            persistGptQueue();
             const overall = Math.round(((gptTestQueueIndex + Number(status.percent || 0) / 100) / gptTestQueue.length) * 100);
             if (progressBar) progressBar.style.width = `${overall}%`;
             updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 套 · ${status.stage || "处理中"} ${status.percent || 0}%${status.detail ? ` · ${status.detail}` : ""}`);
@@ -1692,7 +2085,9 @@ async function sendNextGptTestTask() {
         const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
         if (gptAutoSettings.pauseOnFailure !== false) throw taskError;
         failedThisRun += 1;
+        task._status = "failed";
         gptTestQueueIndex += 1;
+        persistGptQueue();
         updateGptTestQueueStatus(`第 ${gptTestQueueIndex} 套失败并已记录：${taskError.message}；继续下一套`);
         continue;
       }
@@ -1703,6 +2098,9 @@ async function sendNextGptTestTask() {
         break;
       }
       gptTestQueueIndex += 1;
+      task._status = "completed";
+      task._percent = 100;
+      persistGptQueue();
       if (task.taskType === "material") completedThisRun += 1;
       if (progressBar) progressBar.style.width = `${Math.round(gptTestQueueIndex / gptTestQueue.length * 100)}%`;
       const completionLabel = task.taskType === "template-init"
@@ -1729,11 +2127,22 @@ async function sendNextGptTestTask() {
     }
   } catch (error) {
     gptLastFailedTask = gptTestQueue[gptTestQueueIndex] || null;
+    gptQueuePaused = true;
+    const failedTask = gptTestQueue[gptTestQueueIndex];
+    if (failedTask && failedTask._status !== "completed") failedTask._status = "paused";
+    persistGptQueue();
     updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1} 套已暂停：${error.message}`);
-    showSystemNotice("自动生产已暂停", `${error.message}\n已完成的作品不会重复生成，处理当前问题后可继续。`, { tone: "danger" });
+    if (String(error.message || "").includes("用户暂停") || resuming) {
+      showWorkbenchAssistantBubble(`已暂停在第 ${gptTestQueueIndex + 1} 套；可以点击“继续自动生产”恢复。`);
+    } else {
+      showSystemNotice("自动生产已暂停", `${error.message}\n已完成的作品不会重复生成，处理当前问题后可继续。`, { tone: "danger" });
+    }
   } finally {
     gptAutoRunning = false;
+    gptAutoPaused = false;
     button.disabled = false;
+    window.gptWorkbench?.setProductionActive?.(false).catch(() => {});
+    persistGptQueue();
     updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
     refreshGptQuota();
   }
@@ -3795,6 +4204,109 @@ function renderDistributionRecords(rows, kind) {
   `).join("")}</div>`;
 }
 
+function assistantElements() {
+  return {
+    launcher: $("#workbenchAssistantLauncher"),
+    panel: $("#workbenchAssistantPanel"),
+    bubble: $("#workbenchAssistantBubble")
+  };
+}
+
+function syncWorkbenchAssistantDock(left, top) {
+  const { launcher, panel, bubble } = assistantElements();
+  if (!launcher) return;
+  if (Number.isFinite(left) && Number.isFinite(top)) {
+    const size = launcher.getBoundingClientRect().width || 54;
+    const panelWidth = Math.min(380, Math.max(260, window.innerWidth - 32));
+    launcher.style.left = `${Math.max(8, Math.min(window.innerWidth - size - 8, left))}px`;
+    launcher.style.top = `${Math.max(size / 2 + 8, Math.min(window.innerHeight - size / 2 - 8, top))}px`;
+    launcher.style.right = "auto";
+    launcher.style.bottom = "auto";
+    launcher.style.transform = "translateY(-50%)";
+    const panelLeft = Math.max(8, left - panelWidth - 14);
+    [panel, bubble].forEach((element) => {
+      if (!element) return;
+      element.style.left = `${panelLeft}px`;
+      element.style.right = "auto";
+      element.style.top = `${Math.max(8, Math.min(window.innerHeight - 8, top))}px`;
+      element.style.bottom = "auto";
+      element.style.transform = "translateY(-50%)";
+    });
+  } else {
+    [launcher, panel, bubble].forEach((element) => {
+      if (!element) return;
+      element.style.left = "";
+      element.style.top = "";
+      element.style.right = "";
+      element.style.bottom = "";
+      element.style.transform = "";
+    });
+  }
+}
+
+function restoreWorkbenchAssistantDock() {
+  try {
+    const stored = JSON.parse(localStorage.getItem("tb-workbench-assistant-position") || "null");
+    if (stored && Number.isFinite(stored.left) && Number.isFinite(stored.top)) {
+      syncWorkbenchAssistantDock(stored.left, stored.top);
+    }
+  } catch {
+    // Ignore a damaged position and use the centered default.
+  }
+}
+
+function setupWorkbenchAssistantDrag() {
+  const { launcher } = assistantElements();
+  if (!launcher || launcher.dataset.dragReady) return;
+  launcher.dataset.dragReady = "true";
+  launcher.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const rect = launcher.getBoundingClientRect();
+    assistantDragState = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, left: rect.left, top: rect.top + rect.height / 2, moved: false };
+    launcher.setPointerCapture?.(event.pointerId);
+  });
+  launcher.addEventListener("pointermove", (event) => {
+    if (!assistantDragState || assistantDragState.pointerId !== event.pointerId) return;
+    const dx = event.clientX - assistantDragState.startX;
+    const dy = event.clientY - assistantDragState.startY;
+    if (!assistantDragState.moved && Math.hypot(dx, dy) < 5) return;
+    assistantDragState.moved = true;
+    launcher.classList.add("is-dragging");
+    syncWorkbenchAssistantDock(assistantDragState.left + dx, assistantDragState.top + dy);
+  });
+  const finish = (event) => {
+    if (!assistantDragState || assistantDragState.pointerId !== event.pointerId) return;
+    if (assistantDragState.moved) {
+      const rect = launcher.getBoundingClientRect();
+      localStorage.setItem("tb-workbench-assistant-position", JSON.stringify({ left: rect.left, top: rect.top + rect.height / 2 }));
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    launcher.classList.remove("is-dragging");
+    assistantDragState = null;
+  };
+  launcher.addEventListener("pointerup", finish);
+  launcher.addEventListener("pointercancel", finish);
+  window.addEventListener("resize", () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("tb-workbench-assistant-position") || "null");
+      if (stored && Number.isFinite(stored.left) && Number.isFinite(stored.top)) syncWorkbenchAssistantDock(stored.left, stored.top);
+    } catch {}
+  });
+  restoreWorkbenchAssistantDock();
+}
+
+function showWorkbenchAssistantBubble(message, options = {}) {
+  const { bubble } = assistantElements();
+  if (!bubble || !message) return;
+  bubble.textContent = String(message);
+  bubble.hidden = false;
+  clearTimeout(assistantBubbleTimer);
+  if (options.duration !== 0) {
+    assistantBubbleTimer = window.setTimeout(() => { bubble.hidden = true; }, Number(options.duration || 5600));
+  }
+}
+
 function appendWorkbenchAssistantMessage(message, role = "assistant") {
   const container = $("#workbenchAssistantMessages");
   if (!container) return;
@@ -3803,6 +4315,7 @@ function appendWorkbenchAssistantMessage(message, role = "assistant") {
   item.textContent = message;
   container.appendChild(item);
   container.scrollTop = container.scrollHeight;
+  if (role !== "user") showWorkbenchAssistantBubble(message);
 }
 
 function toggleWorkbenchAssistant(open) {
@@ -3811,6 +4324,7 @@ function toggleWorkbenchAssistant(open) {
   if (!panel || !launcher) return;
   const shouldOpen = open ?? panel.hidden;
   panel.hidden = !shouldOpen;
+  if (shouldOpen) $("#workbenchAssistantBubble")?.setAttribute("hidden", "");
   launcher.setAttribute("aria-expanded", String(shouldOpen));
   if (shouldOpen) window.setTimeout(() => $("#workbenchAssistantCommand")?.focus(), 0);
 }
@@ -5362,6 +5876,7 @@ async function runLargeCloudBackup() {
 }
 
 function bindEvents() {
+  setupWorkbenchAssistantDrag();
   $("#dashboardView .work-canvas")?.addEventListener("scroll", maybeLoadMoreMaterials, { passive: true });
   $("#productsView .product-preview-pane")?.addEventListener("scroll", maybeLoadMoreProducts, { passive: true });
   document.addEventListener("contextmenu", (event) => {
@@ -5455,6 +5970,7 @@ function bindEvents() {
     }
     const gptCategoryCheck = event.target.closest("[data-gpt-test-category-check]");
     if (gptCategoryCheck) {
+      if (blockGptSelectionDuringRun()) return;
       const categoryPath = gptCategoryCheck.dataset.gptTestCategoryCheck;
       const shouldSelect = gptCategoryCheck.checked;
       let category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
@@ -5489,6 +6005,7 @@ function bindEvents() {
     }
     const gptSendPost = event.target.closest("[data-gpt-send-post]");
     if (gptSendPost) {
+      if (blockGptSelectionDuringRun()) return;
       const entry = findMaterialEntry(gptSendPost.dataset.gptSendPost);
       if (!entry) return;
       gptTestSelectedMaterials.clear();
@@ -5503,6 +6020,7 @@ function bindEvents() {
     }
     const gptMaterialCheck = event.target.closest("[data-gpt-test-material-check]");
     if (gptMaterialCheck) {
+      if (blockGptSelectionDuringRun()) return;
       const entry = findMaterialEntry(gptMaterialCheck.dataset.gptTestMaterialCheck);
       if (entry) {
         if (gptMaterialCheck.checked) gptTestSelectedMaterials.add(entry.item.path);
@@ -5527,6 +6045,7 @@ function bindEvents() {
     }
     const gptTemplateCheck = event.target.closest("[data-gpt-test-template-check]");
     if (gptTemplateCheck) {
+      if (blockGptSelectionDuringRun()) return;
       const templateId = gptTemplateCheck.dataset.gptTestTemplateCheck;
       if (gptTemplateCheck.checked) gptTestSelectedTemplates.add(templateId);
       else gptTestSelectedTemplates.delete(templateId);
@@ -6074,6 +6593,10 @@ function bindEvents() {
   });
   $("#gptTestMaterialSearch")?.addEventListener("input", renderGptTestMaterials);
   $("#gptTestExtraPrompt")?.addEventListener("input", () => {
+    if (gptAutoRunning) {
+      showWorkbenchAssistantBubble("自动生产进行中，本批补充要求已锁定；请暂停后再修改。", { duration: 4200 });
+      return;
+    }
     gptTestQueue = [];
     gptTestQueueIndex = 0;
     updateGptTestQueueStatus();
@@ -6081,8 +6604,15 @@ function bindEvents() {
   $("#gptTestSendBtn")?.addEventListener("click", () => sendNextGptTestTask());
   $("#gptManualNextBtn")?.addEventListener("click", completeCurrentManualGptTask);
   $("#gptPauseQueueBtn")?.addEventListener("click", () => {
+    if (!gptAutoRunning && gptQueuePaused) {
+      sendNextGptTestTask();
+      return;
+    }
+    if (!gptAutoRunning) return;
     gptAutoPaused = true;
+    persistGptQueue();
     updateGptTestQueueStatus("将在当前阶段安全结束后暂停");
+    showWorkbenchAssistantBubble("已收到暂停指令，当前阶段结束后会停在安全检查点。", { duration: 4200 });
   });
   $("#gptRetryTaskBtn")?.addEventListener("click", retryCurrentGptTask);
   $("#gptSkipTaskBtn")?.addEventListener("click", () => {
@@ -6092,6 +6622,8 @@ function bindEvents() {
     }
     gptCurrentManualTask = null;
     gptTestQueueIndex = Math.min(gptTestQueue.length, gptTestQueueIndex + 1);
+    if (gptTestQueue[gptTestQueueIndex - 1]) gptTestQueue[gptTestQueueIndex - 1]._status = "skipped";
+    persistGptQueue();
     updateGptTestQueueStatus("已跳过当前队列步骤，可以继续剩余任务");
   });
   $("#gptBrowserBackBtn")?.addEventListener("click", () => navigateEmbeddedGpt("back"));
@@ -6130,9 +6662,16 @@ function bindEvents() {
   [
     "#gptProductionMode", "#gptAutoConfirmEnabled", "#gptAutoCopyEnabled", "#gptAutoPackageEnabled", "#gptAutoPauseOnFailure",
     "#gptProductionModeSetting", "#gptAutoArchiveEnabled", "#gptQuotaReminderEnabled", "#gptAutoMinDelay", "#gptAutoMaxDelay",
-    "#gptAutoTaskTimeout", "#gptAutoAccountLimit", "#gptUploadLimit", "#gptGenerationLimit", "#gptQuotaWindowHours"
+    "#gptAutoTaskTimeout", "#gptAutoAccountLimit", "#gptParallelWorkers", "#gptUploadLimit", "#gptGenerationLimit", "#gptQuotaWindowHours",
+    "#gptMinimumImageCount", "#gptConfirmText", "#gptCopyPrompt", "#gptIdleUnloadMinutes", "#gptDownloadRoot", "#gptProductRoot",
+    "#gptPromptLibraryEnabled", "#gptMessageDownloadsEnabled", "#gptScheduledEnabled", "#gptScheduledTime", "#gptScheduledJitter"
   ].forEach((selector) => {
     $(selector)?.addEventListener("change", () => {
+      if (gptAutoRunning) {
+        renderGptAutoSettings();
+        showWorkbenchAssistantBubble("本批任务正在执行，生产设置已锁定；暂停或完成后再修改。", { duration: 4200 });
+        return;
+      }
       saveGptAutoSettings();
       gptTestQueue = [];
       gptTestQueueIndex = 0;
@@ -6142,19 +6681,56 @@ function bindEvents() {
     });
   });
   $("#gptAccountTabs")?.addEventListener("click", (event) => {
-    const remove = event.target.closest("[data-remove-gpt-account]");
-    if (remove) {
-      event.stopPropagation();
-      removeGptAccount(remove.dataset.removeGptAccount);
-      return;
-    }
     const tab = event.target.closest("[data-gpt-account]");
     if (tab) switchGptAccount(tab.dataset.gptAccount);
   });
+  $("#gptBrowserManager")?.addEventListener("change", async (event) => {
+    const nameInput = event.target.closest("[data-browser-name]");
+    const quotaInput = event.target.closest("[data-browser-quota-group]");
+    const id = nameInput?.dataset.browserName || quotaInput?.dataset.browserQuotaGroup;
+    if (!id) return;
+    const account = gptAccounts.find((item) => item.id === id);
+    if (!account) return;
+    if (nameInput) account.name = String(nameInput.value || account.name).trim().slice(0, 24) || account.name;
+    if (quotaInput) account.quotaGroup = String(quotaInput.value || account.id).trim().slice(0, 48) || account.id;
+    if (window.gptWorkbench?.saveProfile) {
+      const state = await window.gptWorkbench.saveProfile({ ...account, active: false });
+      gptAccounts = state.profiles.map((profile) => ({ ...profile }));
+    }
+    saveGptAccounts();
+    renderGptAccountTabs();
+    renderGptBrowserManager();
+    showWorkbenchAssistantBubble(`${account.name} 已保存；额度组为 ${account.quotaGroup}。`);
+  });
+  $("#gptBrowserManager")?.addEventListener("click", async (event) => {
+    const toggle = event.target.closest("[data-browser-toggle]");
+    const recovery = event.target.closest("[data-browser-recovery]");
+    const remove = event.target.closest("[data-browser-remove]");
+    const deleteLogin = event.target.closest("[data-browser-delete-login]");
+    if (deleteLogin) return deleteGptAccountLogin(deleteLogin.dataset.browserDeleteLogin);
+    if (remove) return removeGptAccount(remove.dataset.browserRemove);
+    if (recovery) {
+      showWorkbenchAssistantBubble("正在创建本机登录恢复点，软件会自动重启。", { duration: 0 });
+      return window.gptWorkbench?.createLoginRecovery?.(recovery.dataset.browserRecovery);
+    }
+    if (!toggle) return;
+    const account = gptAccounts.find((item) => item.id === toggle.dataset.browserToggle);
+    if (!account || !window.gptWorkbench?.hideProfile) return;
+    const state = await window.gptWorkbench.hideProfile({ id: account.id, hidden: !account.hidden });
+    gptAccounts = state.profiles.map((profile) => ({ ...profile }));
+    activeGptAccountId = state.activeId;
+    saveGptAccounts();
+    renderGptAccountTabs();
+    renderGptBrowserManager();
+    if (account.hidden) await showEmbeddedGptView();
+  });
   window.addEventListener("resize", () => {
     if (!$("#gptProductionTestView")?.classList.contains("active") || !window.gptWorkbench?.available) return;
-    const bounds = gptHostBounds();
-    if (bounds) window.gptWorkbench.show(bounds, activeGptAccountId).catch(() => {});
+    clearTimeout(gptEmbeddedResizeTimer);
+    gptEmbeddedResizeTimer = setTimeout(() => {
+      gptLastShowSignature = "";
+      showEmbeddedGptView().catch(() => {});
+    }, 140);
   });
   $("#workbenchOpenTemplateBtn")?.addEventListener("click", () => selectedTemplate && openPath(selectedTemplate.path));
   $("#workbenchSavePromptBtn")?.addEventListener("click", () => {
@@ -6407,6 +6983,12 @@ function bindEvents() {
 }
 
 bindEvents();
+window.gptWorkbench?.onPauseProduction?.(() => {
+  if (!gptAutoRunning) return;
+  gptAutoPaused = true;
+  showWorkbenchAssistantBubble("已从系统托盘请求暂停，当前阶段结束后会停在安全检查点。", { duration: 0 });
+  updateGptTestQueueStatus("将在当前阶段安全结束后暂停");
+});
 bindPaneResizers();
 prepareEmbeddedConversionApp();
 window.addEventListener("message", (event) => {
@@ -6433,7 +7015,9 @@ const initialTheme = storedThemeDefaultVersion === themeDefaultVersion
 localStorage.setItem("tb-dashboard-theme-default-version", themeDefaultVersion);
 applyTheme(initialTheme);
 loadDashboard()
-  .then(() => {
+  .then(async () => {
+    await hydrateGptBrowserProfiles();
+    restoreGptQueue();
     renderPluginMarket();
     installPageHelpButtons();
     restoreTransferTasks();
@@ -6441,7 +7025,12 @@ loadDashboard()
     window.setInterval(() => {
       if (!deviceScanRunning) checkDistributionDevices({ silent: true, refreshInventory: false });
     }, 20_000);
+    window.setInterval(checkScheduledGptProduction, 30_000);
+    checkScheduledGptProduction();
     window.setInterval(() => refreshExpandedGptMaterialTrees().catch(() => {}), 15_000);
+    window.setInterval(() => {
+      window.gptWorkbench?.releaseIdle?.(gptAutoSettings.idleUnloadMinutes || 30).catch(() => {});
+    }, 5 * 60_000);
   })
   .catch((error) => {
     console.error(error);
