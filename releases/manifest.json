@@ -1,8 +1,16 @@
 {
   "project": "teambuilding-workflow-dashboard",
-  "version": "0.13.0",
-  "source_commit": "8a9155a",
+  "version": "0.14.0",
+  "source_commit": "33ecdfe",
   "artifacts": [
+    {
+      "file": "0.14.0/团建工作台-0.14.0-便携版.exe",
+      "sha256": "0994E797BFAC06F215A03E6EC02249FDBCA7F8436BFCE5532BF933808075533E",
+      "size": 96163754,
+      "platform": "Windows x64",
+      "built_at": "2026-07-31",
+      "known_limits": "多窗口额度是本地滚动三小时估算，网页真实限流和验证优先；无法可靠识别网页阶段时会暂停等待人工确认，不重复发送。真实 Plus 小批量生成沿用 0.13.0 已验证登录分区，本次发布重点完成多窗口调度、后台运行、真实下载打包和恢复机制。"
+    },
     {
       "file": "0.13.0/团建工作台-0.13.0-便携版.exe",
       "sha256": "D5C7CBACEBF546CC386E0585D72B1A85F31F9A2BEB670A6D654ED1A28F975F1E",
