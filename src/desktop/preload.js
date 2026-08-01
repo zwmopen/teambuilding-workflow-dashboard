@@ -45,10 +45,11 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   releaseIdle(minutes = 30) {
     return ipcRenderer.invoke("desktop:gpt-release-idle", { minutes: Number(minutes || 30) });
   },
-  navigate(action, accountId = "") {
+  navigate(action, accountId = "", targetUrl = "") {
     return ipcRenderer.invoke("desktop:gpt-navigate", {
       action: String(action || "reload"),
-      accountId: String(accountId || "")
+      accountId: String(accountId || ""),
+      targetUrl: String(targetUrl || "")
     });
   },
   reload(accountId = "") {
@@ -83,6 +84,9 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   },
   saveProfile(profile = {}) {
     return ipcRenderer.invoke("desktop:gpt-profile-save", profile);
+  },
+  reorderProfiles(accountIds = []) {
+    return ipcRenderer.invoke("desktop:gpt-profile-reorder", Array.isArray(accountIds) ? accountIds : []);
   },
   hideProfile(profile = {}) {
     return ipcRenderer.invoke("desktop:gpt-profile-hide", profile);

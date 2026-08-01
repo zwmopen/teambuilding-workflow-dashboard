@@ -113,7 +113,7 @@ function normalizePageSettings(value = {}) {
       sourceRoot: String(backup.sourceRoot || "").trim().slice(0, 1000)
     },
     gptAuto: {
-      mode: ["manual", "multi", "random", "all-day", "scheduled"].includes(gptAuto.mode)
+      mode: ["manual", "multi", "random", "all-day", "all-day-multi", "scheduled"].includes(gptAuto.mode)
         ? gptAuto.mode : DEFAULT_PAGE_SETTINGS.gptAuto.mode,
       autoConfirm: gptAuto.autoConfirm !== false,
       autoCopy: gptAuto.autoCopy !== false,

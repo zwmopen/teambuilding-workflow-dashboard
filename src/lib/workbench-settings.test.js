@@ -75,6 +75,11 @@ test("GPT automatic production settings keep per-account quotas", () => {
   });
 });
 
+test("GPT settings preserve the multi-account all-day production mode", () => {
+  const settings = normalizePageSettings({ gptAuto: { mode: "all-day-multi" } });
+  assert.equal(settings.gptAuto.mode, "all-day-multi");
+});
+
 test("backup settings keep a practical schedule and clamp the monthly upload budget", () => {
   const settings = normalizePageSettings({
     backup: {

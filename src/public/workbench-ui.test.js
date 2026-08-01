@@ -226,6 +226,18 @@ test("low-output generation is a batch-level limit signal", () => {
   assert.match(app, /restoreGptQuotaProbeTimers\(\)/);
 });
 
+test("uncertain GPT image counts preserve the current material instead of faking a quota limit", () => {
+  assert.match(app, /"IMAGE_COUNT_UNCERTAIN"/);
+  assert.match(app, /\(\?:只检测到\|完整回复只有\)/);
+  assert.match(gptSidebar, /copy-turn-action-button/);
+  assert.match(gptSidebar, /assistant-response-quiet-complete/);
+  assert.match(gptSidebar, /未判定额度触顶/);
+  assert.match(app, /LEGACY_IMAGE_COUNT_RECHECK/);
+  assert.match(app, /本轮只检测到\\s\*1\\s\*张/);
+  assert.match(app, /task\.retryFromStage = "等待图片"/);
+  assert.match(app, /delete task\._endedAt/);
+});
+
 test("GPT material tree never presents an unloaded parent folder as a fake zero", () => {
   assert.match(app, /category\.countKnown === false \? "…" : Number\(category\.count/);
   assert.match(app, /const categoryItems = category\.items \|\| \[\]/);
@@ -579,4 +591,57 @@ test("embedded GPT follows the workbench light or dark theme without a duplicate
   assert.match(css, /\.gpt-production-test-shell\s*\{[\s\S]*?height:\s*100%;[\s\S]*?min-height:\s*0;/);
   assert.match(css, /\.gpt-production-test-library\s*\{[\s\S]*?overflow-y:\s*auto;[\s\S]*?overscroll-behavior:\s*contain;/);
   assert.match(css, /body\[data-theme="midnight-glass"\] \.rail-tab\.active span\s*\{[\s\S]*?color:\s*inherit/);
+});
+
+test("GPT browser tabs can be reordered and renamed without changing the running task owner", () => {
+  assert.match(app, /data-gpt-account[^>]*draggable="true"/);
+  assert.match(app, /reorderGptAccounts/);
+  assert.match(app, /renameGptAccount/);
+  assert.match(desktopPreload, /reorderProfiles/);
+  assert.match(desktopMain, /desktop:gpt-profile-reorder/);
+  assert.match(app, /if \(gptAutoRunning\) \{\s*showWorkbenchAssistantBubble\(`/);
+});
+
+test("GPT template panel supports local folders and persistent online conversation templates", () => {
+  assert.match(html, /id="gptLocalTemplateModeBtn"/);
+  assert.match(html, /id="gptOnlineTemplateModeBtn"/);
+  assert.match(html, /id="gptOnlineTemplateName"/);
+  assert.match(html, /id="gptOnlineTemplateUrl"/);
+  assert.match(app, /loadGptOnlineTemplates/);
+  assert.match(app, /saveGptOnlineTemplate/);
+  assert.match(app, /data-gpt-online-template-delete/);
+  assert.match(server, /pathname === "\/api\/gpt-online-templates"/);
+  assert.match(desktopMain, /chatgpt\\\.com\\\/\(\?:c\|share\)/);
+});
+
+test("material and template rows expose the same manual upload action without starting automation", () => {
+  assert.match(app, /data-gpt-upload-post/);
+  assert.match(app, /data-gpt-upload-template/);
+  assert.match(app, />上传<\/button>/);
+  assert.match(app, /uploadMaterialToCurrentGpt/);
+  assert.match(app, /uploadTemplateToCurrentGpt/);
+  assert.match(app, /autoRun:\s*false/);
+  assert.match(app, /尚未自动发送/);
+  assert.doesNotMatch(app, /data-gpt-send-post/);
+  assert.match(css, /\.gpt-test-template-list \.workbench-folder-row\s*\{\s*grid-template-columns:\s*22px minmax\(0, 1fr\) auto;/);
+});
+
+test("multi-account all-day mode keeps one serial task per browser and isolates quota stops", () => {
+  assert.match(html, /value="all-day-multi">多账号自动（永不停歇）/);
+  assert.match(app, /pendingGroups\.splice\(claimIndex, 1\)/);
+  assert.match(app, /await runGptTaskOnBrowser\(task, account, tracker\)/);
+  assert.match(app, /isActualGptLimitMessage[\s\S]*?return;/);
+  assert.match(app, /allowedAccountIds/);
+});
+
+test("desktop manual download actions cross the isolated extension world through a DOM bridge", () => {
+  assert.match(desktopMain, /tb-workbench-manual-action-request/);
+  assert.match(desktopMain, /tb-workbench-manual-action-result/);
+  assert.doesNotMatch(desktopMain, /window\.CGPTImageDownloadDebug\?\.manualAction/);
+});
+
+test("a new post cannot upload while the previous GPT response is still generating", () => {
+  assert.match(gptSidebar, /waitForPageIdleBeforeFreshUpload/);
+  assert.match(gptSidebar, /WEB_RESPONSE_IN_FLIGHT/);
+  assert.match(gptSidebar, /等待上一帖完成/);
 });

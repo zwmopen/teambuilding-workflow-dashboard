@@ -1841,6 +1841,114 @@ label {
   .juguang-row { grid-template-columns: 1fr; }
 }
 
+.gpt-template-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 4px;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--panel-light) 78%, transparent);
+  box-shadow: inset 1px 1px 3px rgba(72, 91, 110, 0.12);
+}
+
+.gpt-template-mode-switch button {
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.gpt-template-mode-switch button.active {
+  color: var(--ink);
+  background: var(--panel-light);
+  box-shadow: var(--soft-shadow);
+}
+
+.gpt-online-template-form {
+  display: grid;
+  grid-template-columns: minmax(82px, 0.7fr) minmax(150px, 1.6fr) auto;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.gpt-online-template-form[hidden] {
+  display: none;
+}
+
+.gpt-online-template-form input {
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--panel-light);
+}
+
+.gpt-online-template-form button {
+  height: 34px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 10px;
+  color: #fff;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.gpt-online-template-form small {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gpt-online-template-detail {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-light) 82%, transparent);
+}
+
+.gpt-online-template-detail a,
+.gpt-online-template-detail small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gpt-online-template-detail button {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  border: 0;
+  color: var(--danger, #a84343);
+  background: transparent;
+  cursor: pointer;
+}
+
+@media (max-width: 1180px) {
+  .gpt-online-template-form {
+    grid-template-columns: 1fr auto;
+  }
+
+  .gpt-online-template-form input[type="url"] {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
 /* 0.2 workflow shell */
 :root {
   --window-top: #edf2ef;
@@ -4461,6 +4569,7 @@ body[data-theme="midnight-glass"] .gpt-embedded-host {
 
 .workbench-folder-row .folder-check { margin-inline: 4px; }
 .gpt-test-folder-list .workbench-post-row { grid-template-columns: 20px minmax(0, 1fr) auto; }
+.gpt-test-template-list .workbench-folder-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
 
 .gpt-post-send-button {
   min-height: 28px;
@@ -4619,6 +4728,19 @@ body[data-theme="midnight-glass"] .gpt-embedded-host {
   color: var(--ink, #21342c);
   background: color-mix(in srgb, var(--accent, #2d7c65) 13%, var(--panel, #fff));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent, #2d7c65) 24%, transparent);
+}
+
+.gpt-account-tab[draggable="true"] {
+  cursor: grab;
+}
+
+.gpt-account-tab[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.gpt-account-tab.dragging {
+  opacity: .48;
+  transform: scale(.96);
 }
 
 .gpt-account-tab i {

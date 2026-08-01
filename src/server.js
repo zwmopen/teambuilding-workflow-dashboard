@@ -1122,6 +1122,41 @@ function extensionProductTreeSnapshot(requestedPath = "", rootOverride = "") {
   };
 }
 
+function findCompletedWorkPackageByBatchId(productRoot, batchId, options = {}) {
+  const root = path.resolve(String(productRoot || ""));
+  const expectedBatchId = String(batchId || "").trim();
+  if (!expectedBatchId || !exists(root) || !fs.statSync(root).isDirectory()) return "";
+  const maximumDirectories = Math.max(100, Number(options.maximumDirectories || 10_000));
+  const maximumDepth = Math.max(1, Number(options.maximumDepth || 6));
+  const queue = [{ directory: root, depth: 0 }];
+  let inspected = 0;
+  let newest = null;
+  while (queue.length && inspected < maximumDirectories) {
+    const current = queue.shift();
+    inspected += 1;
+    const recordPath = path.join(current.directory, "GPT作品记录.json");
+    if (exists(recordPath)) {
+      const record = readJson(recordPath, {});
+      if (String(record.batchId || "").trim() === expectedBatchId
+        && String(record.status || "").toLowerCase() === "completed") {
+        const recordedPath = String(record.packagePath || "").trim();
+        const actualPath = recordedPath && exists(recordedPath) && fs.statSync(recordedPath).isDirectory()
+          ? recordedPath
+          : current.directory;
+        const modifiedAt = fs.statSync(recordPath).mtimeMs;
+        if (!newest || modifiedAt > newest.modifiedAt) newest = { path: actualPath, modifiedAt };
+      }
+    }
+    if (current.depth >= maximumDepth) continue;
+    for (const entry of safeList(current.directory)) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (/^\.workpkg_staging_/i.test(entry.name) || entry.name === "_作品历史数据") continue;
+      queue.push({ directory: path.join(current.directory, entry.name), depth: current.depth + 1 });
+    }
+  }
+  return newest?.path || "";
+}
+
 function runExtensionWorkPackage(body = {}) {
   const script = path.join(DOWNLOAD_ROOT, "make_work_package.ps1");
   if (!exists(script)) {
@@ -1134,12 +1169,17 @@ function runExtensionWorkPackage(body = {}) {
   const requestedDownloadRoot = String(body.downloadRoot || "").trim();
   const requestedProductRoot = String(body.productRoot || "").trim();
   const normalProductRoot = path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）");
+  const workspaceSettings = getWorkspaceSettings();
+  const configuredProductRoot = String(workspaceSettings?.workPackage?.libraryPath || "").trim();
   const isAcceptancePath = (value) => /(?:^|[\\/])(?:_测试验收|验收)(?:[\\/]|$)/i.test(value);
   const effectiveRequestedDownloadRoot = isAcceptancePath(requestedDownloadRoot) ? DOWNLOAD_ROOT : requestedDownloadRoot;
-  const effectiveRequestedProductRoot = isAcceptancePath(requestedProductRoot) ? normalProductRoot : requestedProductRoot;
+  const effectiveRequestedProductRoot = isAcceptancePath(requestedProductRoot)
+    ? normalProductRoot
+    : (requestedProductRoot || configuredProductRoot || normalProductRoot);
   const effectiveDownloadRoot = requestedDownloadRoot
     ? path.resolve(effectiveRequestedDownloadRoot)
     : path.resolve(DOWNLOAD_ROOT);
+  const effectiveProductRoot = path.resolve(effectiveRequestedProductRoot);
   const configPath = path.join(DOWNLOAD_ROOT, "workpkg_config.json");
   const originalConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath) : null;
   let configRestored = false;
@@ -1149,21 +1189,19 @@ function runExtensionWorkPackage(body = {}) {
     if (originalConfig) fs.writeFileSync(configPath, originalConfig);
     else fs.rmSync(configPath, { force: true });
   };
-  if (effectiveRequestedDownloadRoot || effectiveRequestedProductRoot) {
-    const config = readJson(configPath, {});
-    if (effectiveRequestedDownloadRoot) {
-      if (!path.isAbsolute(effectiveRequestedDownloadRoot)) throw new Error("下载暂存目录必须是完整路径");
-      fs.mkdirSync(effectiveRequestedDownloadRoot, { recursive: true });
-      config.image_inbox_path = path.resolve(effectiveRequestedDownloadRoot);
-    }
-    if (effectiveRequestedProductRoot) {
-      if (!path.isAbsolute(effectiveRequestedProductRoot)) throw new Error("成品库目录必须是完整路径");
-      fs.mkdirSync(effectiveRequestedProductRoot, { recursive: true });
-      config.library_path = path.resolve(effectiveRequestedProductRoot);
-      config.portfolio_output_path = path.resolve(effectiveRequestedProductRoot);
-    }
-    writeJson(configPath, config);
-  }
+  // Manual buttons and the automatic state machine must execute against the
+  // same concrete inbox/library pair.  The legacy packager reads these values
+  // from workpkg_config.json, so leaving an older temporary path in that file
+  // made a manual click diverge from an automatic run.
+  if (!path.isAbsolute(effectiveDownloadRoot)) throw new Error("下载暂存目录必须是完整路径");
+  if (!path.isAbsolute(effectiveProductRoot)) throw new Error("成品库目录必须是完整路径");
+  fs.mkdirSync(effectiveDownloadRoot, { recursive: true });
+  fs.mkdirSync(effectiveProductRoot, { recursive: true });
+  const config = readJson(configPath, {});
+  config.image_inbox_path = effectiveDownloadRoot;
+  config.library_path = effectiveProductRoot;
+  config.portfolio_output_path = effectiveProductRoot;
+  writeJson(configPath, config);
   const batchId = String(body.batchId || "").trim();
   const expectedImageCount = Math.max(0, Number(body.expectedImageCount || 0));
   if (batchId && !/^\d{8}-\d{6}-[a-z0-9]{4}$/i.test(batchId)) {
@@ -1265,7 +1303,14 @@ function runExtensionWorkPackage(body = {}) {
         reject(new Error(output || "打包程序没有返回完成标记"));
         return;
       }
-      const packagePath = String(fields.Folder || "").trim();
+      let packagePath = String(fields.Folder || "").trim();
+      if (body.preview !== true && batchId
+        && (!packagePath || !exists(packagePath) || !fs.statSync(packagePath).isDirectory())) {
+        // Windows PowerShell 5 may emit a Chinese path through an OEM code page
+        // that happens to decode as valid (but wrong) UTF-8.  The package record
+        // is UTF-8 JSON and is therefore the authoritative result channel.
+        packagePath = findCompletedWorkPackageByBatchId(effectiveProductRoot, batchId) || packagePath;
+      }
       if (body.preview !== true) {
         if (!packagePath || !exists(packagePath) || !fs.statSync(packagePath).isDirectory()) {
           reject(new Error("打包程序已结束，但没有找到成品文件夹"));
@@ -3036,6 +3081,85 @@ function getTemplateLibrary() {
   return { csv, sourceRoot, templates };
 }
 
+function onlineTemplateFilePath() {
+  const configuredTemplateRoot = getPageSettings().production.templateRoot;
+  const templateRoot = path.resolve(configuredTemplateRoot || path.join(PROJECT_ROOT, "02-模板库"));
+  fs.mkdirSync(templateRoot, { recursive: true });
+  return path.join(templateRoot, "链接模板.txt");
+}
+
+function normalizeOnlineTemplateUrl(value = "") {
+  let parsed;
+  try { parsed = new URL(String(value || "").trim()); } catch { return ""; }
+  if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "chatgpt.com") return "";
+  if (!/^\/(?:c|share)\/[a-z0-9-]+\/?$/i.test(parsed.pathname)) return "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+function readOnlineTemplates(filePath = onlineTemplateFilePath()) {
+  const source = exists(filePath) ? fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "") : "";
+  const templates = source.split(/\r?\n/).map((line) => {
+    const clean = line.trim();
+    if (!clean || clean.startsWith("#")) return null;
+    const urlMatch = clean.match(/https:\/\/chatgpt\.com\/(?:c|share)\/[a-z0-9-]+\/?/i);
+    const templateUrl = normalizeOnlineTemplateUrl(urlMatch?.[0] || "");
+    if (!templateUrl) return null;
+    const before = clean.slice(0, Number(urlMatch.index || 0)).replace(/[\t|｜]+$/g, "").trim();
+    const after = clean.slice(Number(urlMatch.index || 0) + urlMatch[0].length).replace(/^[\t|｜]+/g, "").trim();
+    const name = (before || `在线模板 ${templateUrl.split("/").filter(Boolean).pop()?.slice(0, 8) || ""}`).slice(0, 48);
+    const accountId = /^[a-z0-9_-]+$/i.test(after) ? after.slice(0, 48) : "";
+    return {
+      id: `online-${crypto.createHash("sha256").update(`${name}\0${templateUrl}`).digest("hex").slice(0, 16)}`,
+      kind: "online",
+      name,
+      url: templateUrl,
+      accountId
+    };
+  }).filter(Boolean);
+  return { filePath, templates };
+}
+
+function writeOnlineTemplates(templates = [], filePath = onlineTemplateFilePath()) {
+  const normalized = templates.map((template) => ({
+    name: String(template?.name || "").trim().slice(0, 48),
+    url: normalizeOnlineTemplateUrl(template?.url),
+    accountId: /^[a-z0-9_-]+$/i.test(String(template?.accountId || ""))
+      ? String(template.accountId).slice(0, 48)
+      : ""
+  })).filter((template) => template.name && template.url);
+  const seen = new Set();
+  const unique = normalized.filter((template) => {
+    const key = `${template.name.toLowerCase()}\0${template.url.toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  const text = unique.map((template) => [template.name, template.url, template.accountId].filter(Boolean).join("\t")).join("\r\n");
+  fs.writeFileSync(temporary, text ? `${text}\r\n` : "", "utf8");
+  fs.renameSync(temporary, filePath);
+  return readOnlineTemplates(filePath);
+}
+
+function updateOnlineTemplate(body = {}, filePath = onlineTemplateFilePath()) {
+  const current = readOnlineTemplates(filePath).templates;
+  const action = String(body.action || "upsert");
+  if (action === "delete") {
+    return writeOnlineTemplates(current.filter((template) => template.id !== String(body.id || "")), filePath);
+  }
+  const name = String(body.name || "").trim().slice(0, 48);
+  const templateUrl = normalizeOnlineTemplateUrl(body.url);
+  if (!name) throw new Error("在线模板名称不能为空");
+  if (!templateUrl) throw new Error("只支持 ChatGPT 会话链接或分享链接");
+  const accountId = /^[a-z0-9_-]+$/i.test(String(body.accountId || "")) ? String(body.accountId).slice(0, 48) : "";
+  const replacingId = String(body.id || "");
+  const next = current.filter((template) => template.id !== replacingId && template.url !== templateUrl);
+  next.push({ name, url: templateUrl, accountId });
+  return writeOnlineTemplates(next, filePath);
+}
+
 function getProductLibrary() {
   const root = path.join(PROJECT_ROOT, "03-成品库");
   const groups = safeList(root)
@@ -4687,6 +4811,15 @@ async function route(req, res) {
     return sendExtensionJson(req, res, getDashboard(parsed.query.refresh === "materials", libraryPath));
   }
 
+  if (pathname === "/api/gpt-online-templates" && req.method === "GET") {
+    return sendExtensionJson(req, res, readOnlineTemplates());
+  }
+
+  if (pathname === "/api/gpt-online-templates" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    return sendExtensionJson(req, res, { ok: true, ...updateOnlineTemplate(body) });
+  }
+
   if (pathname === "/api/conversion/snapshot" && req.method === "GET") {
     return sendJson(res, await getConversionSnapshot());
   }
@@ -5712,6 +5845,7 @@ module.exports = {
   collectMaterialLinks,
   extensionCorsHeaders,
   extensionProductTreeSnapshot,
+  findCompletedWorkPackageByBatchId,
   getBody,
   httpServer,
   isAllowedFile,
@@ -5724,6 +5858,8 @@ module.exports = {
   materialCategoryIndex,
   materialCategoryCountMap,
   materialTreeSignature,
+  normalizeOnlineTemplateUrl,
+  readOnlineTemplates,
   getMaterialUsageLedger,
   getMaterialMetadataLedger,
   checkMaterialUsage,
@@ -5740,6 +5876,7 @@ module.exports = {
   getMaterialGlobalIndex,
   recordMaterialUsage,
   updateMaterialMetadata,
+  updateOnlineTemplate,
   resolvePublicFile,
   rewriteIntegratedConversionContent,
   rewriteIntegratedConversionDocument,

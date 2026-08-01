@@ -643,6 +643,20 @@ ipcMain.handle("desktop:gpt-profile-save", async (_event, input = {}) => {
   return state;
 });
 
+ipcMain.handle("desktop:gpt-profile-reorder", async (_event, accountIds = []) => {
+  const state = readBrowserProfiles();
+  const requested = Array.isArray(accountIds)
+    ? accountIds.map(safeGptAccountId).filter(Boolean)
+    : [];
+  const byId = new Map(state.profiles.map((profile) => [profile.id, profile]));
+  const ordered = requested.map((id) => byId.get(id)).filter(Boolean);
+  const seen = new Set(ordered.map((profile) => profile.id));
+  ordered.push(...state.profiles.filter((profile) => !seen.has(profile.id)));
+  state.profiles = ordered;
+  writeBrowserProfiles(state);
+  return state;
+});
+
 ipcMain.handle("desktop:gpt-profile-hide", async (_event, input = {}) => {
   const state = readBrowserProfiles();
   const id = safeGptAccountId(input.id);
@@ -854,6 +868,13 @@ ipcMain.handle("desktop:gpt-navigate", async (_event, input = {}) => {
   const action = String(input.action || "reload");
   if (action === "back" && contents.canGoBack()) contents.goBack();
   else if (action === "forward" && contents.canGoForward()) contents.goForward();
+  else if (action === "url") {
+    const targetUrl = safeGptUrl(input.targetUrl);
+    if (!targetUrl || !/^https:\/\/chatgpt\.com\/(?:c|share)\//i.test(targetUrl)) {
+      throw new Error("只允许打开 ChatGPT 会话链接或分享链接");
+    }
+    await contents.loadURL(targetUrl);
+  }
   else if (action === "home" || action === "new-chat") await contents.loadURL(GPT_URL);
   else contents.reload();
   return {
@@ -883,7 +904,34 @@ ipcMain.handle("desktop:gpt-manual-action", async (_event, input = {}) => {
   const action = String(input.action || "download").replace(/[^a-z-]/g, "").slice(0, 32) || "download";
   const contents = account?.view?.webContents;
   if (!contents || contents.isDestroyed()) return { ok: false, error: "GPT 网页尚未就绪" };
-  return contents.executeJavaScript(`Promise.resolve(window.CGPTImageDownloadDebug?.manualAction(${JSON.stringify(action)}) || ({ ok: false, error: "网页下载工具尚未加载" }))`, true)
+  const requestId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const script = `new Promise((resolve) => {
+    const requestId = ${JSON.stringify(requestId)};
+    const timeout = setTimeout(() => {
+      document.removeEventListener("tb-workbench-manual-action-result", onResult);
+      resolve({ ok: false, error: "网页手动操作超时" });
+    }, ${15 * 60 * 1000});
+    function onResult() {
+      let result = null;
+      try { result = JSON.parse(document.getElementById("tb-workbench-manual-action-result")?.textContent || "null"); }
+      catch { result = null; }
+      if (!result || result.requestId !== requestId) return;
+      clearTimeout(timeout);
+      document.removeEventListener("tb-workbench-manual-action-result", onResult);
+      resolve(result);
+    }
+    document.addEventListener("tb-workbench-manual-action-result", onResult);
+    let bridge = document.getElementById("tb-workbench-manual-action-request");
+    if (!bridge) {
+      bridge = document.createElement("script");
+      bridge.id = "tb-workbench-manual-action-request";
+      bridge.type = "application/json";
+      document.documentElement.appendChild(bridge);
+    }
+    bridge.textContent = ${JSON.stringify(JSON.stringify({ requestId, action }))};
+    document.dispatchEvent(new Event("tb-workbench-manual-action"));
+  })`;
+  return contents.executeJavaScript(script, true)
     .catch((error) => ({ ok: false, error: error?.message || String(error) }));
 });
 

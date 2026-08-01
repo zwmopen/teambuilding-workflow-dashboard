@@ -58,6 +58,9 @@ let productionWorkspace = null;
 const gptTestSelectedMaterials = new Set();
 const gptTestMaterialEntries = new Map();
 const gptTestSelectedTemplates = new Set();
+let gptTemplateMode = localStorage.getItem("teambuilding-gpt-template-mode") === "online" ? "online" : "local";
+let gptOnlineTemplates = [];
+let gptOnlineTemplatesLoaded = false;
 const gptTestExpandedCategories = new Set();
 const gptTestExpandedMaterials = new Set();
 const gptTestExpandedTemplates = new Set();
@@ -67,6 +70,7 @@ let gptEmbeddedResizeObserver = null;
 let gptEmbeddedResizeTimer = null;
 let gptLastShowSignature = "";
 let gptShowInFlight = null;
+let draggedGptAccountId = "";
 let gptAutoRunning = false;
 let gptAutoPaused = false;
 let gptQueuePaused = false;
@@ -121,7 +125,7 @@ function persistGptQueue() {
 }
 
 function isContinuousGptProductionArmed() {
-  return gptAutoSettings.mode === "all-day"
+  return ["all-day", "all-day-multi"].includes(gptAutoSettings.mode)
     && localStorage.getItem(GPT_CONTINUOUS_RUN_STORAGE_KEY) === "true";
 }
 
@@ -142,6 +146,31 @@ function restoreGptQueue() {
   try {
     const saved = JSON.parse(localStorage.getItem(GPT_QUEUE_STORAGE_KEY) || "null");
     if (!saved || !Array.isArray(saved.tasks) || !saved.tasks.length) return;
+    // 0.14.5 could stop after the first image while the same assistant
+    // response was still adding more images. Rewind only that exact legacy
+    // signature so 0.14.6 can recover the already-finished reply instead of
+    // uploading the source post or sending `1` again.
+    const legacyFalseStopIndex = saved.tasks.findIndex((task, index) => (
+      index < Number(saved.index || 0)
+      && task?._quotaSkipped === true
+      && Number(task?.expectedImages || 0) >= 4
+      && /本轮只检测到\s*1\s*张/.test(String(task?._error || ""))
+      && /等待图片/.test(String(task?._stage || ""))
+    ));
+    if (legacyFalseStopIndex >= 0) {
+      const task = saved.tasks[legacyFalseStopIndex];
+      task._status = "paused";
+      task._errorCode = "LEGACY_IMAGE_COUNT_RECHECK";
+      task._error = "旧版图片计数可能过早收口；将从当前 GPT 回复重新核对，不重复上传或发送 1";
+      task.retryFromStage = "等待图片";
+      task.retryFromPercent = Number(task._percent || 64);
+      task._quotaSkipped = false;
+      delete task._endedAt;
+      delete task._result;
+      saved.index = legacyFalseStopIndex;
+      saved.paused = true;
+      localStorage.setItem(GPT_QUEUE_STORAGE_KEY, JSON.stringify(saved));
+    }
     gptTestQueue = saved.tasks;
     gptTestQueueIndex = Math.max(0, Math.min(saved.tasks.length, Number(saved.index || 0)));
     gptTestQueue.forEach((task) => {
@@ -269,7 +298,7 @@ function loadGptAutoSettings() {
 
 function renderGptAutoSettings() {
   const values = gptAutoSettings;
-  const mode = ["manual", "multi", "random", "all-day", "scheduled"].includes(values.mode) ? values.mode : "automatic";
+  const mode = ["manual", "multi", "random", "all-day", "all-day-multi", "scheduled"].includes(values.mode) ? values.mode : "automatic";
   if ($("#gptProductionMode")) $("#gptProductionMode").value = mode;
   if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = mode;
   if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
@@ -310,7 +339,7 @@ function saveGptAutoSettings() {
   const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
   const selectedMode = activePageSettings === "gptAuto" ? $("#gptProductionModeSetting")?.value : $("#gptProductionMode")?.value;
   gptAutoSettings = {
-    mode: ["manual", "multi", "random", "all-day", "scheduled"].includes(selectedMode) ? selectedMode : "automatic",
+    mode: ["manual", "multi", "random", "all-day", "all-day-multi", "scheduled"].includes(selectedMode) ? selectedMode : "automatic",
     autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
     autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
     autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
@@ -578,10 +607,13 @@ function showContextMenu(x, y) {
   if (!menu || !contextMenuTarget) return;
   const isFolderBinding = contextMenuTarget.kind === "folder-binding";
   const isEditableFolder = contextMenuTarget.kind === "gpt-material-folder" || contextMenuTarget.kind === "gpt-template-folder";
+  const isBrowserProfile = contextMenuTarget.kind === "gpt-browser-profile";
+  if ($("#contextOpenFolder")) $("#contextOpenFolder").hidden = isBrowserProfile;
+  if ($("#contextCopyPath")) $("#contextCopyPath").hidden = isBrowserProfile;
   if ($("#contextSetFolder")) $("#contextSetFolder").hidden = !isFolderBinding;
   if ($("#contextRename")) $("#contextRename").hidden = isFolderBinding;
   if ($("#contextTrashFolder")) $("#contextTrashFolder").hidden = !isEditableFolder;
-  if ($("#contextCopyTemplateCommand")) $("#contextCopyTemplateCommand").hidden = isFolderBinding;
+  if ($("#contextCopyTemplateCommand")) $("#contextCopyTemplateCommand").hidden = isFolderBinding || isBrowserProfile;
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
   menu.classList.add("show");
@@ -1559,7 +1591,7 @@ function renderGptTestMaterials() {
           <button class="workbench-post-folder" type="button" draggable="true" data-gpt-material-path="${escapeHtml(item.path)}" data-gpt-test-post-folder="${escapeHtml(item.id)}" title="${escapeHtml(item.name)}">
             <span class="folder-glyph" aria-hidden="true">${postExpanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.imageCount || 0} 图 · ${item.textCount || 0} TXT · 使用 ${Number(item.usageCount || 0)} 次</small></span>
           </button>
-          <button class="gpt-post-send-button" type="button" data-gpt-send-post="${escapeHtml(item.id)}" title="只把这个帖子发送到 GPT"${gptAutoRunning ? " disabled" : ""}>发送</button>
+          <button class="gpt-post-send-button" type="button" data-gpt-upload-post="${escapeHtml(item.id)}" title="只把这个帖子上传到当前 GPT 输入框，不自动发送"${gptAutoRunning ? " disabled" : ""}>上传</button>
         </div>
         ${postExpanded ? `<div class="workbench-post-assets">${images}${texts || `<span class="workbench-empty-asset">没有 TXT</span>`}</div>` : ""}
       </section>`;
@@ -1582,7 +1614,10 @@ function renderGptTestMaterials() {
 function renderGptTestTemplates() {
   const host = $("#gptTestTemplateList");
   if (!host) return;
-  const templates = dashboard?.templates?.templates || [];
+  const templates = gptTemplateMode === "online" ? gptOnlineTemplates : (dashboard?.templates?.templates || []);
+  $("#gptLocalTemplateModeBtn")?.classList.toggle("active", gptTemplateMode === "local");
+  $("#gptOnlineTemplateModeBtn")?.classList.toggle("active", gptTemplateMode === "online");
+  $("#gptOnlineTemplateForm")?.toggleAttribute("hidden", gptTemplateMode !== "online");
   host.innerHTML = templates.length ? templates.map((template) => {
     const selected = gptTestSelectedTemplates.has(template.id);
     const expanded = gptTestExpandedTemplates.has(template.id);
@@ -1592,18 +1627,59 @@ function renderGptTestTemplates() {
     const texts = expanded ? (template.attachments || []).filter((filePath) => /\.(?:txt|md)$/i.test(filePath)).map((filePath) => (
       `<button class="workbench-text-asset" type="button" data-workbench-text-path="${escapeHtml(filePath)}" data-workbench-text-caption="${escapeHtml(template.name)}"><b>TXT</b><span>模板规则</span><small>点击查看全文</small></button>`
     )).join("") : "";
+    const onlineDetail = template.kind === "online" && expanded
+      ? `<div class="gpt-online-template-detail"><a href="${escapeHtml(template.url)}" target="_blank" rel="noopener">${escapeHtml(template.url)}</a>${template.accountId ? `<small>绑定：${escapeHtml(template.accountId)}</small>` : ""}<button type="button" data-gpt-online-template-delete="${escapeHtml(template.id)}">删除</button></div>`
+      : "";
     return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
       <div class="workbench-folder-row${selected ? " selected" : ""}">
         <input class="material-check folder-check" type="checkbox" data-gpt-test-template-check="${escapeHtml(template.id)}" ${selected ? "checked" : ""} aria-label="选择模板"${gptAutoRunning ? " disabled" : ""} />
         <button class="workbench-folder-item gpt-test-template-row${expanded ? " active" : ""}" type="button" data-gpt-test-template="${escapeHtml(template.id)}">
-          <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(template.name)}（${template.imageCount || 0}）</strong></span>
+          <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(template.name)}${template.kind === "online" ? "" : `（${template.imageCount || 0}）`}</strong></span>
         </button>
+        <button class="gpt-post-send-button" type="button" data-gpt-upload-template="${escapeHtml(template.id)}" title="${template.kind === "online" ? "在当前浏览器打开这个在线模板" : "只把这个模板上传到当前 GPT 输入框，不自动发送"}"${gptAutoRunning ? " disabled" : ""}>上传</button>
       </div>
-      ${expanded ? `<div class="workbench-template-images workbench-inline-previews">${previews}${texts}</div>` : ""}
+      ${expanded ? `<div class="workbench-template-images workbench-inline-previews">${onlineDetail}${previews}${texts}</div>` : ""}
     </section>`;
-  }).join("") : `<div class="empty-state"><strong>没有读取到模板</strong></div>`;
-  $("#gptTestTemplateName").textContent = gptTestSelectedTemplates.size ? `${gptTestSelectedTemplates.size} 个已选` : "未选时沿用当前会话";
+  }).join("") : `<div class="empty-state"><strong>${gptTemplateMode === "online" ? "还没有在线模板" : "没有读取到本地模板"}</strong><p>${gptTemplateMode === "online" ? "在上方粘贴名称和 ChatGPT 会话链接即可添加。" : "请检查模板库目录。"}</p></div>`;
+  $("#gptTestTemplateName").textContent = gptTestSelectedTemplates.size ? `${gptTestSelectedTemplates.size} 个已选` : (gptTemplateMode === "online" ? "未选时沿用当前窗口" : "未选时沿用当前会话");
   updateGptTestQueueStatus();
+}
+
+async function loadGptOnlineTemplates() {
+  const result = await api("/api/gpt-online-templates");
+  gptOnlineTemplates = Array.isArray(result?.templates) ? result.templates : [];
+  gptOnlineTemplatesLoaded = true;
+  if ($("#gptOnlineTemplateFile")) $("#gptOnlineTemplateFile").textContent = result?.filePath || "链接模板.txt";
+  renderGptTestTemplates();
+}
+
+function switchGptTemplateMode(mode) {
+  if (gptAutoRunning) {
+    showWorkbenchAssistantBubble("当前批次正在执行，模板来源已冻结；完成或暂停后再切换。", { duration: 4200 });
+    return;
+  }
+  const next = mode === "online" ? "online" : "local";
+  if (next === gptTemplateMode) return;
+  gptTemplateMode = next;
+  localStorage.setItem("teambuilding-gpt-template-mode", next);
+  gptTestSelectedTemplates.clear();
+  renderGptTestTemplates();
+  if (next === "online") loadGptOnlineTemplates().catch((error) => showSystemNotice("在线模板读取失败", error.message, { tone: "danger" }));
+}
+
+async function saveGptOnlineTemplate() {
+  const name = String($("#gptOnlineTemplateName")?.value || "").trim();
+  const url = String($("#gptOnlineTemplateUrl")?.value || "").trim();
+  const result = await api("/api/gpt-online-templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "upsert", name, url })
+  });
+  gptOnlineTemplates = Array.isArray(result?.templates) ? result.templates : [];
+  if ($("#gptOnlineTemplateName")) $("#gptOnlineTemplateName").value = "";
+  if ($("#gptOnlineTemplateUrl")) $("#gptOnlineTemplateUrl").value = "";
+  renderGptTestTemplates();
+  showWorkbenchAssistantBubble(`在线模板“${name}”已保存到链接模板.txt。`);
 }
 
 function selectedGptTestEntries() {
@@ -1615,7 +1691,8 @@ function selectedGptTestEntries() {
 }
 
 function selectedGptTestTemplates() {
-  return (dashboard?.templates?.templates || []).filter((template) => gptTestSelectedTemplates.has(template.id));
+  const templates = gptTemplateMode === "online" ? gptOnlineTemplates : (dashboard?.templates?.templates || []);
+  return templates.filter((template) => gptTestSelectedTemplates.has(template.id));
 }
 
 function normalizeGptAttachmentPath(value = "") {
@@ -1732,7 +1809,7 @@ async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8
 }
 
 async function prepareAllDayGptQueue() {
-  if (gptAutoSettings.mode !== "all-day" || gptAutoRunning) return false;
+  if (!["all-day", "all-day-multi"].includes(gptAutoSettings.mode) || gptAutoRunning) return false;
   return prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "全天自动");
 }
 
@@ -1790,11 +1867,21 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
     return;
   }
 
-  const account = gptAccounts.find((item) => item.id === activeGptAccountId);
-  const quotaAccountId = account?.quotaGroup || account?.id || activeGptAccountId;
-  const cycleState = readGptCycleState(quotaAccountId);
-  if (Number(cycleState.nextProbeAt || 0) > Date.now()) {
-    scheduleGptQuotaReminder(new Date(Number(cycleState.nextProbeAt)).toISOString(), quotaAccountId);
+  const candidateAccounts = (gptAutoSettings.mode === "all-day-multi"
+    ? gptAccounts.filter((item) => !item.hidden)
+    : gptAccounts.filter((item) => item.id === activeGptAccountId));
+  const cycleStates = candidateAccounts.map((account) => ({
+    account,
+    quotaAccountId: account.quotaGroup || account.id,
+    state: readGptCycleState(account.quotaGroup || account.id)
+  }));
+  const readyAccounts = cycleStates.filter((entry) => Number(entry.state.nextProbeAt || 0) <= Date.now());
+  if (!readyAccounts.length && cycleStates.length) {
+    cycleStates.forEach((entry) => {
+      if (Number(entry.state.nextProbeAt || 0) > Date.now()) {
+        scheduleGptQuotaReminder(new Date(Number(entry.state.nextProbeAt)).toISOString(), entry.quotaAccountId);
+      }
+    });
     return;
   }
 
@@ -1813,7 +1900,7 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
     gptQueuePaused = gptTestQueueIndex < gptTestQueue.length;
     persistGptQueue();
     showWorkbenchAssistantBubble("全天自动正在继续下一批素材。", { duration: 0 });
-    await sendNextGptTestTask({ continuousResume: true });
+    await sendNextGptTestTask({ continuousResume: true, allowedAccountIds: readyAccounts.map((entry) => entry.account.id) });
   }, Math.max(1500, Number(delayMs || 0)));
 }
 
@@ -1828,6 +1915,46 @@ function buildGptTemplateInitTask(template) {
   };
 }
 
+async function uploadSingleItemToCurrentGpt(task, successMessage) {
+  if (!window.gptWorkbench?.sendTask) {
+    throw new Error("当前不是桌面开发端，无法把本地附件上传到内置 GPT");
+  }
+  if (gptAutoRunning) {
+    throw new Error("自动任务正在执行，不能把手动上传插入当前会话；请先暂停并等待当前阶段结束");
+  }
+  const account = gptAccounts.find((item) => item.id === activeGptAccountId && !item.hidden) || gptAccounts[0];
+  const payload = {
+    ...task,
+    accountId: account?.id || activeGptAccountId || "account-1",
+    quotaAccountId: account?.quotaGroup || account?.id || activeGptAccountId || "account-1",
+    autoRun: false,
+    autoOptions: gptAutoSettings
+  };
+  showWorkbenchAssistantBubble(`正在上传：${task.name}`, { duration: 0 });
+  const result = await window.gptWorkbench.sendTask(payload);
+  if (!result?.ok) throw new Error(result?.error || "GPT 没有确认附件上传完成");
+  showWorkbenchAssistantBubble(successMessage, { duration: 4200 });
+  return result;
+}
+
+async function uploadMaterialToCurrentGpt(entry) {
+  const task = buildGptTestTask(entry);
+  task.requestId = `gpt-manual-material-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await uploadSingleItemToCurrentGpt(task, `已把“${entry.item.name}”上传到当前 GPT；尚未自动发送。`);
+}
+
+async function uploadTemplateToCurrentGpt(template) {
+  if (template.kind === "online") {
+    if (!window.gptWorkbench?.navigate) throw new Error("当前不是桌面开发端，无法打开在线模板");
+    await window.gptWorkbench.navigate("url", activeGptAccountId, template.url);
+    showWorkbenchAssistantBubble(`已在当前浏览器打开在线模板“${template.name}”。`, { duration: 4200 });
+    return;
+  }
+  const task = buildGptTemplateInitTask(template);
+  task.requestId = `gpt-manual-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await uploadSingleItemToCurrentGpt(task, `已把模板“${template.name}”上传到当前 GPT；尚未自动发送。`);
+}
+
 function buildGptTestTask(entry, template = null) {
   const attachments = attachmentsForSingleMaterial(entry.item);
   const extra = String($("#gptTestExtraPrompt")?.value || "").trim();
@@ -1836,7 +1963,11 @@ function buildGptTestTask(entry, template = null) {
   // initialization/migration prompt in the new conversation.
   const randomMode = gptAutoSettings.mode === "random" && !template;
   const prompt = randomMode ? "" : [
-    template ? `继续使用当前会话刚初始化的「${template.name}」母版。` : "继续使用当前 GPT 会话里已经沉淀好的母版环境。",
+    template?.kind === "online"
+      ? `继续使用当前链接会话中已经沉淀好的「${template.name}」母版。`
+      : template
+        ? `继续使用当前会话刚初始化的「${template.name}」母版。`
+        : "继续使用当前 GPT 会话里已经沉淀好的母版环境。",
     "本次附件全部是待迁移素材和 TXT 参考内容，不是新模板。",
     `当前素材文件夹：${entry.item.name}`,
     "请读取全部附件，不要省略 TXT。先严格按既定格式输出逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。",
@@ -1846,6 +1977,8 @@ function buildGptTestTask(entry, template = null) {
     requestId: `gpt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     taskType: "material",
     templateId: template?.id || "",
+    templateKind: template?.kind || "local",
+    templateUrl: template?.url || "",
     name: `${template?.name || "当前会话母版"} × ${entry.item.name}`,
     materialPath: entry.item.path,
     attachments,
@@ -1856,10 +1989,19 @@ function buildGptTestTask(entry, template = null) {
 
 function buildGptProductionQueue(entries = selectedGptTestEntries(), templates = selectedGptTestTemplates()) {
   if (!templates.length) return entries.map((entry) => buildGptTestTask(entry));
-  return templates.flatMap((template) => [
-    { ...buildGptTemplateInitTask(template), navigation: "new-chat" },
-    ...entries.map((entry) => buildGptTestTask(entry, template))
-  ]);
+  return templates.flatMap((template) => {
+    if (template.kind === "online") {
+      return entries.map((entry, index) => ({
+        ...buildGptTestTask(entry, template),
+        navigationUrl: index === 0 ? template.url : "",
+        preferredAccountId: template.accountId || ""
+      }));
+    }
+    return [
+      { ...buildGptTemplateInitTask(template), navigation: "new-chat" },
+      ...entries.map((entry) => buildGptTestTask(entry, template))
+    ];
+  });
 }
 
 function gptProductionWorkCount() {
@@ -2025,7 +2167,7 @@ async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
   const state = readGptCycleState(key);
   if (Number(state.nextProbeAt || 0) !== Number(expectedProbeAt || 0)) return;
   if (gptAutoSettings.mode === "manual") return;
-  if (gptAutoSettings.mode === "all-day") {
+  if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode)) {
     if (!isContinuousGptProductionArmed()) return;
     const workWindow = getGptContinuousWorkWindow();
     if (!workWindow.allowed) {
@@ -2042,7 +2184,7 @@ async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
   }
 
   let hasPendingQueue = gptTestQueueIndex < gptTestQueue.length;
-  if (!hasPendingQueue && (gptAutoSettings.mode === "all-day" || gptAutoSettings.mode === "scheduled")) {
+  if (!hasPendingQueue && (["all-day", "all-day-multi", "scheduled"].includes(gptAutoSettings.mode))) {
     hasPendingQueue = Boolean(await prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "额度恢复自动探测"));
   }
   if (!hasPendingQueue) {
@@ -2101,7 +2243,7 @@ async function checkScheduledGptProduction() {
     const target = new Date(now);
     target.setHours(hour, minute, 0, 0);
     if (now < target || now.getTime() - target.getTime() > 65_000) continue;
-    if ((gptAutoSettings.mode === "all-day" || gptAutoSettings.mode === "scheduled") && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
+    if ((["all-day", "all-day-multi", "scheduled"].includes(gptAutoSettings.mode)) && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
       gptScheduledLaunchKeys.add(launchKey);
       gptScheduledDayKey = dayKey;
       const prepared = await prepareAutoGptQueue(plan.count, gptAutoSettings.mode === "scheduled" ? "定时启动" : "全天自动");
@@ -2146,6 +2288,8 @@ function updateGptTestQueueStatus(message = "") {
         ? "单窗口自动-随机"
         : gptAutoSettings.mode === "all-day"
           ? "单窗口全天自动"
+          : gptAutoSettings.mode === "all-day-multi"
+            ? "多账号全天自动"
           : gptAutoSettings.mode === "scheduled"
             ? "定时启动"
           : "单窗口自动（有提示词）";
@@ -2199,10 +2343,46 @@ function renderGptAccountTabs() {
   host.innerHTML = gptAccounts.filter((account) => !account.hidden).map((account) => `
     <button class="gpt-account-tab${account.id === activeGptAccountId ? " active" : ""}"
       type="button" data-gpt-account="${escapeHtml(account.id)}"
+      draggable="true"
       title="${escapeHtml(account.name)} · 独立登录状态">
       <span>${escapeHtml(account.name)}</span>
     </button>
   `).join("");
+}
+
+async function renameGptAccount(accountId) {
+  const account = gptAccounts.find((item) => item.id === accountId);
+  if (!account) return;
+  const nextName = window.prompt("输入这个浏览器窗口的新名称", account.name);
+  if (nextName === null) return;
+  const cleanName = String(nextName || "").trim().slice(0, 24);
+  if (!cleanName || cleanName === account.name) return;
+  account.name = cleanName;
+  if (window.gptWorkbench?.saveProfile) {
+    const state = await window.gptWorkbench.saveProfile({ ...account, active: false });
+    gptAccounts = state.profiles.map((profile) => ({ ...profile }));
+  }
+  saveGptAccounts();
+  renderGptAccountTabs();
+  renderGptBrowserManager();
+  showWorkbenchAssistantBubble(`浏览器窗口已重命名为“${cleanName}”。`);
+}
+
+async function reorderGptAccounts(sourceId, targetId) {
+  if (!sourceId || !targetId || sourceId === targetId) return;
+  const sourceIndex = gptAccounts.findIndex((item) => item.id === sourceId);
+  const targetIndex = gptAccounts.findIndex((item) => item.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0) return;
+  const [moved] = gptAccounts.splice(sourceIndex, 1);
+  gptAccounts.splice(targetIndex, 0, moved);
+  if (window.gptWorkbench?.reorderProfiles) {
+    const state = await window.gptWorkbench.reorderProfiles(gptAccounts.map((item) => item.id));
+    gptAccounts = state.profiles.map((profile) => ({ ...profile }));
+  }
+  saveGptAccounts();
+  renderGptAccountTabs();
+  renderGptBrowserManager();
+  showWorkbenchAssistantBubble("浏览器标签顺序已保存。", { transient: true, duration: 2600 });
 }
 
 function renderGptBrowserManager() {
@@ -2221,10 +2401,6 @@ function renderGptBrowserManager() {
 }
 
 async function switchGptAccount(accountId) {
-  if (gptAutoRunning) {
-    showSystemNotice("当前账号正在生产", "本轮任务会继续使用开始时的账号；完成或暂停后再切换账号。");
-    return;
-  }
   const account = gptAccounts.find((item) => item.id === accountId);
   if (!account || account.id === activeGptAccountId) return;
   activeGptAccountId = account.id;
@@ -2244,6 +2420,9 @@ async function switchGptAccount(accountId) {
   gptLastShowSignature = "";
   await showEmbeddedGptView();
   refreshGptQuota();
+  if (gptAutoRunning) {
+    showWorkbenchAssistantBubble(`已切换查看 ${account.name}；正在运行的任务仍留在开始时的浏览器，不会向当前窗口自动注入。`, { duration: 0 });
+  }
 }
 
 async function addGptAccount() {
@@ -2310,7 +2489,7 @@ async function deleteGptAccountLogin(accountId) {
   showSystemNotice("登录数据已清除", `${account.name} 的本机登录状态已删除，浏览器档案仍保留。`, { tone: "success" });
 }
 
-async function navigateEmbeddedGpt(action) {
+async function navigateEmbeddedGpt(action, targetUrl = "", accountId = activeGptAccountId) {
   if (!window.gptWorkbench?.available) return;
   const state = $("#gptEmbeddedState");
   try {
@@ -2318,14 +2497,12 @@ async function navigateEmbeddedGpt(action) {
       state.textContent = action === "reload" ? "正在刷新 GPT" : "正在切换网页";
       state.dataset.tone = "busy";
     }
-    if (/\/auth\/(?:login|signup)/i.test(result.url || "")) {
-      showWorkbenchAssistantBubble("当前 GPT 浏览器需要登录，登录完成后可继续生产。", { duration: 0 });
-    } else if (result.ready) {
-      showWorkbenchAssistantBubble("GPT 已就绪，可以从左侧选择素材开始自动生产。", { duration: 0 });
-    }
-    const result = await window.gptWorkbench.navigate(action, activeGptAccountId);
+    const result = await window.gptWorkbench.navigate(action, accountId, targetUrl);
     $("#gptBrowserBackBtn").disabled = !result.canGoBack;
     $("#gptBrowserForwardBtn").disabled = !result.canGoForward;
+    if (/\/auth\/(?:login|signup)/i.test(result.url || "")) {
+      showWorkbenchAssistantBubble("当前 GPT 浏览器需要登录，登录完成后可继续生产。", { duration: 0 });
+    }
     window.setTimeout(() => showEmbeddedGptView(), 380);
   } catch (error) {
     if (state) {
@@ -2442,6 +2619,9 @@ function renderGptProductionTest() {
   if (!$("#gptProductionTestView")) return;
   renderGptTestMaterials();
   renderGptTestTemplates();
+  if (gptTemplateMode === "online" && !gptOnlineTemplatesLoaded) {
+    loadGptOnlineTemplates().catch((error) => showWorkbenchAssistantBubble(`在线模板读取失败：${error.message}`, { duration: 0 }));
+  }
   renderGptAccountTabs();
   renderGptAutoSettings();
   refreshGptQuota();
@@ -2472,10 +2652,16 @@ function gptTaskGroupsForMultiWindow() {
   const entries = selectedGptTestEntries();
   const templates = selectedGptTestTemplates();
   if (!templates.length) return entries.map((entry) => [buildGptTestTask(entry)]);
-  return templates.map((template) => [
-    { ...buildGptTemplateInitTask(template), navigation: "new-chat" },
-    ...entries.map((entry) => buildGptTestTask(entry, template))
-  ]);
+  return templates.flatMap((template) => template.kind === "online"
+    ? entries.map((entry) => [{
+        ...buildGptTestTask(entry, template),
+        navigationUrl: template.url,
+        preferredAccountId: template.accountId || ""
+      }])
+    : [[
+        { ...buildGptTemplateInitTask(template), navigation: "new-chat" },
+        ...entries.map((entry) => buildGptTestTask(entry, template))
+      ]]);
 }
 
 async function runGptTaskOnBrowser(task, account, tracker) {
@@ -2488,7 +2674,10 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   persistGptQueue();
   recordGptQuotaConsumption(task, task.quotaAccountId, "upload");
   if (task.taskType === "material") await ensureGptTaskQuota(task, task.quotaAccountId);
-  if (task.navigation === "new-chat") {
+  if (task.navigationUrl) {
+    await window.gptWorkbench.navigate("url", account.id, task.navigationUrl);
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+  } else if (task.navigation === "new-chat") {
     await window.gptWorkbench.navigate("new-chat", account.id);
     await new Promise((resolve) => setTimeout(resolve, 1200));
   }
@@ -2532,11 +2721,12 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   return result;
 }
 
-async function sendMultiWindowGptTasks() {
+async function sendMultiWindowGptTasks(options = {}) {
   if (gptAutoRunning) return;
   const groups = gptTaskGroupsForMultiWindow();
   if (!groups.length) return;
-  const visibleAccounts = gptAccounts.filter((account) => !account.hidden);
+  const allowedAccountIds = new Set(options.allowedAccountIds || []);
+  const visibleAccounts = gptAccounts.filter((account) => !account.hidden && (!allowedAccountIds.size || allowedAccountIds.has(account.id)));
   const workerCount = Math.max(1, Math.min(
     Number(gptAutoSettings.parallelWorkers || 3),
     Number(gptAutoSettings.maximumWorkers || 5),
@@ -2546,7 +2736,7 @@ async function sendMultiWindowGptTasks() {
   const allTasks = groups.flat();
   const existingCompleted = gptQueuePaused ? gptTestQueue.filter((task) => task._status === "completed").length : 0;
   const tracker = { completed: existingCompleted, failed: 0, total: existingCompleted + allTasks.length };
-  let nextGroup = 0;
+  const pendingGroups = groups.map((group, index) => ({ group, index }));
   if (!gptQueuePaused) {
     gptTestQueue = allTasks;
     gptTestQueueIndex = 0;
@@ -2559,10 +2749,15 @@ async function sendMultiWindowGptTasks() {
   updateGptTestQueueStatus(`多窗口自动已启动 · ${workers.length} 个浏览器 · ${gptProductionWorkCount()} 个作品`);
   const runWorker = async (account) => {
     while (!gptAutoPaused) {
-      const groupIndex = nextGroup;
-      nextGroup += 1;
-      const group = groups[groupIndex];
-      if (!group) return;
+      let claimIndex = pendingGroups.findIndex(({ group }) => {
+        const preferredAccountId = String(group.find((task) => task.preferredAccountId)?.preferredAccountId || "");
+        return preferredAccountId === account.id;
+      });
+      if (claimIndex < 0) {
+        claimIndex = pendingGroups.findIndex(({ group }) => !group.some((task) => task.preferredAccountId));
+      }
+      if (claimIndex < 0) return;
+      const [{ group }] = pendingGroups.splice(claimIndex, 1);
       for (const task of group) {
         if (gptAutoPaused) return;
         try {
@@ -2575,12 +2770,22 @@ async function sendMultiWindowGptTasks() {
           gptLastFailedStage = task._stage || "";
           gptLastFailedPercent = task._percent || 0;
           showWorkbenchAssistantBubble(`${task.name}生产失败并已记录；正在继续下一个素材。`, { duration: 0 });
+          if (isActualGptLimitMessage(String(task._error || error.message || ""))) return;
         }
       }
     }
   };
   try {
     await Promise.all(workers.map(runWorker));
+    if (pendingGroups.length) {
+      const unmatched = pendingGroups.flatMap(({ group }) => group).filter((task) => task._status !== "completed");
+      unmatched.forEach((task) => {
+        task._status = "waiting-account";
+        task._error = `在线模板绑定的浏览器 ${task.preferredAccountId || "未指定"} 当前不可用`;
+      });
+      tracker.failed += unmatched.length;
+      persistGptQueue();
+    }
     updateGptTestQueueStatus(gptAutoPaused
       ? `多窗口队列已暂停 · 完成 ${tracker.completed} · 失败 ${tracker.failed}`
       : `多窗口队列完成 · 成功 ${tracker.completed} · 失败 ${tracker.failed}`);
@@ -2590,13 +2795,14 @@ async function sendMultiWindowGptTasks() {
     persistGptQueue();
     updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
     refreshGptQuota();
+    if (isContinuousGptProductionArmed() && !gptAutoPaused) scheduleContinuousGptProduction();
   }
 }
 
 async function sendNextGptTestTask(options = {}) {
   if (!window.gptWorkbench?.available || gptAutoRunning) return;
-  if (gptAutoSettings.mode === "multi") return sendMultiWindowGptTasks();
-  if (gptAutoSettings.mode === "all-day" && options.userInitiated) {
+  if (["multi", "all-day-multi"].includes(gptAutoSettings.mode)) return sendMultiWindowGptTasks(options);
+  if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode) && options.userInitiated) {
     setContinuousGptProductionArmed(true);
   }
   if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
@@ -2651,7 +2857,10 @@ async function sendNextGptTestTask(options = {}) {
         // the extension, while multi-window keeps its conservative gate.
         allowManualOverride: gptAutoSettings.mode !== "multi" || Boolean(options.allowQuotaOverride)
       });
-      if (task.navigation === "new-chat") {
+      if (task.navigationUrl) {
+        await navigateEmbeddedGpt("url", task.navigationUrl, runAccountId);
+        await new Promise((resolve) => setTimeout(resolve, 1800));
+      } else if (task.navigation === "new-chat") {
         await navigateEmbeddedGpt("new-chat");
         await new Promise((resolve) => setTimeout(resolve, 1200));
       }
@@ -2689,7 +2898,7 @@ async function sendNextGptTestTask(options = {}) {
         gptLastFailedStage = String(result?.stage || gptLastFailedStage || "");
         gptLastFailedPercent = Number(result?.percent || gptLastFailedPercent || 0);
         const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
-        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING"].includes(String(result?.errorCode || ""))
+        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "IMAGE_COUNT_UNCERTAIN"].includes(String(result?.errorCode || ""))
           || /未发送附件|未发送文字|重复粘贴提示词|不属于当前帖子文件夹|混合上传|缺少帖子文件夹路径/.test(taskError.message);
         task._stage = gptLastFailedStage;
         task._percent = gptLastFailedPercent;
@@ -2725,7 +2934,7 @@ async function sendNextGptTestTask(options = {}) {
           recordActualGptLimit(task._error, activeGptAccountId, lowOutputLimit ? "generation" : inferGptQuotaLimitKind(task, taskError.message));
           if (lowOutputLimit) gptTestQueueIndex += 1;
           persistGptQueue();
-          const detectedLowOutputCount = Number(taskError.message.match(/只检测到\s*(\d+)/)?.[1] || result?.detectedImages || 0);
+          const detectedLowOutputCount = Number(taskError.message.match(/(?:只检测到|完整回复只有)\s*(\d+)/)?.[1] || result?.detectedImages || 0);
           throw new Error(lowOutputLimit
             ? `本轮只生成 ${Math.max(0, detectedLowOutputCount)} 张，低于安全线；已暂停本批，等待下一轮额度探测`
             : taskError.message);
@@ -7004,19 +7213,16 @@ function bindEvents() {
       }
       return;
     }
-    const gptSendPost = event.target.closest("[data-gpt-send-post]");
-    if (gptSendPost) {
+    const gptUploadPost = event.target.closest("[data-gpt-upload-post]");
+    if (gptUploadPost) {
       if (blockGptSelectionDuringRun()) return;
-      const entry = findMaterialEntry(gptSendPost.dataset.gptSendPost);
+      const entry = findMaterialEntry(gptUploadPost.dataset.gptUploadPost);
       if (!entry) return;
-      gptTestSelectedMaterials.clear();
-      gptTestMaterialEntries.clear();
-      gptTestSelectedMaterials.add(entry.item.path);
-      gptTestMaterialEntries.set(entry.item.path, entry);
-      gptTestQueue = [];
-      gptTestQueueIndex = 0;
-      renderGptTestMaterials();
-      sendNextGptTestTask();
+      try {
+        await uploadMaterialToCurrentGpt(entry);
+      } catch (error) {
+        showSystemNotice("素材上传失败", error.message, { tone: "danger" });
+      }
       return;
     }
     const gptMaterialCheck = event.target.closest("[data-gpt-test-material-check]");
@@ -7042,6 +7248,42 @@ function bindEvents() {
       gptTestQueue = [];
       gptTestQueueIndex = 0;
       renderGptTestTemplates();
+      return;
+    }
+    const gptUploadTemplate = event.target.closest("[data-gpt-upload-template]");
+    if (gptUploadTemplate) {
+      if (blockGptSelectionDuringRun()) return;
+      const templateId = gptUploadTemplate.dataset.gptUploadTemplate;
+      const templates = gptTemplateMode === "online" ? gptOnlineTemplates : (dashboard?.templates?.templates || []);
+      const template = templates.find((item) => item.id === templateId);
+      if (!template) return;
+      try {
+        await uploadTemplateToCurrentGpt(template);
+      } catch (error) {
+        showSystemNotice("模板上传失败", error.message, { tone: "danger" });
+      }
+      return;
+    }
+    const onlineTemplateDelete = event.target.closest("[data-gpt-online-template-delete]");
+    if (onlineTemplateDelete) {
+      if (blockGptSelectionDuringRun()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const templateId = onlineTemplateDelete.dataset.gptOnlineTemplateDelete;
+      try {
+        const result = await api("/api/gpt-online-templates", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "delete", id: templateId })
+        });
+        gptOnlineTemplates = Array.isArray(result?.templates) ? result.templates : [];
+        gptTestSelectedTemplates.delete(templateId);
+        gptTestExpandedTemplates.delete(templateId);
+        renderGptTestTemplates();
+        showWorkbenchAssistantBubble("在线模板已从链接模板.txt 删除。", { duration: 3200 });
+      } catch (error) {
+        showSystemNotice("在线模板删除失败", error.message, { tone: "danger" });
+      }
       return;
     }
     const gptTemplateCheck = event.target.closest("[data-gpt-test-template-check]");
@@ -7614,6 +7856,17 @@ function bindEvents() {
     toast("已切换素材分类");
   });
   $("#gptTestMaterialSearch")?.addEventListener("input", renderGptTestMaterials);
+  $("#gptLocalTemplateModeBtn")?.addEventListener("click", () => switchGptTemplateMode("local"));
+  $("#gptOnlineTemplateModeBtn")?.addEventListener("click", () => switchGptTemplateMode("online"));
+  $("#gptSaveOnlineTemplateBtn")?.addEventListener("click", () => saveGptOnlineTemplate()
+    .catch((error) => showSystemNotice("在线模板没有保存", error.message, { tone: "danger" })));
+  ["#gptOnlineTemplateName", "#gptOnlineTemplateUrl"].forEach((selector) => {
+    $(selector)?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      saveGptOnlineTemplate().catch((error) => showSystemNotice("在线模板没有保存", error.message, { tone: "danger" }));
+    });
+  });
   $("#gptTestExtraPrompt")?.addEventListener("input", () => {
     if (gptAutoRunning) {
       showWorkbenchAssistantBubble("自动生产进行中，本批补充要求已锁定；请暂停后再修改。", { duration: 4200 });
@@ -7624,7 +7877,7 @@ function bindEvents() {
     updateGptTestQueueStatus();
   });
   $("#gptTestSendBtn")?.addEventListener("click", async () => {
-    if (gptAutoSettings.mode === "all-day") {
+    if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode)) {
       setContinuousGptProductionArmed(true);
       if (gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
         await prepareAllDayGptQueue();
@@ -7645,7 +7898,7 @@ function bindEvents() {
   $("#gptManualNextBtn")?.addEventListener("click", completeCurrentManualGptTask);
   $("#gptPauseQueueBtn")?.addEventListener("click", () => {
     if (!gptAutoRunning && gptQueuePaused) {
-      if (gptAutoSettings.mode === "all-day") setContinuousGptProductionArmed(true);
+      if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode)) setContinuousGptProductionArmed(true);
       const pausedTaskError = String(gptLastFailedTask?._error || "");
       const allowQuotaOverride = /额度|限额|quota|rate limit|usage limit/i.test(pausedTaskError);
       sendNextGptTestTask({ allowQuotaOverride, userInitiated: true });
@@ -7722,12 +7975,12 @@ function bindEvents() {
         return;
       }
       saveGptAutoSettings();
-      if (gptAutoSettings.mode === "all-day" && gptAutoSettings.continuousAutoStart !== false) {
+      if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode) && gptAutoSettings.continuousAutoStart !== false) {
         setContinuousGptProductionArmed(true);
         clearTimeout(gptContinuousLaunchTimer);
         gptContinuousLaunchTimer = null;
         scheduleContinuousGptProduction();
-      } else if (gptAutoSettings.mode !== "all-day") {
+      } else if (!["all-day", "all-day-multi"].includes(gptAutoSettings.mode)) {
         setContinuousGptProductionArmed(false);
         clearTimeout(gptContinuousLaunchTimer);
         gptContinuousLaunchTimer = null;
@@ -7742,6 +7995,47 @@ function bindEvents() {
   $("#gptAccountTabs")?.addEventListener("click", (event) => {
     const tab = event.target.closest("[data-gpt-account]");
     if (tab) switchGptAccount(tab.dataset.gptAccount);
+  });
+  $("#gptAccountTabs")?.addEventListener("contextmenu", (event) => {
+    const tab = event.target.closest("[data-gpt-account]");
+    if (!tab) return;
+    event.preventDefault();
+    const account = gptAccounts.find((item) => item.id === tab.dataset.gptAccount);
+    contextMenuTarget = {
+      kind: "gpt-browser-profile",
+      accountId: tab.dataset.gptAccount,
+      label: account?.name || "浏览器窗口",
+      path: ""
+    };
+    showContextMenu(event.clientX, event.clientY);
+  });
+  $("#gptAccountTabs")?.addEventListener("dragstart", (event) => {
+    const tab = event.target.closest("[data-gpt-account]");
+    if (!tab) return;
+    draggedGptAccountId = tab.dataset.gptAccount;
+    tab.classList.add("dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", draggedGptAccountId);
+  });
+  $("#gptAccountTabs")?.addEventListener("dragover", (event) => {
+    const tab = event.target.closest("[data-gpt-account]");
+    if (!tab || !draggedGptAccountId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  });
+  $("#gptAccountTabs")?.addEventListener("drop", (event) => {
+    const tab = event.target.closest("[data-gpt-account]");
+    if (!tab) return;
+    event.preventDefault();
+    const sourceId = draggedGptAccountId || event.dataTransfer.getData("text/plain");
+    draggedGptAccountId = "";
+    reorderGptAccounts(sourceId, tab.dataset.gptAccount).catch((error) => {
+      showSystemNotice("浏览器排序没有保存", error.message, { tone: "danger" });
+    });
+  });
+  $("#gptAccountTabs")?.addEventListener("dragend", (event) => {
+    event.target.closest("[data-gpt-account]")?.classList.remove("dragging");
+    draggedGptAccountId = "";
   });
   $("#gptBrowserManager")?.addEventListener("change", async (event) => {
     const nameInput = event.target.closest("[data-browser-name]");
@@ -8022,6 +8316,10 @@ function bindEvents() {
   $("#contextRename").addEventListener("click", async () => {
     const target = contextMenuTarget;
     hideContextMenu();
+    if (target?.kind === "gpt-browser-profile") {
+      await renameGptAccount(target.accountId);
+      return;
+    }
     await renamePath(target?.path, target?.label);
   });
   $("#contextCopyTemplateCommand").addEventListener("click", () => {
@@ -8130,7 +8428,7 @@ loadDashboard()
     window.setInterval(checkScheduledGptProduction, 30_000);
     checkScheduledGptProduction();
     restoreGptQuotaProbeTimers();
-    if (gptAutoSettings.mode === "all-day" && gptAutoSettings.continuousAutoStart !== false) {
+    if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode) && gptAutoSettings.continuousAutoStart !== false) {
       setContinuousGptProductionArmed(true);
       scheduleContinuousGptProduction(1800);
     }

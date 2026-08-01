@@ -40,6 +40,51 @@ test('work-package duplicate output becomes a clean skipped result', { concurren
   assert.equal(result.packagePath, '');
 });
 
+test('work-package result path is recovered from the UTF-8 package record instead of console text', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-package-result-'));
+  const productRoot = path.join(parent, '成品库');
+  const packagePath = path.join(productRoot, '20260802_测试中文成品');
+  const batchId = '20260802-010203-ab12';
+  fs.mkdirSync(packagePath, { recursive: true });
+  fs.writeFileSync(path.join(packagePath, 'GPT作品记录.json'), JSON.stringify({
+    status: 'completed',
+    batchId,
+    packagePath
+  }, null, 2), 'utf8');
+  try {
+    assert.equal(server.findCompletedWorkPackageByBatchId(productRoot, batchId), packagePath);
+    assert.equal(server.findCompletedWorkPackageByBatchId(productRoot, '20260802-010203-miss'), '');
+  } finally {
+    cleanup(parent);
+  }
+});
+
+test('online GPT templates are stored atomically in the template-root text file', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-online-templates-'));
+  const file = path.join(parent, '链接模板.txt');
+  try {
+    const first = server.updateOnlineTemplate({
+      name: '湖景绿底母版',
+      url: 'https://chatgpt.com/c/6a1e65b9-6bf0-83a9-b4e6-6c8cece1fbcf',
+      accountId: 'account-2'
+    }, file);
+    assert.equal(first.templates.length, 1);
+    assert.equal(first.templates[0].kind, 'online');
+    assert.equal(first.templates[0].accountId, 'account-2');
+    assert.equal(fs.existsSync(`${file}.tmp`), false);
+    const updated = server.updateOnlineTemplate({
+      id: first.templates[0].id,
+      name: '湖景绿底母版（更新）',
+      url: 'https://chatgpt.com/share/6a1e65b9-6bf0-83a9-b4e6-6c8cece1fbcf'
+    }, file);
+    assert.equal(updated.templates.length, 1);
+    assert.equal(updated.templates[0].name, '湖景绿底母版（更新）');
+    assert.equal(server.normalizeOnlineTemplateUrl('https://example.com/c/no'), '');
+  } finally {
+    cleanup(parent);
+  }
+});
+
 test('mobile conversion access distinguishes loopback from LAN clients', () => {
   assert.equal(server.isLoopbackAddress('127.0.0.1'), true);
   assert.equal(server.isLoopbackAddress('::1'), true);

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.14.5" />
+    <link rel="stylesheet" href="/styles.css?v=0.14.7" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -363,6 +363,16 @@
                 <header class="workbench-card-head">
                   <div><span class="workbench-step">02</span><strong>模板区</strong><small id="gptTestTemplateName">请选择模板</small></div>
                 </header>
+                <div class="gpt-template-mode-switch" role="tablist" aria-label="模板来源">
+                  <button id="gptLocalTemplateModeBtn" type="button" role="tab">本地模板</button>
+                  <button id="gptOnlineTemplateModeBtn" type="button" role="tab">在线模板</button>
+                </div>
+                <div id="gptOnlineTemplateForm" class="gpt-online-template-form" hidden>
+                  <input id="gptOnlineTemplateName" type="text" placeholder="模板名称" aria-label="在线模板名称" />
+                  <input id="gptOnlineTemplateUrl" type="url" placeholder="粘贴 ChatGPT 会话/分享链接" aria-label="在线模板链接" />
+                  <button id="gptSaveOnlineTemplateBtn" type="button">添加</button>
+                  <small id="gptOnlineTemplateFile">链接模板.txt</small>
+                </div>
                 <nav id="gptTestTemplateList" class="workbench-folder-list gpt-test-template-list" aria-label="GPT测试模板区"></nav>
               </section>
 
@@ -373,6 +383,7 @@
                       <option value="automatic">单窗口（手选自动做·有提示词）</option>
                       <option value="random">单窗口（手选自动做）</option>
                       <option value="all-day">单窗口自动（永不停歇）</option>
+                      <option value="all-day-multi">多账号自动（永不停歇）</option>
                     <option value="scheduled">定时启动</option>
                     <option value="multi">多窗口自动</option>
                     <option value="manual">手动模式</option>
@@ -693,7 +704,7 @@
         <section id="gptAutoPageSettings" class="page-settings-section" hidden>
           <div class="settings-group">
             <h3>模式与归档</h3>
-            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="automatic">单窗口（手选自动做·有提示词）</option><option value="random">单窗口（手选自动做）</option><option value="all-day">单窗口自动（永不停歇）</option><option value="scheduled">定时启动</option><option value="multi">多窗口自动</option><option value="manual">手动模式</option></select></label>
+            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="automatic">单窗口（手选自动做·有提示词）</option><option value="random">单窗口（手选自动做）</option><option value="all-day">单窗口自动（永不停歇）</option><option value="all-day-multi">多账号自动（永不停歇）</option><option value="scheduled">定时启动</option><option value="multi">多窗口自动</option><option value="manual">手动模式</option></select></label>
             <label class="switch-setting"><span><b>成功后归档原素材</b><small>仅在图片、TXT 和作品包全部校验成功后移动到“已使用一次 / 两次 / 三次”目录</small></span><input id="gptAutoArchiveEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>显示账号额度提醒</b><small>按本地滚动账本估算，网页实际限流优先</small></span><input id="gptQuotaReminderEnabled" type="checkbox" checked /></label>
           </div>
@@ -780,8 +791,8 @@
       <button id="contextTrashFolder" type="button" class="danger-action">移到回收站</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.14.5"></script>
-    <script src="/material-workspace.js?v=0.14.5"></script>
-    <script src="/app.js?v=0.14.5-single-post-guard"></script>
+    <script src="/distribution-ui.js?v=0.14.7"></script>
+    <script src="/material-workspace.js?v=0.14.7"></script>
+    <script src="/app.js?v=0.14.7"></script>
   </body>
 </html>
