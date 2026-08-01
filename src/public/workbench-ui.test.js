@@ -30,6 +30,8 @@ test("GPT production exposes the all-day scheduled mode and low-usage material s
   assert.match(app, /Number\(left\.item\.usageCount/);
   assert.match(app, /gptAutoSettings\.mode === "all-day"/);
   assert.match(server, /!entry\.name\.startsWith\("\."\)/);
+  assert.match(server, /includeHidden = options\.includeHidden === true/);
+  assert.match(server, /scanPostFolders\(categoryRoot, \{ includeHidden: true \}\)/);
 });
 
 test("GPT production history exposes cumulative work, time and average plan summary", () => {

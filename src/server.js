@@ -2250,8 +2250,9 @@ function exists(p) {
 
 function safeList(dir, options = {}) {
   try {
+    const includeHidden = options.includeHidden === true;
     return fs.readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => !entry.name.startsWith("."))
+      .filter((entry) => includeHidden || !entry.name.startsWith("."))
       .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
   } catch {
     return [];
@@ -2360,7 +2361,7 @@ function scanPostFolders(rootPath, options = {}) {
   while (queue.length && visited < maxDirectories) {
     const current = queue.shift();
     visited += 1;
-    const entries = safeList(current.directory);
+    const entries = safeList(current.directory, { includeHidden: options.includeHidden === true });
     const files = entries.filter((entry) => entry.isFile());
     const imageCount = files.filter((entry) =>
       imageExts.has(path.extname(entry.name).toLowerCase())
@@ -2465,7 +2466,7 @@ let materialLibraryCache = null;
 
 function materialTreeSignature(root) {
   if (!exists(root)) return "";
-  const rows = safeList(root)
+  const rows = safeList(root, { includeHidden: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => {
       const full = path.join(root, entry.name);
@@ -2477,7 +2478,7 @@ function materialTreeSignature(root) {
 
 function materialCategoryIndex(root) {
   if (!exists(root)) return [];
-  return safeList(root)
+  return safeList(root, { includeHidden: true })
     .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
     .map((entry, index) => ({
       id: path.join(root, entry.name),
@@ -2511,7 +2512,7 @@ function getDetectedMaterialPosts(root, force = false) {
   if (!force && cached?.sourceSignature === sourceSignature && Array.isArray(cached.posts)) {
     return cached.posts;
   }
-  const posts = scanPostFolders(categoryRoot);
+  const posts = scanPostFolders(categoryRoot, { includeHidden: true });
   const record = {
     root: categoryRoot,
     sourceSignature,
