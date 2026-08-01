@@ -222,7 +222,8 @@ function loadGptAutoSettings() {
     messageDownloadsEnabled: true,
     scheduledEnabled: false,
     scheduledTime: "09:30",
-    scheduledJitterMinutes: 10
+    scheduledJitterMinutes: 10,
+    schedulePlan: "09:30,8"
   };
   try {
     const loaded = {
@@ -242,7 +243,7 @@ function loadGptAutoSettings() {
 
 function renderGptAutoSettings() {
   const values = gptAutoSettings;
-  const mode = ["manual", "multi", "random", "all-day"].includes(values.mode) ? values.mode : "automatic";
+  const mode = ["manual", "multi", "random", "all-day", "scheduled"].includes(values.mode) ? values.mode : "automatic";
   if ($("#gptProductionMode")) $("#gptProductionMode").value = mode;
   if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = mode;
   if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
@@ -265,6 +266,7 @@ function renderGptAutoSettings() {
   if ($("#gptScheduledEnabled")) $("#gptScheduledEnabled").checked = Boolean(values.scheduledEnabled);
   if ($("#gptScheduledTime")) $("#gptScheduledTime").value = values.scheduledTime || "09:30";
   if ($("#gptScheduledJitter")) $("#gptScheduledJitter").value = values.scheduledJitterMinutes ?? 10;
+  if ($("#gptSchedulePlan")) $("#gptSchedulePlan").value = values.schedulePlan || "09:30,8";
   if ($("#gptDownloadRoot")) $("#gptDownloadRoot").value = values.downloadRoot;
   if ($("#gptProductRoot")) $("#gptProductRoot").value = values.productRoot;
   if ($("#gptPromptLibraryEnabled")) $("#gptPromptLibraryEnabled").checked = values.promptLibraryEnabled !== false;
@@ -277,7 +279,7 @@ function saveGptAutoSettings() {
   const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
   const selectedMode = activePageSettings === "gptAuto" ? $("#gptProductionModeSetting")?.value : $("#gptProductionMode")?.value;
   gptAutoSettings = {
-    mode: ["manual", "multi", "random", "all-day"].includes(selectedMode) ? selectedMode : "automatic",
+    mode: ["manual", "multi", "random", "all-day", "scheduled"].includes(selectedMode) ? selectedMode : "automatic",
     autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
     autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
     autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
@@ -303,7 +305,8 @@ function saveGptAutoSettings() {
     messageDownloadsEnabled: $("#gptMessageDownloadsEnabled")?.checked !== false,
     scheduledEnabled: Boolean($("#gptScheduledEnabled")?.checked),
     scheduledTime: String($("#gptScheduledTime")?.value || "09:30"),
-    scheduledJitterMinutes: Math.max(0, Math.min(60, Number($("#gptScheduledJitter")?.value || 0)))
+    scheduledJitterMinutes: Math.max(0, Math.min(60, Number($("#gptScheduledJitter")?.value || 0))),
+    schedulePlan: String($("#gptSchedulePlan")?.value || "09:30,8").trim() || "09:30,8"
   };
   localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
   renderGptAutoSettings();
@@ -1595,8 +1598,23 @@ function isHiddenMaterialPath(materialPath) {
   return String(materialPath || "").split(/[\\/]+/).some((segment) => segment.startsWith("."));
 }
 
-async function prepareAllDayGptQueue() {
-  if (gptAutoSettings.mode !== "all-day" || gptAutoRunning) return false;
+function parseGptSchedulePlan(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line, index) => {
+      const [timeRaw, countRaw] = line.split(/[，,]/).map((part) => String(part || "").trim());
+      const match = /^(\d{1,2}):(\d{2})$/.exec(timeRaw || "");
+      if (!match) return null;
+      const hour = Number(match[1]);
+      const minute = Number(match[2]);
+      if (hour > 23 || minute > 59) return null;
+      return { id: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}-${index}`, time: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`, count: Math.max(1, Math.min(30, Number(countRaw || 1))) };
+    })
+    .filter(Boolean);
+}
+
+async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8, label = "全天自动") {
+  if (gptAutoRunning) return false;
   await loadDashboard("materials").catch(() => {});
   for (const category of dashboard?.materials?.categories || []) {
     if (category.loaded === false && !isHiddenMaterialPath(category.path)) {
@@ -1615,7 +1633,7 @@ async function prepareAllDayGptQueue() {
       const rightTime = Date.parse(right.item.updatedAt || right.item.modifiedAt || "") || 0;
       return leftTime - rightTime || String(left.item.name || "").localeCompare(String(right.item.name || ""), "zh-Hans-CN", { numeric: true });
     })
-    .slice(0, Math.max(1, Number(gptAutoSettings.accountTaskLimit || 8)));
+    .slice(0, Math.max(1, Number(count || 1)));
   if (!entries.length) return false;
   gptTestSelectedMaterials.clear();
   gptTestMaterialEntries.clear();
@@ -1626,8 +1644,13 @@ async function prepareAllDayGptQueue() {
   gptTestQueue = [];
   gptTestQueueIndex = 0;
   renderGptTestMaterials();
-  showWorkbenchAssistantBubble(`全天自动已选 ${entries.length} 个素材，按使用次数从低到高排队。`, { duration: 0 });
+  showWorkbenchAssistantBubble(`${label}已选 ${entries.length} 个素材，按使用次数从低到高排队。`, { duration: 0 });
   return true;
+}
+
+async function prepareAllDayGptQueue() {
+  if (gptAutoSettings.mode !== "all-day" || gptAutoRunning) return false;
+  return prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "全天自动");
 }
 
 function buildGptTemplateInitTask(template) {
@@ -1739,6 +1762,14 @@ function isActualGptLimitMessage(message = "") {
     && /(额度|限制|上传|生成|图片|请求|limit|quota|rate)/i.test(String(message || ""));
 }
 
+// A low image count is the first reliable local symptom we have seen when the
+// web model has crossed into a degraded/limited generation state. Treat it as
+// a real generation-limit signal for the current batch: do not feed the next
+// material into the same account until the next probe window.
+function isLowOutputGptLimitMessage(message = "") {
+  return /(生成结果不足|本轮只检测到|安全线为|额度触顶|生成不完整)/i.test(String(message || ""));
+}
+
 function inferGptQuotaLimitKind(task, message = "") {
   const context = `${task?._stage || ""} ${message || ""}`;
   if (/(上传|附件|文件|upload)/i.test(context)) return "upload";
@@ -1803,6 +1834,7 @@ function recordActualGptLimit(message, accountId = activeGptAccountId, kind = "u
 const gptQuotaReminderTimers = new Map();
 let gptScheduledLaunchTimer = null;
 let gptScheduledDayKey = "";
+const gptScheduledLaunchKeys = new Set();
 
 function scheduleGptQuotaReminder(nextExpiryAt, accountId) {
   const timestamp = Date.parse(String(nextExpiryAt || ""));
@@ -1823,36 +1855,46 @@ async function checkScheduledGptProduction() {
   if (!gptAutoSettings.scheduledEnabled || gptAutoRunning || gptScheduledLaunchTimer) return;
   const now = new Date();
   const dayKey = now.toISOString().slice(0, 10);
-  if (gptScheduledDayKey === dayKey) return;
-  const [hour, minute] = String(gptAutoSettings.scheduledTime || "09:30").split(":").map(Number);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return;
-  const target = new Date(now);
-  target.setHours(hour, minute, 0, 0);
-  if (now < target || now.getTime() - target.getTime() > 65_000) return;
-  if (gptAutoSettings.mode === "all-day" && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
-    gptScheduledDayKey = dayKey;
-    const prepared = await prepareAllDayGptQueue();
-    if (!prepared) {
-      showWorkbenchAssistantBubble("已到全天自动时间，但素材库没有可用素材；点号隐藏文件夹已跳过。", { duration: 0 });
-      return;
+  const plans = gptAutoSettings.mode === "scheduled"
+    ? parseGptSchedulePlan(gptAutoSettings.schedulePlan || `${gptAutoSettings.scheduledTime || "09:30"},${gptAutoSettings.accountTaskLimit || 8}`)
+    : [{ id: "default", time: gptAutoSettings.scheduledTime || "09:30", count: gptAutoSettings.accountTaskLimit || 8 }];
+  for (const plan of plans) {
+    const launchKey = `${dayKey}:${plan.id}`;
+    if (gptScheduledLaunchKeys.has(launchKey)) continue;
+    const [hour, minute] = String(plan.time || "").split(":").map(Number);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) continue;
+    const target = new Date(now);
+    target.setHours(hour, minute, 0, 0);
+    if (now < target || now.getTime() - target.getTime() > 65_000) continue;
+    if ((gptAutoSettings.mode === "all-day" || gptAutoSettings.mode === "scheduled") && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
+      gptScheduledLaunchKeys.add(launchKey);
+      gptScheduledDayKey = dayKey;
+      const prepared = await prepareAutoGptQueue(plan.count, gptAutoSettings.mode === "scheduled" ? "定时启动" : "全天自动");
+      if (!prepared) {
+        showWorkbenchAssistantBubble("已到全天自动时间，但素材库没有可用素材；点号隐藏文件夹已跳过。", { duration: 0 });
+        continue;
+      }
     }
-  }
-  const hasReadyQueue = gptTestQueueIndex < gptTestQueue.length || gptTestSelectedMaterials.size > 0;
-  if (!hasReadyQueue) {
+    const hasReadyQueue = gptTestQueueIndex < gptTestQueue.length || gptTestSelectedMaterials.size > 0;
+    if (!hasReadyQueue) {
+      gptScheduledLaunchKeys.add(launchKey);
+      gptScheduledDayKey = dayKey;
+      showWorkbenchAssistantBubble("已到定时生产时间，但当前没有准备好的素材队列，本次未启动。", { duration: 0 });
+      continue;
+    }
+    const jitterMinutes = Math.max(0, Number(gptAutoSettings.scheduledJitterMinutes || 0));
+    const delay = Math.round(Math.random() * jitterMinutes * 60_000);
+    gptScheduledLaunchKeys.add(launchKey);
     gptScheduledDayKey = dayKey;
-    showWorkbenchAssistantBubble("已到定时生产时间，但当前没有准备好的素材队列，本次未启动。", { duration: 0 });
-    return;
+    showWorkbenchAssistantBubble(delay
+      ? `定时任务 ${plan.time} 已到点，将在 ${Math.ceil(delay / 60_000)} 分钟内稳定启动。`
+      : `定时任务 ${plan.time} 已到点，正在启动生产队列。`, { duration: 0 });
+    gptScheduledLaunchTimer = setTimeout(() => {
+      gptScheduledLaunchTimer = null;
+      sendNextGptTestTask();
+    }, delay);
+    break;
   }
-  const jitterMinutes = Math.max(0, Number(gptAutoSettings.scheduledJitterMinutes || 0));
-  const delay = Math.round(Math.random() * jitterMinutes * 60_000);
-  gptScheduledDayKey = dayKey;
-  showWorkbenchAssistantBubble(delay
-    ? `定时任务已到点，将在 ${Math.ceil(delay / 60_000)} 分钟内稳定启动。`
-    : "定时任务已到点，正在启动准备好的生产队列。", { duration: 0 });
-  gptScheduledLaunchTimer = setTimeout(() => {
-    gptScheduledLaunchTimer = null;
-    sendNextGptTestTask();
-  }, delay);
 }
 
 function updateGptTestQueueStatus(message = "") {
@@ -1869,6 +1911,8 @@ function updateGptTestQueueStatus(message = "") {
         ? "单窗口自动-随机"
         : gptAutoSettings.mode === "all-day"
           ? "单窗口全天自动"
+          : gptAutoSettings.mode === "scheduled"
+            ? "定时启动"
           : "单窗口自动（有提示词）";
   if (message) node.textContent = message;
   else if (canResumeQueue) node.textContent = `已恢复未完成队列，还有 ${gptTestQueue.length - gptTestQueueIndex} 个步骤待处理`;
@@ -2413,6 +2457,22 @@ async function sendNextGptTestTask(options = {}) {
         appendGptProductionHistory(task, "failed", result, task._error);
         persistGptQueue();
         failedThisRun += 1;
+        const lowOutputLimit = isLowOutputGptLimitMessage(taskError.message);
+        const actualLimit = lowOutputLimit || isActualGptLimitMessage(taskError.message);
+        if (actualLimit) {
+          // Keep the failed task at the current index so resume/retry can
+          // reattach to the same checkpoint after the next quota probe.
+          gptQueuePaused = true;
+          task._status = "paused";
+          task._error = lowOutputLimit
+            ? `${taskError.message}；已识别为触顶征兆，本批暂停，不继续发送后续素材`
+            : taskError.message;
+          recordActualGptLimit(task._error, activeGptAccountId, lowOutputLimit ? "generation" : inferGptQuotaLimitKind(task, taskError.message));
+          persistGptQueue();
+          throw new Error(lowOutputLimit
+            ? `本轮只生成 ${Math.max(0, Number(result?.detectedImages || 0))} 张，低于安全线；已暂停本批，等待下一轮额度探测`
+            : taskError.message);
+        }
         gptTestQueueIndex += 1;
         persistGptQueue();
         updateGptTestQueueStatus(`第 ${gptTestQueueIndex} 套失败并已记录：${taskError.message}；继续下一套`);
@@ -7054,6 +7114,19 @@ function bindEvents() {
   $("#materialRefreshBtn")?.addEventListener("click", async () => {
     await loadDashboard("materials");
     toast("本地文件树已刷新");
+  });
+  $("#gptTestMaterialRefreshBtn")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await loadDashboard("materials");
+      renderGptTestMaterials();
+      renderGptTestTemplates();
+      updateGptTestQueueStatus("素材区已刷新；当前已选项目保持不变。");
+      toast("GPT 素材区已刷新");
+    } finally {
+      button.disabled = false;
+    }
   });
   $("#openChatGptBtn")?.addEventListener("click", () => openExternal("https://chatgpt.com/"));
   $("#sendSelectedToGptBtn")?.addEventListener("click", () => transmitMaterialToGpt());

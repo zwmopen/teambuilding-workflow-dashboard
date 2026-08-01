@@ -34,6 +34,17 @@ test("GPT production exposes the all-day scheduled mode and low-usage material s
   assert.match(server, /scanPostFolders\(categoryRoot, \{ includeHidden: true \}\)/);
 });
 
+test("GPT production exposes explicit material refresh and multi-slot scheduled mode", () => {
+  assert.match(html, /id="gptTestMaterialRefreshBtn"/);
+  assert.match(html, /value="scheduled">定时启动/);
+  assert.match(html, /id="gptSchedulePlan"/);
+  assert.match(html, /gptMinimumImageCount[^>]*value="4"/);
+  assert.match(html, /1–3 张时视为额度触顶/);
+  assert.match(app, /function parseGptSchedulePlan/);
+  assert.match(app, /prepareAutoGptQueue/);
+  assert.match(app, /gptTestMaterialRefreshBtn/);
+});
+
 test("GPT production history exposes cumulative work, time and average plan summary", () => {
   assert.match(html, /id="gptProductionHistorySummary"/);
   assert.match(app, /function renderGptProductionSummary/);
@@ -156,6 +167,14 @@ test("local quota estimates never block uploads and real web limits are recorded
   assert.match(app, /generationCycleStartAt/);
   assert.match(app, /nextUploadProbeAt/);
   assert.match(app, /nextGenerationProbeAt/);
+});
+
+test("low-output generation is a batch-level limit signal", () => {
+  assert.match(app, /function isLowOutputGptLimitMessage/);
+  assert.match(app, /生成结果不足\|本轮只检测到\|安全线为\|额度触顶\|生成不完整/);
+  assert.match(app, /const lowOutputLimit = isLowOutputGptLimitMessage/);
+  assert.match(app, /已识别为触顶征兆，本批暂停/);
+  assert.match(app, /等待下一轮额度探测/);
 });
 
 test("GPT material tree never presents an unloaded parent folder as a fake zero", () => {
