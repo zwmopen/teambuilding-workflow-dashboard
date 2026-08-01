@@ -4206,6 +4206,15 @@ body[data-theme="glass"] .settings-card {
 }
 
 /* GPT 内置测试：只增加生产入口，不改变现有页面的视觉与交互。 */
+#gptProductionTestView {
+  overflow: hidden;
+}
+
+#gptProductionTestView.active {
+  display: block;
+  height: 100%;
+}
+
 .rail-tab-test {
   position: relative;
   min-height: 58px;
@@ -4231,8 +4240,8 @@ body[data-theme="glass"] .settings-card {
 .gpt-production-test-shell {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 36px);
-  min-height: 680px;
+  height: 100%;
+  min-height: 0;
   gap: 12px;
   overflow: hidden;
 }
@@ -4312,6 +4321,10 @@ body[data-theme="glass"] .settings-card {
   grid-template-rows: minmax(240px, 1.15fr) minmax(190px, .85fr) auto;
   min-height: 0;
   gap: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .gpt-production-test-library .workbench-card {
@@ -4385,11 +4398,11 @@ body[data-theme="glass"] .settings-card {
 
 .gpt-production-browser-panel {
   position: relative;
-  padding: 5px;
-  border: 1px solid rgba(72, 94, 83, .16);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, .56);
-  box-shadow: 0 18px 46px rgba(29, 50, 41, .11);
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  box-shadow: none;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -4400,12 +4413,17 @@ body[data-theme="glass"] .settings-card {
   flex: 1 1 auto;
   height: auto;
   position: relative;
-  margin: 4px;
-  border: 1px solid color-mix(in srgb, var(--accent, #2d7c65) 16%, transparent);
-  border-radius: 18px;
-  background: linear-gradient(145deg, rgba(245, 249, 246, .96), rgba(229, 238, 233, .82));
+  margin: 0;
+  border: 0;
+  border-radius: 16px;
+  background: var(--page-bg, #e9f0f6);
   overflow: hidden;
-  box-shadow: inset 0 0 0 4px color-mix(in srgb, var(--panel, #fff) 74%, transparent);
+  box-shadow: none;
+}
+
+body[data-theme="midnight"] .gpt-embedded-host,
+body[data-theme="midnight-glass"] .gpt-embedded-host {
+  background: var(--page-bg, #091722);
 }
 
 .gpt-mode-row {
@@ -4512,6 +4530,11 @@ body[data-theme="glass"] .settings-card {
   border-radius: 15px;
   background: color-mix(in srgb, var(--panel, #fff) 86%, transparent);
   box-shadow: inset 0 0 0 1px var(--line-soft, rgba(70, 91, 79, .12));
+}
+
+.gpt-embedded-host.is-native-visible .gpt-embedded-placeholder {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .gpt-browser-nav { display: flex; gap: 4px; }
@@ -4994,28 +5017,44 @@ body[data-theme="glass"] .workbench-card{border-color:rgba(255,255,255,.68);back
 
 .workbench-assistant-launcher {
   position: fixed;
-  right: 24px;
-  top: 50%;
+  right: 18px;
+  top: 96px;
   bottom: auto;
   transform: translateY(-50%);
   z-index: 109;
   display: grid;
-  width: 54px;
-  height: 54px;
+  width: 82px;
+  height: 94px;
   padding: 0;
   place-items: center;
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, .72);
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 92%, #213d34);
-  box-shadow: 0 15px 36px rgba(24, 56, 46, .3), inset 0 1px 0 rgba(255, 255, 255, .42);
+  color: #263c35;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
   transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+@keyframes tb-cat-bounce {
+  0%, 88%, 100% { transform: translateY(0) rotate(0); }
+  92% { transform: translateY(-3px) rotate(-2deg); }
+  96% { transform: translateY(0) rotate(2deg); }
+}
+
+.workbench-assistant-cat {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 14px rgba(20, 32, 28, .25));
+  animation: tb-cat-bounce 3.6s ease-in-out infinite;
 }
 
 .workbench-assistant-launcher:hover,
 .workbench-assistant-launcher[aria-expanded="true"] {
   transform: translateY(-50%) scale(1.03);
-  box-shadow: 0 20px 44px rgba(24, 56, 46, .36), inset 0 1px 0 rgba(255, 255, 255, .5);
+  box-shadow: none;
 }
 
 .workbench-assistant-launcher.is-dragging {
@@ -5023,23 +5062,33 @@ body[data-theme="glass"] .workbench-card{border-color:rgba(255,255,255,.68);back
   transform: scale(1.04);
 }
 
+.workbench-assistant-launcher.is-dragging .workbench-assistant-cat { animation: none; }
+
 .workbench-assistant-bubble {
   position: fixed;
-  right: 92px;
-  top: 50%;
+  right: 90px;
+  top: 96px;
   z-index: 110;
-  width: min(320px, calc(100vw - 120px));
-  padding: 11px 13px;
+  width: min(306px, calc(100vw - 120px));
+  padding: 0;
   color: var(--ink);
-  border: 1px solid rgba(255, 255, 255, .78);
-  border-radius: 16px 16px 5px 16px;
-  background: color-mix(in srgb, var(--panel-light) 96%, transparent);
-  box-shadow: 0 16px 36px rgba(26, 52, 44, .18), inset 0 1px 0 rgba(255,255,255,.58);
-  backdrop-filter: blur(18px) saturate(.92);
+  border: 1px solid #d7e1e8;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 14px 32px rgba(26, 52, 44, .16);
   font-size: 13px;
   line-height: 1.5;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
   transform: translateY(-50%);
+}
+
+.workbench-assistant-bubble-content {
+  max-height: min(220px, 44vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 13px 15px;
+  scrollbar-width: thin;
 }
 
 .workbench-assistant-bubble::after {
@@ -5049,30 +5098,79 @@ body[data-theme="glass"] .workbench-card{border-color:rgba(255,255,255,.68);back
   top: 50%;
   width: 13px;
   height: 13px;
-  background: inherit;
-  border-top: 1px solid rgba(255, 255, 255, .78);
-  border-right: 1px solid rgba(255, 255, 255, .78);
+  background: #fff;
+  border-top: 1px solid #d7e1e8;
+  border-right: 1px solid #d7e1e8;
   transform: translateY(-50%) rotate(45deg);
 }
 
 .workbench-assistant-bubble[hidden] { display: none; }
 
-.workbench-assistant-launcher svg {
-  width: 27px;
-  height: 27px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.workbench-assistant-mute-menu {
+  position: fixed;
+  z-index: 114;
+  display: grid;
+  min-width: 138px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, .2);
+  border-radius: 12px;
+  background: rgba(28, 38, 35, .96);
+  box-shadow: 0 14px 34px rgba(20, 31, 27, .25);
 }
+
+.workbench-assistant-mute-menu[hidden] { display: none; }
+
+.workbench-assistant-mute-menu button {
+  padding: 8px 10px;
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workbench-assistant-mute-menu button:hover { background: rgba(255, 255, 255, .12); }
+
+.native-assistant-overlay .workbench-assistant-launcher,
+.native-assistant-overlay .workbench-assistant-bubble,
+.native-assistant-overlay .workbench-assistant-mute-menu { display: none !important; }
+
+.workbench-assistant-log-panel {
+  position: fixed;
+  right: 96px;
+  top: 96px;
+  z-index: 111;
+  width: min(390px, calc(100vw - 32px));
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .82);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--panel-light) 96%, transparent);
+  box-shadow: 0 26px 70px rgba(26, 52, 44, .25);
+  backdrop-filter: blur(20px) saturate(.92);
+  transform: translateY(-50%);
+}
+
+.workbench-assistant-log-panel[hidden] { display: none; }
+.workbench-assistant-log-panel header,
+.workbench-assistant-log-panel footer { display: flex; align-items: center; gap: 8px; padding: 12px 14px; }
+.workbench-assistant-log-panel header { justify-content: space-between; border-bottom: 1px solid var(--line); }
+.workbench-assistant-log-panel header div { display: grid; gap: 2px; }
+.workbench-assistant-log-panel header span,
+.workbench-assistant-log-panel footer span { color: var(--muted); font-size: 11px; }
+.workbench-assistant-log-panel header button { width: 30px; height: 30px; padding: 0; border-radius: 50%; }
+.workbench-assistant-log-list { display: grid; gap: 8px; max-height: 320px; overflow-y: auto; padding: 12px 14px; }
+.workbench-assistant-log-item { padding: 9px 10px; border-radius: 12px; background: var(--selection); font-size: 12px; line-height: 1.45; }
+.workbench-assistant-log-item time { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.workbench-assistant-log-panel footer { border-top: 1px solid var(--line); }
+.workbench-assistant-log-panel footer button { height: 30px; padding: 0 9px; border-radius: 9px; }
 
 .workbench-assistant-panel {
   position: fixed;
-  right: 92px;
-  top: 50%;
+  right: 96px;
+  top: 96px;
   bottom: auto;
-  z-index: 108;
+  z-index: 112;
   width: min(380px, calc(100vw - 32px));
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, .82);
@@ -5086,6 +5184,31 @@ body[data-theme="glass"] .workbench-card{border-color:rgba(255,255,255,.68);back
 .workbench-assistant-panel[hidden] {
   display: none;
 }
+
+.gpt-production-history-panel {
+  position: fixed;
+  inset: 72px 34px 34px auto;
+  z-index: 122;
+  width: min(520px, calc(100vw - 44px));
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .82);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--panel-light) 97%, transparent);
+  box-shadow: 0 28px 76px rgba(20, 42, 36, .28);
+  backdrop-filter: blur(22px) saturate(.95);
+}
+.gpt-production-history-panel[hidden] { display: none; }
+.gpt-production-history-panel header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.gpt-production-history-panel header div { display: grid; gap: 3px; }
+.gpt-production-history-panel header span { color: var(--muted); font-size: 12px; }
+.gpt-production-history-panel header button { width: 32px; height: 32px; padding: 0; border-radius: 50%; }
+.gpt-production-history-list { display: grid; gap: 9px; max-height: calc(100vh - 180px); overflow: auto; padding: 14px; }
+.gpt-production-history-item { display: grid; gap: 5px; padding: 11px 12px; border-radius: 14px; background: var(--selection); }
+.gpt-production-history-item strong { font-size: 13px; }
+.gpt-production-history-item p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.gpt-production-history-timings { display: flex; flex-wrap: wrap; gap: 6px; }
+.gpt-production-history-timings span { padding: 4px 7px; border-radius: 8px; background: #fff; color: var(--muted); font-size: 11px; }
+.gpt-production-open-path { justify-self: start; height: 30px; padding: 0 10px; border-radius: 9px; font-size: 12px; }
 
 .workbench-assistant-panel header {
   display: flex;
@@ -6236,7 +6359,7 @@ body[data-theme="midnight"] {
   --panel-light: #17303e;
   --line: rgba(124, 181, 195, .2);
   --ink: #e8f1f2;
-  --muted: #91a7ad;
+  --muted: #afc1c6;
   --accent: #3ed6c3;
   --accent-dark: #20a996;
   --selection: #183f49;
@@ -6283,6 +6406,78 @@ body[data-theme="midnight"] .primary-button,
 body[data-theme="midnight"] .rail-tab.active {
   color: #061716;
   background: var(--accent);
+}
+
+body[data-theme="midnight"] button span,
+body[data-theme="midnight"] .rail-tab.active span {
+  color: inherit;
+}
+
+/* 深色玻璃：保留流量转化本体的玻璃质感，同时适合夜间工作。 */
+body[data-theme="midnight-glass"] {
+  color-scheme: dark;
+  --window-top: #07111b;
+  --window-bottom: #102333;
+  --panel: rgba(18, 35, 49, .82);
+  --panel-light: rgba(29, 52, 67, .72);
+  --line: rgba(144, 193, 207, .2);
+  --ink: #edf6f7;
+  --muted: #b6c7cc;
+  --accent: #68b8ff;
+  --accent-dark: #3b91df;
+  --selection: rgba(64, 124, 158, .35);
+  --shadow: 0 18px 46px rgba(0, 0, 0, .34);
+  --soft-shadow: 0 10px 26px rgba(0, 0, 0, .24);
+  background:
+    radial-gradient(circle at 16% 10%, rgba(83, 151, 190, .16), transparent 30%),
+    radial-gradient(circle at 86% 84%, rgba(46, 112, 128, .18), transparent 32%),
+    linear-gradient(145deg, #07111b, #102333);
+  background-attachment: fixed;
+}
+
+body[data-theme="midnight-glass"] .sidebar,
+body[data-theme="midnight-glass"] .workflow-rail,
+body[data-theme="midnight-glass"] .topbar,
+body[data-theme="midnight-glass"] .page-heading,
+body[data-theme="midnight-glass"] .settings-card,
+body[data-theme="midnight-glass"] .panel,
+body[data-theme="midnight-glass"] .production-console,
+body[data-theme="midnight-glass"] .material-workspace,
+body[data-theme="midnight-glass"] .collection-list,
+body[data-theme="midnight-glass"] .collection-detail,
+body[data-theme="midnight-glass"] .summary-card,
+body[data-theme="midnight-glass"] .gpt-connection-panel,
+body[data-theme="midnight-glass"] .material-tree-panel {
+  color: var(--ink);
+  border-color: var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(22px) saturate(118%);
+  -webkit-backdrop-filter: blur(22px) saturate(118%);
+}
+
+body[data-theme="midnight-glass"] input,
+body[data-theme="midnight-glass"] textarea,
+body[data-theme="midnight-glass"] select,
+body[data-theme="midnight-glass"] button:not(.primary-button) {
+  color: var(--ink);
+  border-color: var(--line);
+  background: rgba(24, 45, 59, .86);
+}
+
+body[data-theme="midnight-glass"] p,
+body[data-theme="midnight-glass"] span,
+body[data-theme="midnight-glass"] .path-line { color: var(--muted); }
+
+body[data-theme="midnight-glass"] .primary-button,
+body[data-theme="midnight-glass"] .rail-tab.active {
+  color: #071522;
+  background: linear-gradient(145deg, #7cc6ff, #459adf);
+}
+
+body[data-theme="midnight-glass"] button span,
+body[data-theme="midnight-glass"] .rail-tab.active span {
+  color: inherit;
 }
 
 .theme-preview-jianghu {

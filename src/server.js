@@ -6,7 +6,7 @@ const childProcess = require("child_process");
 const crypto = require("crypto");
 const os = require("os");
 const sharp = require("sharp");
-const { generateImages, generateText, networkFetch, normalizeImageApiConfig } = require("./lib/image-generation");
+const { generateImages, generateText, networkFetch, normalizeImageApiConfig, normalizeTextApiConfig } = require("./lib/image-generation");
 const {
   applySuggestedTitles,
   buildCopyPrompt,
@@ -106,6 +106,7 @@ const MATERIAL_METADATA_LEDGER_FILE = path.join(DATA_ROOT, "防重复账本", "m
 const MATERIAL_HASH_CACHE_FILE = path.join(DATA_ROOT, "material-hash-cache.json");
 const MATERIAL_GLOBAL_INDEX_FILE = path.join(DATA_ROOT, "material-global-index.json");
 const GPT_QUOTA_LEDGER_FILE = path.join(DATA_ROOT, "gpt-production-quota.json");
+const GPT_PRODUCTION_CHECKPOINT_FILE = path.join(DATA_ROOT, "gpt-production-checkpoints.json");
 const GPT_PRODUCTION_ARCHIVE_LOG_FILE = path.join(DATA_ROOT, "gpt-production-archive.jsonl");
 const WORKPKG_CONFIG_FILE = process.env.TEAMBUILDING_WORKPKG_CONFIG_FILE || "D:\\Download\\workpkg_config.json";
 const DOWNLOAD_ROOT = process.env.TEAMBUILDING_DOWNLOAD_ROOT || "D:\\Download";
@@ -861,6 +862,81 @@ function appendGptQuotaEvent(body = {}) {
   return gptQuotaSnapshot(accountId);
 }
 
+function readGptProductionCheckpoint(requestId = "") {
+  const safeId = String(requestId || "").trim();
+  if (!safeId || safeId.length > 160) return null;
+  const saved = readJson(GPT_PRODUCTION_CHECKPOINT_FILE, { version: 1, items: {} });
+  return saved.items?.[safeId] || null;
+}
+
+function writeGptProductionCheckpoint(body = {}) {
+  const requestId = String(body.requestId || "").trim();
+  if (!requestId || requestId.length > 160) throw new Error("生产检查点编号无效");
+  const source = body.checkpoint && typeof body.checkpoint === "object" ? body.checkpoint : {};
+  const checkpoint = {
+    requestId,
+    stage: String(source.stage || "").slice(0, 80),
+    percent: Math.max(0, Math.min(100, Number(source.percent || 0))),
+    conversationUrl: String(source.conversationUrl || "").slice(0, 1000),
+    plannedImageCount: Math.max(0, Math.min(30, Number(source.plannedImageCount || 0))),
+    planSubmitted: Boolean(source.planSubmitted),
+    imageSubmitted: Boolean(source.imageSubmitted),
+    textSubmitted: Boolean(source.textSubmitted),
+    batchId: String(source.batchId || "").slice(0, 80),
+    downloadRoot: String(source.downloadRoot || "").slice(0, 2000),
+    downloadedFiles: Array.isArray(source.downloadedFiles)
+      ? source.downloadedFiles.map((item) => String(item || "").slice(0, 2000)).filter(Boolean).slice(0, 30)
+      : [],
+    copyText: String(source.copyText || "").slice(0, 200_000),
+    packagePath: String(source.packagePath || "").slice(0, 2000),
+    updatedAt: new Date().toISOString()
+  };
+  const saved = readJson(GPT_PRODUCTION_CHECKPOINT_FILE, { version: 1, items: {} });
+  saved.version = 1;
+  saved.items ||= {};
+  saved.items[requestId] = checkpoint;
+  const ordered = Object.values(saved.items).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 200);
+  saved.items = Object.fromEntries(ordered.map((item) => [item.requestId, item]));
+  saved.updatedAt = checkpoint.updatedAt;
+  writeJson(GPT_PRODUCTION_CHECKPOINT_FILE, saved);
+  return checkpoint;
+}
+
+function findRecoverableImageBatch(body = {}) {
+  const expected = Math.max(1, Math.min(30, Number(body.expectedImageCount || 0)));
+  const requestedRoot = String(body.downloadRoot || "").trim();
+  const roots = [...new Set([requestedRoot, DOWNLOAD_ROOT].filter(Boolean).map((item) => path.resolve(item)))]
+    .filter((item) => isPathInside(path.resolve(DOWNLOAD_ROOT), item) && exists(item) && fs.statSync(item).isDirectory());
+  const groups = new Map();
+  for (const root of roots) {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const match = entry.name.match(/^chatgpt-workpkg-(\d{8}-\d{6}-[a-z0-9]{4})-(\d+)-of-(\d+)\.(?:png|jpe?g|webp)$/i);
+      if (!match || Number(match[3]) !== expected) continue;
+      const filePath = path.join(root, entry.name);
+      const stat = fs.statSync(filePath);
+      if (stat.size < 1_000) continue;
+      const key = `${root}\0${match[1]}`;
+      const group = groups.get(key) || { batchId: match[1], downloadRoot: root, files: [], newestMs: 0 };
+      group.files.push({ index: Number(match[2]), path: filePath });
+      group.newestMs = Math.max(group.newestMs, stat.mtimeMs);
+      groups.set(key, group);
+    }
+  }
+  const complete = [...groups.values()].filter((group) => {
+    const indexes = [...new Set(group.files.map((file) => file.index))].sort((a, b) => a - b);
+    return indexes.length === expected && indexes.every((value, index) => value === index + 1);
+  }).sort((a, b) => b.newestMs - a.newestMs)[0];
+  if (!complete) return null;
+  return {
+    count: expected,
+    batchId: complete.batchId,
+    downloadRoot: complete.downloadRoot,
+    files: complete.files.sort((a, b) => a.index - b.index).map((file) => file.path),
+    recoveredAt: new Date().toISOString()
+  };
+}
+
 function safeArchiveDestination(targetRoot, sourcePath, fingerprint) {
   const baseName = path.basename(sourcePath);
   let destination = path.join(targetRoot, baseName);
@@ -1051,8 +1127,19 @@ function runExtensionWorkPackage(body = {}) {
   }
   const requestedDownloadRoot = String(body.downloadRoot || "").trim();
   const requestedProductRoot = String(body.productRoot || "").trim();
+  const effectiveDownloadRoot = requestedDownloadRoot
+    ? path.resolve(requestedDownloadRoot)
+    : path.resolve(DOWNLOAD_ROOT);
+  const configPath = path.join(DOWNLOAD_ROOT, "workpkg_config.json");
+  const originalConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath) : null;
+  let configRestored = false;
+  const restoreWorkPackageConfig = () => {
+    if (configRestored) return;
+    configRestored = true;
+    if (originalConfig) fs.writeFileSync(configPath, originalConfig);
+    else fs.rmSync(configPath, { force: true });
+  };
   if (requestedDownloadRoot || requestedProductRoot) {
-    const configPath = path.join(DOWNLOAD_ROOT, "workpkg_config.json");
     const config = readJson(configPath, {});
     if (requestedDownloadRoot) {
       if (!path.isAbsolute(requestedDownloadRoot)) throw new Error("下载暂存目录必须是完整路径");
@@ -1090,7 +1177,11 @@ function runExtensionWorkPackage(body = {}) {
   ];
   let taskFile = "";
   if (batchId) {
-    taskFile = path.join(DOWNLOAD_ROOT, `chatgpt-workpkg-task-${batchId}.json`);
+    // The PowerShell packager reads its task manifest from image_inbox_path.
+    // Writing it to the global download root made every custom/acceptance
+    // download directory fail with TASK_MISSING even though all images existed.
+    taskFile = path.join(effectiveDownloadRoot, `chatgpt-workpkg-task-${batchId}.json`);
+    const publishTitle = clipboardText.split(/\r?\n/).find((line) => line.trim())?.trim() || String(body.title || "").trim();
     writeJson(taskFile, {
       version: 1,
       batchId,
@@ -1098,6 +1189,11 @@ function runExtensionWorkPackage(body = {}) {
       copyText: clipboardText,
       accountName: String(body.accountName || ""),
       conversationUrl: String(body.conversationUrl || ""),
+      // Embedded automation has no trustworthy foreground browser title. A
+      // login/security page title such as "验证你的身份 - OpenAI" used to leak
+      // into the output folder name. Matching the conversation title to the
+      // publish title keeps the existing packager naming logic deterministic.
+      conversationTitle: publishTitle,
       title: String(body.title || ""),
       status: "ready",
       createdAt: new Date().toISOString()
@@ -1116,7 +1212,10 @@ function runExtensionWorkPackage(body = {}) {
     const stderrChunks = [];
     child.stdout.on("data", (chunk) => { stdoutChunks.push(Buffer.from(chunk)); });
     child.stderr.on("data", (chunk) => { stderrChunks.push(Buffer.from(chunk)); });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      restoreWorkPackageConfig();
+      reject(error);
+    });
     child.on("close", (code) => {
       const decodeWindowsOutput = (chunks) => {
         const bytes = Buffer.concat(chunks);
@@ -1126,6 +1225,7 @@ function runExtensionWorkPackage(body = {}) {
       };
       const stdout = decodeWindowsOutput(stdoutChunks);
       const stderr = decodeWindowsOutput(stderrChunks);
+      restoreWorkPackageConfig();
       if (code !== 0) {
         reject(new Error(stderr.trim() || stdout.trim() || `打包程序退出码 ${code}`));
         return;
@@ -1135,6 +1235,22 @@ function runExtensionWorkPackage(body = {}) {
         const separator = line.indexOf("=");
         return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : null;
       }).filter(Boolean));
+      if (body.preview !== true && /^DUPLICATE$/m.test(output)) {
+        resolve({
+          ok: true,
+          duplicate: true,
+          skipped: true,
+          duplicateReason: String(fields.DuplicateReason || "ExactImageSet"),
+          deletedImages: Math.max(0, Number(fields.DeletedImages || 0)),
+          batchId,
+          expectedImageCount,
+          packagePath: "",
+          imageCount: 0,
+          textFile: "",
+          output
+        });
+        return;
+      }
       if (body.preview !== true && !/^OK$/m.test(output)) {
         reject(new Error(output || "打包程序没有返回完成标记"));
         return;
@@ -1184,6 +1300,7 @@ function getWorkspaceSettings() {
   return {
     materialRoot: path.resolve(local.materialRoot || defaultMaterialRoot),
     imageApi: publicImageApiSettings(local.imageApi),
+    textApi: publicTextApiSettings(local.textApi),
     pageSettings: getPageSettings(),
     workPackage: {
       configFile: WORKPKG_CONFIG_FILE,
@@ -1218,18 +1335,31 @@ function imageApiCredential(provider, suppliedKey = "") {
   return saved.LOCAL_IMAGE_API_KEY || process.env.TEAMBUILDING_IMAGE_API_KEY || "";
 }
 
-function textGenerationConnection(imageConfig, suppliedKey = "") {
-  const localApiKey = imageApiCredential("local-openai");
-  if (localApiKey) {
-    return {
-      config: normalizeImageApiConfig({ provider: "local-openai" }),
-      apiKey: localApiKey
-    };
+function textApiCredential(provider, suppliedKey = "") {
+  if (String(suppliedKey).trim()) return String(suppliedKey).trim();
+  const saved = readEnvFile(IMAGE_API_SECRET_FILE);
+  if (provider === "minimax") {
+    return saved.MINIMAX_TEXT_API_KEY || saved.MINIMAX_IMAGE_API_KEY
+      || process.env.TEAMBUILDING_MINIMAX_TEXT_API_KEY
+      || process.env.MINIMAXI_API_KEY || process.env.MINIMAX_API_KEY || "";
   }
-  return {
-    config: imageConfig,
-    apiKey: imageApiCredential(imageConfig.provider, suppliedKey)
-  };
+  if (provider === "bytecat") {
+    return saved.BYTECAT_TEXT_API_KEY || saved.BYTECAT_IMAGE_API_KEY
+      || process.env.TEAMBUILDING_BYTECAT_TEXT_API_KEY || "";
+  }
+  return saved.LOCAL_TEXT_API_KEY || saved.LOCAL_IMAGE_API_KEY
+    || process.env.TEAMBUILDING_TEXT_API_KEY || process.env.TEAMBUILDING_IMAGE_API_KEY || "";
+}
+
+function textGenerationConnection(suppliedKey = "") {
+  const savedTextApi = readJson(APP_SETTINGS_FILE, {}).textApi || {};
+  const config = normalizeTextApiConfig(savedTextApi);
+  const apiKey = textApiCredential(config.provider, suppliedKey);
+  if (apiKey) return { config, apiKey };
+  const localApiKey = textApiCredential("local-openai");
+  return localApiKey
+    ? { config: normalizeTextApiConfig({ provider: "local-openai" }), apiKey: localApiKey }
+    : { config, apiKey: "" };
 }
 
 const WORKBENCH_ASSISTANT_ACTIONS = new Set([
@@ -1248,8 +1378,7 @@ const WORKBENCH_ASSISTANT_ACTIONS = new Set([
 async function interpretWorkbenchAssistantCommand(command) {
   const cleanCommand = String(command || "").trim().slice(0, 500);
   if (!cleanCommand) return { action: "unclear", reply: "请告诉我想处理哪一步。" };
-  const imageSettings = publicImageApiSettings();
-  const connection = textGenerationConnection(imageSettings);
+  const connection = textGenerationConnection();
   if (!connection.apiKey) throw new Error("当前没有可用的文案模型密钥");
   const prompt = [
     "你是团建工作台里的命令理解器，只负责理解意图，不执行操作。",
@@ -1267,7 +1396,7 @@ async function interpretWorkbenchAssistantCommand(command) {
     config: connection.config,
     apiKey: connection.apiKey,
     prompt,
-    model: "gpt-5.6-terra"
+    model: connection.config.model
   });
   const jsonText = String(raw || "").replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
   const result = JSON.parse(jsonText);
@@ -1294,6 +1423,16 @@ function publicImageApiSettings(value = {}) {
   return { ...config, credentialConfigured: Boolean(imageApiCredential(config.provider)), secretStoredLocally: true };
 }
 
+function publicTextApiSettings(value = {}) {
+  const saved = readEnvFile(IMAGE_API_SECRET_FILE);
+  const config = normalizeTextApiConfig({
+    provider: value?.provider || saved.LOCAL_TEXT_API_PROVIDER,
+    baseUrl: value?.baseUrl || saved.LOCAL_TEXT_API_BASE_URL,
+    model: value?.model || saved.LOCAL_TEXT_API_MODEL
+  });
+  return { ...config, credentialConfigured: Boolean(textApiCredential(config.provider)), secretStoredLocally: true };
+}
+
 function saveImageApiSecret({ provider, baseUrl, model, apiKey }) {
   const existing = readEnvFile(IMAGE_API_SECRET_FILE);
   const config = normalizeImageApiConfig({ provider, baseUrl, model });
@@ -1309,6 +1448,28 @@ function saveImageApiSecret({ provider, baseUrl, model, apiKey }) {
   fs.mkdirSync(path.dirname(IMAGE_API_SECRET_FILE), { recursive: true });
   const lines = [
     "# 团建工作台本机生图凭据。禁止提交仓库、日志或导出包。",
+    "# 界面只返回是否已配置，不会回传密钥明文。",
+    ...Object.entries(next).map(([key, value]) => `${key}=${value}`)
+  ];
+  fs.writeFileSync(IMAGE_API_SECRET_FILE, `${lines.join("\n")}\n`, "utf8");
+  return config;
+}
+
+function saveTextApiSecret({ provider, baseUrl, model, apiKey }) {
+  const existing = readEnvFile(IMAGE_API_SECRET_FILE);
+  const config = normalizeTextApiConfig({ provider, baseUrl, model });
+  const next = { ...existing };
+  next.LOCAL_TEXT_API_PROVIDER = config.provider;
+  next.LOCAL_TEXT_API_BASE_URL = config.baseUrl;
+  next.LOCAL_TEXT_API_MODEL = config.model;
+  if (String(apiKey || "").trim()) {
+    if (config.provider === "minimax") next.MINIMAX_TEXT_API_KEY = String(apiKey).trim();
+    else if (config.provider === "bytecat") next.BYTECAT_TEXT_API_KEY = String(apiKey).trim();
+    else next.LOCAL_TEXT_API_KEY = String(apiKey).trim();
+  }
+  fs.mkdirSync(path.dirname(IMAGE_API_SECRET_FILE), { recursive: true });
+  const lines = [
+    "# 团建工作台本机 API 凭据。禁止提交仓库、日志或导出包。",
     "# 界面只返回是否已配置，不会回传密钥明文。",
     ...Object.entries(next).map(([key, value]) => `${key}=${value}`)
   ];
@@ -1391,9 +1552,7 @@ async function createProductionPlans(body) {
     });
     return plan;
   });
-  const savedImageApi = readJson(APP_SETTINGS_FILE, {}).imageApi || {};
-  const titleImageConfig = normalizeImageApiConfig(savedImageApi);
-  const titleConnection = textGenerationConnection(titleImageConfig);
+  const titleConnection = textGenerationConnection();
   if (titleConnection.apiKey) {
     plans = await Promise.all(plans.map(async (plan) => {
       try {
@@ -1410,7 +1569,7 @@ async function createProductionPlans(body) {
           config: titleConnection.config,
           apiKey: titleConnection.apiKey,
           prompt: titlePrompt,
-          model: String(body.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
+          model: String(body.textModel || titleConnection.config.model).trim() || titleConnection.config.model
         });
         const jsonText = raw.replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
         return applySuggestedTitles(plan, JSON.parse(jsonText));
@@ -1481,13 +1640,14 @@ function publicProductionJob(job) {
 
 function safeProductionOptions(options = {}) {
   const config = normalizeImageApiConfig(options);
+  const textConfig = normalizeTextApiConfig(readJson(APP_SETTINGS_FILE, {}).textApi || {});
   return {
     provider: config.provider,
     baseUrl: config.baseUrl,
     model: config.model,
     quality: String(options.quality || "严格母版").slice(0, 100),
     prompt: String(options.prompt || "").slice(0, 30_000),
-    textModel: String(options.textModel || "gpt-5.6-terra").slice(0, 200),
+    textModel: String(options.textModel || textConfig.model).slice(0, 200),
     outputPrefix: safeOutputName(String(options.outputPrefix || "")).slice(0, 40),
     runScope: String(options.runScope || "") === "calibration" ? "calibration" : "full"
   };
@@ -1565,7 +1725,7 @@ async function runProductionJob(job, planBundle, options) {
   const config = normalizeImageApiConfig(options);
   const apiKey = imageApiCredential(config.provider, options.apiKey);
   if (!apiKey) throw new Error("没有找到这个平台的本机密钥");
-  const textConnection = textGenerationConnection(config, options.apiKey);
+  const textConnection = textGenerationConnection(options.textApiKey);
   const abortController = new AbortController();
   productionAbortControllers.set(job.id, abortController);
   job.planBundle = planBundle;
@@ -1708,7 +1868,7 @@ async function runProductionJob(job, planBundle, options) {
             plan,
             provider: config.provider,
             imageModel: config.model,
-            textModel: options.textModel || "gpt-5.6-terra",
+            textModel: options.textModel || textConnection.config.model,
             requestSummary: productionRequestSummary(job.results, plan.materialName),
             note: "省钱校准模式只生成首张封面。确认首图后才会生成剩余页面与文案。",
             officialLibraryWritten: false,
@@ -1787,7 +1947,7 @@ async function runProductionJob(job, planBundle, options) {
           config: textConnection.config,
           apiKey: textConnection.apiKey,
           prompt: buildCopyPrompt(plan, facts),
-          model: String(options.textModel || "gpt-5.6-terra").trim() || "gpt-5.6-terra"
+          model: String(options.textModel || textConnection.config.model).trim() || textConnection.config.model
         });
         fs.writeFileSync(copyFile, `${copy}\n`, "utf8");
         job.results.push({
@@ -1827,7 +1987,7 @@ async function runProductionJob(job, planBundle, options) {
       plan,
       provider: config.provider,
       imageModel: config.model,
-      textModel: options.textModel || "gpt-5.6-terra",
+      textModel: options.textModel || textConnection.config.model,
       requestSummary: productionRequestSummary(job.results, plan.materialName),
       failedRequests: job.failures.filter((item) => item.work === plan.materialName && item.phase === "image"),
       quality,
@@ -2336,7 +2496,11 @@ function materialCategoryCountMap(root, snapshot = readJson(MATERIAL_GLOBAL_INDE
     return new Map();
   }
   return new Map(snapshot.categories
-    .filter((category) => category?.path && Number.isInteger(Number(category.count)) && Number(category.count) >= 0)
+    .filter((category) => category?.path
+      && category.sourceSignature
+      && category.sourceSignature === materialTreeSignature(category.path)
+      && Number.isInteger(Number(category.count))
+      && Number(category.count) >= 0)
     .map((category) => [path.resolve(category.path), Number(category.count)]));
 }
 
@@ -2364,6 +2528,10 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "", options = {
   const sourceSignature = materialTreeSignature(root);
   const descriptors = materialCategoryIndex(root);
   const indexedCounts = materialCategoryCountMap(root);
+  if (descriptors.some((descriptor) => !indexedCounts.has(path.resolve(descriptor.path)))
+    && materialGlobalIndexJob.status !== "running") {
+    setImmediate(() => startMaterialGlobalIndexRefresh({ force: true, materialRoot: root }));
+  }
   const requestedPath = selectedLibraryPath ? path.resolve(selectedLibraryPath) : "";
   const requestedCategory = descriptors.find((category) => category.path === requestedPath);
   const selectedCategory = requestedCategory
@@ -2755,6 +2923,7 @@ function startMaterialGlobalIndexRefresh(options = {}) {
         id: category.id,
         name: category.name,
         path: category.path,
+        sourceSignature: materialTreeSignature(category.path),
         count: posts.length
       });
       cursor += 1;
@@ -3339,6 +3508,33 @@ function isAllowedFile(filePath) {
     path.resolve(getWorkspaceSettings().workPackage.libraryPath)
   ];
   return allowed.some((root) => isPathInside(root, resolved));
+}
+
+function trashEditableWorkspaceDirectory(targetInput = "") {
+  const target = path.resolve(String(targetInput || "").trim());
+  const pageSettings = getPageSettings();
+  const roots = [
+    getWorkspaceSettings().materialRoot,
+    pageSettings.production?.templateRoot || path.join(PROJECT_ROOT, "02-模板库")
+  ].filter(Boolean).map((root) => path.resolve(root));
+  const root = roots.find((candidate) => isPathInside(candidate, target) && candidate.toLowerCase() !== target.toLowerCase());
+  if (!root || !exists(target)) throw new Error("只能删除素材库或模板库内部的真实文件夹");
+  const stat = fs.lstatSync(target);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("只能删除真实文件夹，不能删除文件或链接");
+  const command = "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($env:TB_TRASH_TARGET,[Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,[Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)";
+  const result = childProcess.spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+    windowsHide: true,
+    env: { ...process.env, TB_TRASH_TARGET: target },
+    encoding: "utf8"
+  });
+  if (result.status !== 0 || exists(target)) {
+    throw new Error(String(result.stderr || result.stdout || "文件夹没有移入回收站").trim());
+  }
+  materialCategoryCache.clear();
+  materialPostCache = null;
+  materialLibraryCache = null;
+  setImmediate(() => startMaterialGlobalIndexRefresh({ force: true }));
+  return { ok: true, path: target, recoverable: true };
 }
 
 function send(res, status, body, type = "application/json; charset=utf-8") {
@@ -4602,8 +4798,13 @@ async function route(req, res) {
         || Number(metadata.width || 0) < 256 || Number(metadata.height || 0) < 256) {
         return send(res, 400, JSON.stringify({ error: "生成图片内容校验失败" }));
       }
-      fs.mkdirSync(DOWNLOAD_ROOT, { recursive: true });
-      const target = path.join(DOWNLOAD_ROOT, safeName);
+      const requestedRoot = String(body.downloadRoot || "").trim();
+      const targetRoot = requestedRoot ? path.resolve(requestedRoot) : path.resolve(DOWNLOAD_ROOT);
+      if (!isPathInside(path.resolve(DOWNLOAD_ROOT), targetRoot)) {
+        return send(res, 400, JSON.stringify({ error: "图片暂存目录必须位于工作台下载目录内" }));
+      }
+      fs.mkdirSync(targetRoot, { recursive: true });
+      const target = path.join(targetRoot, safeName);
       fs.writeFileSync(target, bytes, { flag: "wx" });
       return sendExtensionJson(req, res, {
         ok: true,
@@ -4619,6 +4820,38 @@ async function route(req, res) {
       }
       return send(res, 400, JSON.stringify({ error: `生成图片保存失败：${error.message}` }));
     }
+  }
+
+  if (pathname === "/api/gpt-production/checkpoint" && req.method === "GET") {
+    const requestId = parsed.query.requestId ? decodeURIComponent(parsed.query.requestId) : "";
+    return sendExtensionJson(req, res, { ok: true, checkpoint: readGptProductionCheckpoint(requestId) });
+  }
+
+  if (pathname === "/api/gpt-production/history" && req.method === "GET") {
+    const saved = readJson(GPT_PRODUCTION_CHECKPOINT_FILE, { version: 1, items: {} });
+    const items = Object.values(saved.items || {}).sort((left, right) =>
+      String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
+    ).slice(0, 200).map((item) => ({
+      requestId: item.requestId,
+      stage: item.stage,
+      percent: item.percent,
+      plannedImageCount: item.plannedImageCount,
+      downloadedImageCount: Array.isArray(item.downloadedFiles) ? item.downloadedFiles.length : 0,
+      packagePath: item.packagePath,
+      conversationUrl: item.conversationUrl,
+      updatedAt: item.updatedAt
+    }));
+    return sendExtensionJson(req, res, { ok: true, items });
+  }
+
+  if (pathname === "/api/gpt-production/checkpoint" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 512_000) || "{}");
+    return sendExtensionJson(req, res, { ok: true, checkpoint: writeGptProductionCheckpoint(body) });
+  }
+
+  if (pathname === "/api/gpt-production/recover-image-batch" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    return sendExtensionJson(req, res, { ok: true, batch: findRecoverableImageBatch(body) });
   }
 
   if (pathname === "/api/gpt-production/quota" && req.method === "GET") {
@@ -4747,6 +4980,15 @@ async function route(req, res) {
     if (!isAllowedFile(next) || exists(next)) return send(res, 400, JSON.stringify({ error: "target exists or not allowed" }));
     fs.renameSync(target, next);
     return sendJson(res, { ok: true, path: next });
+  }
+
+  if (pathname === "/api/trash-workspace-folder" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    try {
+      return sendJson(res, trashEditableWorkspaceDirectory(body.path));
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
   }
 
 
@@ -4919,6 +5161,14 @@ async function route(req, res) {
     return sendJson(res, { ok: true, imageApi: publicImageApiSettings(config) });
   }
 
+  if (pathname === "/api/text-api/config" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const config = saveTextApiSecret(body);
+    const previous = readJson(APP_SETTINGS_FILE, {});
+    writeJson(APP_SETTINGS_FILE, { ...previous, textApi: config });
+    return sendJson(res, { ok: true, textApi: publicTextApiSettings(config) });
+  }
+
   if (pathname === "/api/workbench-assistant/interpret" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 16_000) || "{}");
     try {
@@ -4941,6 +5191,44 @@ async function route(req, res) {
     if (!apiKey) {
       if (body.quiet) return sendJson(res, { ok: false, available: false, modelAvailable: false, models: [], error: "未配置本机密钥" });
       return send(res, 400, JSON.stringify({ error: "没有找到这个平台的本机密钥" }));
+    }
+    try {
+      const response = await networkFetch(`${config.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(30_000)
+      });
+      if (!response.ok) {
+        if (body.quiet) return sendJson(res, {
+          ok: false,
+          available: false,
+          modelAvailable: false,
+          models: [],
+          error: `连接失败（HTTP ${response.status}）`
+        });
+        return send(res, 502, JSON.stringify({ error: `连接失败（HTTP ${response.status}）` }));
+      }
+      const data = await response.json();
+      const models = Array.isArray(data.data) ? data.data.map((item) => item.id).filter(Boolean).slice(0, 50) : [];
+      return sendJson(res, { ok: true, available: true, modelAvailable: !models.length || models.includes(config.model), models });
+    } catch (error) {
+      if (body.quiet) return sendJson(res, {
+        ok: false,
+        available: false,
+        modelAvailable: false,
+        models: [],
+        error: String(error?.message || "连接失败").slice(0, 300)
+      });
+      return send(res, 502, JSON.stringify({ error: String(error?.message || "连接失败").slice(0, 300) }));
+    }
+  }
+
+  if (pathname === "/api/text-api/test" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const config = normalizeTextApiConfig(body);
+    const apiKey = textApiCredential(config.provider, body.apiKey);
+    if (!apiKey) {
+      if (body.quiet) return sendJson(res, { ok: false, available: false, modelAvailable: false, models: [], error: "未配置本机文案密钥" });
+      return send(res, 400, JSON.stringify({ error: "没有找到这个文案平台的本机密钥" }));
     }
     try {
       const response = await networkFetch(`${config.baseUrl}/models`, {

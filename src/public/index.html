@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.14.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.14.2" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -132,7 +132,7 @@
                 <div class="workbench-run-settings compact">
                   <label>生图平台<select id="workbenchImageProvider"><option value="local-openai">本地 GPT 生图</option><option value="bytecat">ByteCat</option><option value="minimax">MiniMax</option></select></label>
                   <label>生图模型<select id="workbenchImageModel" aria-label="选择生图模型"><option value="gpt-image-2">gpt-image-2</option></select></label>
-                  <label>文案模型<select id="workbenchTextModel" aria-label="选择文案模型"><option value="gpt-5.6-terra">gpt-5.6-terra</option></select></label>
+                  <label>文案模型<select id="workbenchTextModel" aria-label="选择文案模型"><option value="MiniMax-M2.7">MiniMax-M2.7</option></select></label>
                   <label>页数<select id="workbenchPageCount"><option value="">按素材自动</option><option>3</option><option>5</option><option>7</option><option>9</option><option>10</option></select></label>
                   <label>质量<select id="workbenchQuality"><option value="严格母版">严格母版</option><option value="高质量">高质量</option><option value="标准">标准</option></select></label>
                 </div>
@@ -344,7 +344,6 @@
               <p>选择一个或多个帖子后按顺序上传、生成、下载文案与图片，并打包到本地成品目录。</p>
             </div>
             <div class="gpt-production-test-actions">
-              <span id="gptEmbeddedState" class="gpt-embedded-state" data-tone="idle">等待打开 GPT</span>
               <button class="page-settings-button" type="button" data-open-page-settings="gptAuto" title="自动生产设置" aria-label="打开自动生产设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button>
             </div>
           </header>
@@ -370,9 +369,9 @@
                 <div class="gpt-mode-row">
                   <label for="gptProductionMode">生产模式</label>
                   <select id="gptProductionMode">
-                    <option value="multi">多窗口轮询</option>
-                    <option value="automatic">自动闭环</option>
-                    <option value="manual">手动准备</option>
+                    <option value="automatic">单窗口自动</option>
+                    <option value="multi">多窗口自动</option>
+                    <option value="manual">手动模式</option>
                   </select>
                 </div>
                 <label for="gptTestExtraPrompt">本次补充要求</label>
@@ -383,6 +382,7 @@
                   <button id="gptPauseQueueBtn" type="button">暂停</button>
                   <button id="gptRetryTaskBtn" type="button" hidden>重试当前任务</button>
                   <button id="gptSkipTaskBtn" type="button">跳过当前</button>
+                  <button id="gptProductionHistoryBtn" type="button">查看生产记录</button>
                 </div>
                 <div class="gpt-auto-progress" aria-label="自动生产进度">
                   <span id="gptAutoProgressBar"></span>
@@ -404,12 +404,10 @@
               </header>
               <div id="gptEmbeddedHost" class="gpt-embedded-host" aria-label="GPT网页显示区域">
                 <div class="gpt-embedded-placeholder">
-                  <span class="gpt-orbit" aria-hidden="true"></span>
-                  <strong>正在准备 GPT 网页</strong>
-                  <p>每个账号标签使用独立登录状态，互不串号。</p>
+                  <strong>GPT 网页连接中</strong>
+                  <p>首次打开完成后，切换页面不会重复加载。</p>
                 </div>
               </div>
-              <aside id="gptSelectionAssistant" class="gpt-selection-assistant" hidden aria-live="polite"></aside>
             </section>
           </div>
         </section>
@@ -514,10 +512,13 @@
               <label><span>生图平台</span><select id="productionApiProvider" class="search-input"><option value="local-openai">本地 GPT 生图</option><option value="bytecat">ByteCat Image 2.0</option><option value="minimax">MiniMax 生图</option></select></label>
               <label><span>接口地址</span><input id="productionApiBaseUrl" class="search-input" type="url" /></label>
               <label><span>生图模型</span><input id="productionApiModel" class="search-input" type="text" /></label>
-              <label><span>文案模型</span><input id="productionTextModel" class="search-input" type="text" value="gpt-5.6-terra" /></label>
-              <label><span>本机密钥</span><input id="productionApiKey" class="search-input" type="password" autocomplete="off" placeholder="已保存时可留空" /></label>
+              <label><span>生图密钥</span><input id="productionApiKey" class="search-input" type="password" autocomplete="off" placeholder="已保存时可留空" /></label>
+              <label><span>文案平台</span><select id="productionTextProvider" class="search-input"><option value="local-openai">本地 OpenAI 兼容</option><option value="bytecat">ByteCat 文案</option><option value="minimax" selected>MiniMax 文案</option></select></label>
+              <label><span>文案接口</span><input id="productionTextBaseUrl" class="search-input" type="url" value="https://api.minimaxi.com/v1" /></label>
+              <label><span>文案模型</span><select id="productionTextModel" class="search-input"><option value="MiniMax-M2.7" selected>MiniMax-M2.7</option><option value="gpt-5.6-terra">gpt-5.6-terra</option></select></label>
+              <label><span>文案密钥</span><input id="productionTextApiKey" class="search-input" type="password" autocomplete="off" placeholder="已保存时可留空" /></label>
             </div>
-            <div class="settings-actions"><button id="saveProductionApiBtn" class="primary-button" type="button">保存接口</button><button id="testProductionApiBtn" type="button">测试连接</button></div>
+            <div class="settings-actions"><button id="saveProductionApiBtn" class="primary-button" type="button">保存全部接口</button><button id="testProductionApiBtn" type="button">测试两路连接</button></div>
           </section>
           <section class="settings-card cloud-backup-card">
             <div class="settings-card-heading">
@@ -688,7 +689,7 @@
         <section id="gptAutoPageSettings" class="page-settings-section" hidden>
           <div class="settings-group">
             <h3>模式与归档</h3>
-            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="automatic">单窗口自动</option><option value="multi">多窗口轮询</option><option value="manual">手动准备</option></select></label>
+            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="automatic">单窗口自动</option><option value="multi">多窗口自动</option><option value="manual">手动模式</option></select></label>
             <label class="switch-setting"><span><b>成功后归档原素材</b><small>仅在图片、TXT 和作品包全部校验成功后移动到“已上传 N 次”</small></span><input id="gptAutoArchiveEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>显示账号额度提醒</b><small>按本地滚动账本估算，网页实际限流优先</small></span><input id="gptQuotaReminderEnabled" type="checkbox" checked /></label>
           </div>
@@ -697,7 +698,7 @@
             <label class="switch-setting"><span><b>自动发送“1”确认出图</b><small>检测到迁移计划完成后才发送</small></span><input id="gptAutoConfirmEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>自动生成小红书文案</b><small>套图完成后请求文案并检测非空正文</small></span><input id="gptAutoCopyEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>自动下载图片并打包</b><small>图片数量与 TXT 均核对成功后才标记完成</small></span><input id="gptAutoPackageEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>失败时暂停队列</b><small>避免重复付费生成或把错误带到下一帖</small></span><input id="gptAutoPauseOnFailure" type="checkbox" checked /></label>
+            <div class="settings-note">单个素材失败会写入生产记录并自动跳过，队列继续生产下一个素材。</div>
           </div>
           <div class="settings-group">
             <h3>限速与稳定性</h3>
@@ -716,8 +717,8 @@
               <label><span>闲置网页释放（分钟）</span><input id="gptIdleUnloadMinutes" type="number" min="5" max="240" value="30" /></label>
               <label><span>定时启动时间</span><input id="gptScheduledTime" type="time" value="09:30" /></label>
               <label><span>启动延迟范围（分钟）</span><input id="gptScheduledJitter" type="number" min="0" max="60" value="10" /></label>
-              <label><span>下载暂存目录</span><input id="gptDownloadRoot" type="text" value="D:\Download" /></label>
-              <label><span>成品库目录</span><input id="gptProductRoot" type="text" value="D:\AICode\项目推进\projects\江湖有旅人\主项目\成品库（GPT+本地脚本制作）" /></label>
+                  <label><span>下载暂存目录</span><div class="inline-setting-control"><input id="gptDownloadRoot" type="text" value="D:\Download" /><button id="chooseGptDownloadRootBtn" type="button">选择</button></div></label>
+                  <label><span>成品库目录</span><div class="inline-setting-control"><input id="gptProductRoot" type="text" value="D:\AICode\项目推进\projects\江湖有旅人\主项目\成品库（GPT+本地脚本制作）" /><button id="chooseGptProductRootBtn" type="button">选择</button></div></label>
             </div>
             <label class="switch-setting"><span><b>网页内提示词库</b><small>在 GPT 输入区显示可点击的提示词入口</small></span><input id="gptPromptLibraryEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>网页内下载与打包按钮</b><small>按当前回复绑定下载本组和下载并打包</small></span><input id="gptMessageDownloadsEnabled" type="checkbox" checked /></label>
@@ -732,10 +733,22 @@
       </aside>
     </div>
 
-    <button class="workbench-assistant-launcher" id="workbenchAssistantLauncher" type="button" aria-label="打开团建中控助手" aria-expanded="false">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8.5h10a4 4 0 0 1 4 4v2a4 4 0 0 1-4 4h-5l-4 2v-2H7a4 4 0 0 1-4-4v-2a4 4 0 0 1 4-4Z"/><path d="M9 8.5V6a3 3 0 0 1 6 0v2.5M8 13h.01M12 13h.01M16 13h.01"/></svg>
+    <button class="workbench-assistant-launcher" id="workbenchAssistantLauncher" type="button" aria-label="打开小猫助手" aria-expanded="false">
+      <img id="workbenchAssistantCat" class="workbench-assistant-cat" src="assets/assistant-black-cat-v2.png" alt="" aria-hidden="true" />
     </button>
-    <div class="workbench-assistant-bubble" id="workbenchAssistantBubble" role="status" aria-live="polite" hidden></div>
+    <div class="workbench-assistant-bubble" id="workbenchAssistantBubble" role="status" aria-live="polite" hidden>
+      <div class="workbench-assistant-bubble-content" id="workbenchAssistantBubbleContent"></div>
+    </div>
+    <div class="workbench-assistant-mute-menu" id="workbenchAssistantMuteMenu" hidden>
+      <button data-assistant-mute="1" type="button">关闭 1 分钟</button>
+      <button data-assistant-mute="5" type="button">关闭 5 分钟</button>
+      <button data-assistant-mute="60" type="button">关闭 1 小时</button>
+    </div>
+    <aside class="workbench-assistant-log-panel" id="workbenchAssistantLogPanel" hidden aria-label="当前页面状态日志">
+      <header><div><strong>当前页面状态</strong><span id="workbenchAssistantLogPage">实时日志</span></div><button id="closeWorkbenchAssistantLog" type="button" aria-label="关闭日志">×</button></header>
+      <div class="workbench-assistant-log-list" id="workbenchAssistantLogList"></div>
+      <footer><span>暂时关闭气泡</span><button data-assistant-mute="1" type="button">1分钟</button><button data-assistant-mute="5" type="button">5分钟</button><button data-assistant-mute="60" type="button">1小时</button></footer>
+    </aside>
     <aside class="workbench-assistant-panel" id="workbenchAssistantPanel" hidden aria-label="团建中控助手">
       <header><div><strong>团建中控助手</strong><span>本地安全执行</span></div><button id="closeWorkbenchAssistant" type="button" aria-label="关闭">×</button></header>
       <div class="workbench-assistant-messages" id="workbenchAssistantMessages">
@@ -743,16 +756,21 @@
       </div>
       <div class="workbench-assistant-input"><input id="workbenchAssistantCommand" type="text" placeholder="输入要执行的工作…" /><button id="runWorkbenchAssistantCommand" type="button">执行</button></div>
     </aside>
+    <aside class="gpt-production-history-panel" id="gptProductionHistoryPanel" hidden aria-label="GPT 生产记录">
+      <header><div><strong>生产记录</strong><span>自动闭环的完成、暂停与失败记录</span></div><button id="closeGptProductionHistory" type="button" aria-label="关闭生产记录">×</button></header>
+      <div class="gpt-production-history-list" id="gptProductionHistoryList"></div>
+    </aside>
     <div class="toast" id="toast"></div>
     <div class="context-menu" id="contextMenu">
       <button id="contextOpenFolder" type="button">打开当前目录</button>
       <button id="contextSetFolder" type="button">设置关联文件夹</button>
       <button id="contextCopyPath" type="button">复制目录地址</button>
       <button id="contextRename" type="button">重命名</button>
+      <button id="contextTrashFolder" type="button" class="danger-action">移到回收站</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.14.0"></script>
-    <script src="/material-workspace.js?v=0.14.0"></script>
-    <script src="/app.js?v=0.14.0"></script>
+    <script src="/distribution-ui.js?v=0.14.2"></script>
+    <script src="/material-workspace.js?v=0.14.2"></script>
+    <script src="/app.js?v=0.14.2"></script>
   </body>
 </html>

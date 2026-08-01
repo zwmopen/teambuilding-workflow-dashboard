@@ -4,8 +4,41 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { PassThrough } = require('node:stream');
+const { EventEmitter } = require('node:events');
+const childProcess = require('node:child_process');
 
 const server = require('./server');
+
+test('work-package duplicate output becomes a clean skipped result', { concurrency: false }, async (t) => {
+  const originalSpawn = childProcess.spawn;
+  t.after(() => { childProcess.spawn = originalSpawn; });
+  childProcess.spawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    process.nextTick(() => {
+      child.stdout.end([
+        'DUPLICATE',
+        'Version=1.8.4',
+        'DeletedImages=6',
+        'DuplicateReason=ExactImageSet',
+        'HistoryEntries=12'
+      ].join('\n'));
+      child.stderr.end();
+      child.emit('close', 0);
+    });
+    return child;
+  };
+  const result = await server.runExtensionWorkPackage({
+    clipboardText: '本次重复作品的文案'
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.duplicate, true);
+  assert.equal(result.skipped, true);
+  assert.equal(result.deletedImages, 6);
+  assert.equal(result.duplicateReason, 'ExactImageSet');
+  assert.equal(result.packagePath, '');
+});
 
 test('mobile conversion access distinguishes loopback from LAN clients', () => {
   assert.equal(server.isLoopbackAddress('127.0.0.1'), true);

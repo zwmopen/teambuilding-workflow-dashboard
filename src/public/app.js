@@ -75,13 +75,25 @@ let gptLastFailedTask = null;
 let gptLastFailedStage = "";
 let gptLastFailedPercent = 0;
 let gptQuotaSnapshot = null;
-let gptAssistantTimer = null;
 let assistantBubbleTimer = null;
+let assistantSuppressClickUntil = 0;
+const ASSISTANT_PERSISTENT_MESSAGE_KEY = "tb-workbench-assistant-persistent-message-v1";
+let assistantPersistentMessage = String(localStorage.getItem(ASSISTANT_PERSISTENT_MESSAGE_KEY) || "");
 let lastAssistantBubbleMessage = "";
 let assistantDragState = null;
+const assistantEventLog = [];
+let assistantMuteUntil = Number(localStorage.getItem("tb-workbench-assistant-muted-until") || 0);
+let assistantMuteTimer = null;
 const GPT_ACCOUNTS_STORAGE_KEY = "teambuilding-gpt-accounts";
 const GPT_AUTO_SETTINGS_STORAGE_KEY = "teambuilding-gpt-auto-settings";
 const GPT_QUEUE_STORAGE_KEY = "teambuilding-gpt-queue-v1";
+const GPT_HISTORY_STORAGE_KEY = "teambuilding-gpt-production-history-v1";
+let gptProductionHistory = (() => {
+  try {
+    const rows = JSON.parse(localStorage.getItem(GPT_HISTORY_STORAGE_KEY) || "[]");
+    return Array.isArray(rows) ? rows.slice(0, 200) : [];
+  } catch { return []; }
+})();
 let gptAccounts = loadGptAccounts();
 let activeGptAccountId = gptAccounts[0]?.id || "account-1";
 let gptAutoSettings = loadGptAutoSettings();
@@ -182,7 +194,7 @@ function loadGptAutoSettings() {
     autoConfirm: true,
     autoCopy: true,
     autoPackage: true,
-    pauseOnFailure: true,
+    pauseOnFailure: false,
     autoArchive: true,
     quotaReminderEnabled: true,
     minDelaySeconds: 25,
@@ -207,7 +219,13 @@ function loadGptAutoSettings() {
     scheduledJitterMinutes: 10
   };
   try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem(GPT_AUTO_SETTINGS_STORAGE_KEY) || "{}") };
+    return {
+      ...defaults,
+      ...JSON.parse(localStorage.getItem(GPT_AUTO_SETTINGS_STORAGE_KEY) || "{}"),
+      // 0.14.2: a failed material is recorded and skipped. It must never hold
+      // the remaining production queue hostage.
+      pauseOnFailure: false
+    };
   } catch {
     return defaults;
   }
@@ -221,7 +239,6 @@ function renderGptAutoSettings() {
   if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
   if ($("#gptAutoCopyEnabled")) $("#gptAutoCopyEnabled").checked = values.autoCopy !== false;
   if ($("#gptAutoPackageEnabled")) $("#gptAutoPackageEnabled").checked = values.autoPackage !== false;
-  if ($("#gptAutoPauseOnFailure")) $("#gptAutoPauseOnFailure").checked = values.pauseOnFailure !== false;
   if ($("#gptAutoArchiveEnabled")) $("#gptAutoArchiveEnabled").checked = values.autoArchive !== false;
   if ($("#gptQuotaReminderEnabled")) $("#gptQuotaReminderEnabled").checked = values.quotaReminderEnabled !== false;
   if ($("#gptAutoMinDelay")) $("#gptAutoMinDelay").value = values.minDelaySeconds;
@@ -255,7 +272,7 @@ function saveGptAutoSettings() {
     autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
     autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
     autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
-    pauseOnFailure: $("#gptAutoPauseOnFailure")?.checked !== false,
+    pauseOnFailure: false,
     autoArchive: $("#gptAutoArchiveEnabled")?.checked !== false,
     quotaReminderEnabled: $("#gptQuotaReminderEnabled")?.checked !== false,
     minDelaySeconds: minDelay,
@@ -280,6 +297,7 @@ function saveGptAutoSettings() {
     scheduledJitterMinutes: Math.max(0, Math.min(60, Number($("#gptScheduledJitter")?.value || 0)))
   };
   localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
+  renderGptAutoSettings();
   if (dashboard?.workspaceSettings?.pageSettings) {
     const existingAccounts = dashboard.workspaceSettings.pageSettings.gptAuto?.accounts || [];
     const accountMap = new Map(existingAccounts.map((account) => [account.id, account]));
@@ -510,8 +528,10 @@ function showContextMenu(x, y) {
   const menu = $("#contextMenu");
   if (!menu || !contextMenuTarget) return;
   const isFolderBinding = contextMenuTarget.kind === "folder-binding";
+  const isEditableFolder = contextMenuTarget.kind === "gpt-material-folder" || contextMenuTarget.kind === "gpt-template-folder";
   if ($("#contextSetFolder")) $("#contextSetFolder").hidden = !isFolderBinding;
   if ($("#contextRename")) $("#contextRename").hidden = isFolderBinding;
+  if ($("#contextTrashFolder")) $("#contextTrashFolder").hidden = !isEditableFolder;
   if ($("#contextCopyTemplateCommand")) $("#contextCopyTemplateCommand").hidden = isFolderBinding;
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
@@ -836,7 +856,7 @@ function closePageSettings() {
   $("#pageSettingsBackdrop").hidden = true;
   document.body.classList.remove("page-settings-open");
   activePageSettings = "";
-  if ($("#gptProductionTestView")?.classList.contains("active")) window.requestAnimationFrame(() => showEmbeddedGptView());
+  if ($("#gptProductionTestView")?.classList.contains("active")) restoreEmbeddedGptView();
 }
 
 function reserveCategoryLabel(category) {
@@ -862,7 +882,7 @@ function renderDistributionReserveAlert() {
 function closeImageLightbox() {
   document.querySelector(".image-lightbox")?.remove();
   if ($("#gptProductionTestView")?.classList.contains("active") && !document.querySelector(".system-dialog-backdrop") && $("#pageSettingsBackdrop")?.hidden !== false) {
-    window.requestAnimationFrame(() => showEmbeddedGptView());
+    restoreEmbeddedGptView();
   }
 }
 
@@ -954,7 +974,7 @@ function openSystemDialog(options = {}) {
       document.removeEventListener("keydown", onKeydown);
       backdrop.remove();
       if (restoreGpt && $("#pageSettingsBackdrop")?.hidden !== false && !document.querySelector(".image-lightbox")) {
-        window.requestAnimationFrame(() => showEmbeddedGptView());
+        restoreEmbeddedGptView();
       }
       resolve(result);
     };
@@ -1010,9 +1030,31 @@ function renderWorkspaceSettings() {
   if ($("#productionApiProvider")) $("#productionApiProvider").value = settings.imageApi?.provider || "local-openai";
   if ($("#productionApiBaseUrl")) $("#productionApiBaseUrl").value = settings.imageApi?.baseUrl || "http://localhost:62104/v1";
   if ($("#productionApiModel")) $("#productionApiModel").value = settings.imageApi?.model || "gpt-image-2";
+  if ($("#workbenchImageProvider")) {
+    $("#workbenchImageProvider").value = localStorage.getItem("tb-workbench-image-provider")
+      || settings.imageApi?.provider
+      || "local-openai";
+    syncCustomSelect($("#workbenchImageProvider"));
+  }
+  if ($("#productionTextProvider")) $("#productionTextProvider").value = settings.textApi?.provider || "minimax";
+  if ($("#productionTextBaseUrl")) $("#productionTextBaseUrl").value = settings.textApi?.baseUrl || "https://api.minimaxi.com/v1";
+  if ($("#productionTextModel")) {
+    const textModel = settings.textApi?.model || "MiniMax-M2.7";
+    if (![...$("#productionTextModel").options].some((option) => option.value === textModel)) {
+      $("#productionTextModel").appendChild(new Option(textModel, textModel));
+    }
+    $("#productionTextModel").value = textModel;
+  }
+  ["#productionApiProvider", "#productionTextProvider", "#productionTextModel"]
+    .forEach((selector) => syncCustomSelect($(selector)));
   const imageApiReady = Boolean(settings.imageApi?.baseUrl && settings.imageApi?.model && settings.imageApi?.credentialConfigured);
+  const textApiReady = Boolean(settings.textApi?.baseUrl && settings.textApi?.model && settings.textApi?.credentialConfigured);
   if ($("#settingsImageApiStatus")) $("#settingsImageApiStatus").textContent = imageApiReady ? "凭据已连接" : settings.imageApi?.baseUrl ? "等待本机密钥" : "待接入";
-  if ($("#imageApiStatus")) $("#imageApiStatus").textContent = imageApiReady ? "生产引擎已就绪" : settings.imageApi?.baseUrl ? "等待本机密钥" : "生产引擎待连接";
+  if ($("#imageApiStatus")) $("#imageApiStatus").textContent = imageApiReady && textApiReady
+    ? "生图和文案引擎已就绪"
+    : imageApiReady
+      ? "生图已就绪，文案等待密钥"
+      : settings.imageApi?.baseUrl ? "等待本机密钥" : "生产引擎待连接";
   const appInfo = dashboard?.appInfo || {};
   if ($("#settingsVersion")) $("#settingsVersion").textContent = `v${appInfo.version || "未知"}`;
   if ($("#settingsVersionChannel")) $("#settingsVersionChannel").textContent = appInfo.channel || "本地便携版";
@@ -1202,11 +1244,23 @@ const WORKBENCH_PROVIDER_DEFAULTS = {
   minimax: { baseUrl: "https://api.minimaxi.com/v1", imageModel: "image-01", label: "MiniMax" }
 };
 
+const WORKBENCH_TEXT_PROVIDER_DEFAULTS = {
+  "local-openai": { baseUrl: "http://localhost:62104/v1", textModel: "gpt-5.6-terra", label: "本地 OpenAI 兼容" },
+  bytecat: { baseUrl: "https://bytecat.lamclod.cn/v1", textModel: "gpt-5.6-terra", label: "ByteCat 文案" },
+  minimax: { baseUrl: "https://api.minimaxi.com/v1", textModel: "MiniMax-M2.7", label: "MiniMax 文案" }
+};
+
 function currentWorkbenchProvider() {
   return $("#workbenchImageProvider")?.value
     || localStorage.getItem("tb-workbench-image-provider")
     || dashboard?.workspaceSettings?.imageApi?.provider
     || "local-openai";
+}
+
+function currentWorkbenchTextProvider() {
+  return $("#productionTextProvider")?.value
+    || dashboard?.workspaceSettings?.textApi?.provider
+    || "minimax";
 }
 
 function renderWorkbenchModelOptions(imageModels = [], textModels = []) {
@@ -1225,20 +1279,33 @@ function renderWorkbenchModelOptions(imageModels = [], textModels = []) {
     imageSelect.innerHTML = options.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("");
     imageSelect.value = options.includes(remembered) ? remembered : options[0];
     if ($("#productionApiModel")) $("#productionApiModel").value = imageSelect.value;
+    syncCustomSelect(imageSelect);
   }
   const textSelect = $("#workbenchTextModel");
   if (textSelect) {
-    const rememberedText = localStorage.getItem("tb-workbench-text-model") || "gpt-5.6-terra";
+    const textProvider = currentWorkbenchTextProvider();
+    const textDefaults = WORKBENCH_TEXT_PROVIDER_DEFAULTS[textProvider] || WORKBENCH_TEXT_PROVIDER_DEFAULTS.minimax;
+    const configuredText = dashboard?.workspaceSettings?.textApi?.provider === textProvider
+      ? dashboard.workspaceSettings.textApi.model
+      : textDefaults.textModel;
+    const rememberedText = localStorage.getItem(`tb-workbench-text-model-${textProvider}`) || configuredText;
     const likelyText = textModels.filter((model) => !/image|imagen|dall|flux|recraft|seedream|embedding|audio|whisper|tts/i.test(String(model)));
-    const options = [...new Set([rememberedText, "gpt-5.6-terra", ...likelyText].filter(Boolean))];
+    const options = [...new Set([rememberedText, configuredText, textDefaults.textModel, ...likelyText].filter(Boolean))];
     textSelect.innerHTML = options.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("");
     textSelect.value = options.includes(rememberedText) ? rememberedText : options[0];
-    if ($("#productionTextModel")) $("#productionTextModel").value = textSelect.value;
+    if ($("#productionTextModel")) {
+      if (![...$("#productionTextModel").options].some((option) => option.value === textSelect.value)) {
+        $("#productionTextModel").appendChild(new Option(textSelect.value, textSelect.value));
+      }
+      $("#productionTextModel").value = textSelect.value;
+    }
+    syncCustomSelect(textSelect);
+    syncCustomSelect($("#productionTextModel"));
   }
 }
 
-async function fetchModelCatalog(payload) {
-  return api("/api/image-api/test", {
+async function fetchModelCatalog(payload, route = "/api/image-api/test") {
+  return api(route, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...payload, quiet: true })
@@ -1251,10 +1318,12 @@ async function refreshWorkbenchModels(force = false) {
   if (status) status.textContent = "正在分别读取生图与文案模型…";
   const provider = currentWorkbenchProvider();
   const providerDefaults = WORKBENCH_PROVIDER_DEFAULTS[provider] || WORKBENCH_PROVIDER_DEFAULTS["local-openai"];
+  const textPayload = currentTextApiPayload({ workbench: true });
+  const textDefaults = WORKBENCH_TEXT_PROVIDER_DEFAULTS[textPayload.provider] || WORKBENCH_TEXT_PROVIDER_DEFAULTS.minimax;
   renderWorkbenchModelOptions();
   const [imageCatalog, textCatalog] = await Promise.allSettled([
     fetchModelCatalog({ provider, baseUrl: providerDefaults.baseUrl, model: $("#workbenchImageModel")?.value || providerDefaults.imageModel }),
-    fetchModelCatalog({ provider: "local-openai", baseUrl: WORKBENCH_PROVIDER_DEFAULTS["local-openai"].baseUrl, model: $("#workbenchTextModel")?.value || "gpt-5.6-terra" })
+    fetchModelCatalog(textPayload, "/api/text-api/test")
   ]);
   const imageModels = imageCatalog.status === "fulfilled" ? imageCatalog.value.models || [] : [];
   const textModels = textCatalog.status === "fulfilled" ? textCatalog.value.models || [] : [];
@@ -1266,7 +1335,7 @@ async function refreshWorkbenchModels(force = false) {
       : `${providerDefaults.label}暂不可读，保留当前模型`;
     const textState = textCatalog.status === "fulfilled"
       ? `文案 ${$("#workbenchTextModel")?.options?.length || 0} 个`
-      : "文案模型暂不可读，保留当前模型";
+      : `${textDefaults.label}暂不可读，保留当前模型`;
     status.textContent = `${imageState} · ${textState}`;
     status.title = [imageCatalog, textCatalog]
       .filter((item) => item.status === "rejected")
@@ -1284,22 +1353,31 @@ async function saveWorkbenchModels() {
   const provider = currentWorkbenchProvider();
   const providerDefaults = WORKBENCH_PROVIDER_DEFAULTS[provider] || WORKBENCH_PROVIDER_DEFAULTS["local-openai"];
   const model = $("#workbenchImageModel")?.value || providerDefaults.imageModel;
-  const textModel = $("#workbenchTextModel")?.value || "gpt-5.6-terra";
+  const textPayload = currentTextApiPayload({ workbench: true });
+  const textModel = textPayload.model;
   localStorage.setItem("tb-workbench-image-provider", provider);
   localStorage.setItem(`tb-workbench-image-model-${provider}`, model);
-  localStorage.setItem("tb-workbench-text-model", textModel);
+  localStorage.setItem(`tb-workbench-text-model-${textPayload.provider}`, textModel);
   if ($("#productionApiProvider")) $("#productionApiProvider").value = provider;
   if ($("#productionApiBaseUrl")) $("#productionApiBaseUrl").value = providerDefaults.baseUrl;
   if ($("#productionApiModel")) $("#productionApiModel").value = model;
   if ($("#productionTextModel")) $("#productionTextModel").value = textModel;
-  const result = await api("/api/image-api/config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider, baseUrl: providerDefaults.baseUrl, model })
-  });
-  dashboard.workspaceSettings.imageApi = result.imageApi;
+  const [imageResult, textResult] = await Promise.all([
+    api("/api/image-api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, baseUrl: providerDefaults.baseUrl, model })
+    }),
+    api("/api/text-api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(textPayload)
+    })
+  ]);
+  dashboard.workspaceSettings.imageApi = imageResult.imageApi;
+  dashboard.workspaceSettings.textApi = textResult.textApi;
   $("#workbenchEngineState").textContent = `${providerDefaults.label} · ${model} 已配置`;
-  $("#workbenchModelStatus").textContent = `图片用 ${model}；文案用 ${textModel}`;
+  $("#workbenchModelStatus").textContent = `图片用 ${model}；文案用 ${textResult.textApi.model}`;
 }
 
 function filteredWorkbenchProducts() {
@@ -1409,7 +1487,7 @@ function renderGptTestMaterials() {
       return `<section class="workbench-post-branch${postExpanded ? " active" : ""}">
         <div class="workbench-post-row${selected ? " selected" : ""}">
           <input class="material-check" type="checkbox" data-gpt-test-material-check="${escapeHtml(item.id)}" aria-label="选择素材文件夹" ${selected ? "checked" : ""}${gptAutoRunning ? " disabled" : ""} />
-          <button class="workbench-post-folder" type="button" data-gpt-test-post-folder="${escapeHtml(item.id)}" title="${escapeHtml(item.name)}">
+          <button class="workbench-post-folder" type="button" draggable="true" data-gpt-material-path="${escapeHtml(item.path)}" data-gpt-test-post-folder="${escapeHtml(item.id)}" title="${escapeHtml(item.name)}">
             <span class="folder-glyph" aria-hidden="true">${postExpanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.imageCount || 0} 图 · ${item.textCount || 0} TXT · 使用 ${Number(item.usageCount || 0)} 次</small></span>
           </button>
           <button class="gpt-post-send-button" type="button" data-gpt-send-post="${escapeHtml(item.id)}" title="只把这个帖子发送到 GPT"${gptAutoRunning ? " disabled" : ""}>发送</button>
@@ -1420,7 +1498,7 @@ function renderGptTestMaterials() {
     return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
       <div class="workbench-folder-row${allSelected ? " selected" : ""}">
         <input class="material-check folder-check" type="checkbox" data-gpt-test-category-check="${escapeHtml(category.path)}" ${allSelected ? "checked" : ""} data-indeterminate="${partial ? "true" : "false"}" aria-label="选择此文件夹中的全部帖子"${gptAutoRunning ? " disabled" : ""} />
-        <button class="workbench-folder-item${expanded ? " active" : ""}" type="button" data-gpt-test-material-category="${escapeHtml(category.path)}">
+        <button class="workbench-folder-item${expanded ? " active" : ""}" type="button" data-gpt-drop-category="${escapeHtml(category.path)}" data-gpt-test-material-category="${escapeHtml(category.path)}">
           <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(category.name)}（${category.countKnown === false ? "…" : Number(category.count ?? categoryItems.length)}）</strong></span>
         </button>
       </div>
@@ -1518,8 +1596,6 @@ function gptProductionWorkCount() {
 }
 
 function updateGptAssistantBubble(message = "") {
-  const bubble = $("#gptSelectionAssistant");
-  if (!bubble) return;
   const materials = gptTestSelectedMaterials.size;
   const templates = gptTestSelectedTemplates.size;
   const works = gptProductionWorkCount();
@@ -1527,15 +1603,12 @@ function updateGptAssistantBubble(message = "") {
     * Math.max(1, templates)
     + selectedGptTestTemplates().reduce((total, template) => total + Number(template.imageCount || 0), 0);
   const quota = gptQuotaSnapshot?.status;
-  bubble.innerHTML = `<button type="button" data-toggle-gpt-log aria-label="查看生产提示">✦</button><div><strong>${escapeHtml(message || `已选 ${materials} 个素材、${templates} 个模板，预计 ${works} 个作品`)}</strong><span>预计上传 ${imageUploads} 张图${quota ? ` · 近${quota.settings?.windowHours || 3}小时上传 ${quota.uploaded}/${quota.settings?.uploadLimit || 80}，生成 ${quota.generated}/${quota.settings?.generationLimit || 50}` : ""}</span></div>`;
-  bubble.hidden = false;
-  bubble.classList.remove("compact");
-  clearTimeout(gptAssistantTimer);
-  gptAssistantTimer = setTimeout(() => bubble.classList.add("compact"), 6500);
   const globalMessage = message || `已选 ${materials} 个素材、${templates} 个模板，预计 ${works} 个作品`;
-  if (globalMessage !== lastAssistantBubbleMessage) {
-    lastAssistantBubbleMessage = globalMessage;
-    showWorkbenchAssistantBubble(globalMessage);
+  const quotaMessage = `预计上传 ${imageUploads} 张图${quota ? ` · 近${quota.settings?.windowHours || 3}小时上传 ${quota.uploaded}/${quota.settings?.uploadLimit || 80}，生成 ${quota.generated}/${quota.settings?.generationLimit || 50}` : ""}`;
+  const combinedMessage = `${globalMessage} · ${quotaMessage}`;
+  if (combinedMessage !== lastAssistantBubbleMessage) {
+    lastAssistantBubbleMessage = combinedMessage;
+    showWorkbenchAssistantBubble(combinedMessage, message ? { persistent: true } : { transient: true, duration: 3600 });
   }
 }
 
@@ -1546,7 +1619,6 @@ async function refreshGptQuota(accountId = activeGptAccountId) {
   } catch {
     gptQuotaSnapshot = null;
   }
-  updateGptAssistantBubble();
 }
 
 async function ensureGptTaskQuota(task, quotaAccountId = activeGptAccountId) {
@@ -1615,12 +1687,14 @@ function updateGptTestQueueStatus(message = "") {
   const button = $("#gptTestSendBtn");
   if (!node || !button) return;
   const selectedCount = gptTestSelectedMaterials.size;
+  const canResumeQueue = gptQueuePaused && gptTestQueue.length > 0 && gptTestQueueIndex < gptTestQueue.length;
   const mode = gptAutoSettings.mode === "manual" ? "手动" : gptAutoSettings.mode === "multi" ? "多窗口" : "自动";
   if (message) node.textContent = message;
+  else if (canResumeQueue) node.textContent = `已恢复未完成队列，还有 ${gptTestQueue.length - gptTestQueueIndex} 个步骤待处理`;
   else if (!selectedCount) node.textContent = "请至少选择一个素材文件夹；模板可以不选";
   else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) node.textContent = `还有 ${gptTestQueue.length - gptTestQueueIndex} 个队列步骤待处理`;
   else node.textContent = `${mode}模式 · ${selectedCount} 个素材 × ${Math.max(1, gptTestSelectedTemplates.size)} 个母版 = ${gptProductionWorkCount()} 个作品`;
-  button.disabled = !selectedCount || !window.gptWorkbench?.available;
+  button.disabled = (!selectedCount && !canResumeQueue) || !window.gptWorkbench?.available;
   if (gptAutoRunning) button.disabled = true;
   button.textContent = gptAutoRunning
     ? `${mode}处理中 ${Math.min(gptTestQueueIndex + 1, gptTestQueue.length)}/${gptTestQueue.length}`
@@ -1651,12 +1725,11 @@ function gptHostBounds() {
   const host = $("#gptEmbeddedHost");
   if (!host) return null;
   const rect = host.getBoundingClientRect();
-  const inset = 10;
   return {
-    x: rect.left + inset,
-    y: rect.top + inset,
-    width: Math.max(320, rect.width - inset * 2),
-    height: Math.max(320, rect.height - inset * 2)
+    x: rect.left,
+    y: rect.top,
+    width: Math.max(320, rect.width),
+    height: Math.max(320, rect.height)
   };
 }
 
@@ -1785,6 +1858,11 @@ async function navigateEmbeddedGpt(action) {
       state.textContent = action === "reload" ? "正在刷新 GPT" : "正在切换网页";
       state.dataset.tone = "busy";
     }
+    if (/\/auth\/(?:login|signup)/i.test(result.url || "")) {
+      showWorkbenchAssistantBubble("当前 GPT 浏览器需要登录，登录完成后可继续生产。", { duration: 0 });
+    } else if (result.ready) {
+      showWorkbenchAssistantBubble("GPT 已就绪，可以从左侧选择素材开始自动生产。", { duration: 0 });
+    }
     const result = await window.gptWorkbench.navigate(action, activeGptAccountId);
     $("#gptBrowserBackBtn").disabled = !result.canGoBack;
     $("#gptBrowserForwardBtn").disabled = !result.canGoForward;
@@ -1800,6 +1878,7 @@ async function navigateEmbeddedGpt(action) {
 
 async function showEmbeddedGptView() {
   const state = $("#gptEmbeddedState");
+  const host = $("#gptEmbeddedHost");
   if (!window.gptWorkbench?.available) {
     if (state) {
       state.textContent = "请在桌面测试版中使用";
@@ -1809,7 +1888,13 @@ async function showEmbeddedGptView() {
     return;
   }
   const bounds = gptHostBounds();
-  if (!bounds || bounds.width < 100 || bounds.height < 100) return;
+  if (!bounds || bounds.width < 100 || bounds.height < 100) {
+    host?.classList.remove("is-native-visible");
+    window.setTimeout(() => {
+      if ($("#gptProductionTestView")?.classList.contains("active")) showEmbeddedGptView().catch(() => {});
+    }, 260);
+    return;
+  }
   const signature = `${activeGptAccountId}:${Math.round(bounds.x)}:${Math.round(bounds.y)}:${Math.round(bounds.width)}:${Math.round(bounds.height)}`;
   if (signature === gptLastShowSignature && !gptShowInFlight) return;
   if (gptShowInFlight) return gptShowInFlight;
@@ -1821,23 +1906,42 @@ async function showEmbeddedGptView() {
   try {
     const result = await window.gptWorkbench.show(bounds, activeGptAccountId);
     gptLastShowSignature = signature;
+    host?.classList.add("is-native-visible");
     if (state) {
       const needsLogin = /\/auth\/(?:login|signup)/i.test(result.url || "");
       state.textContent = needsLogin
         ? `${gptAccounts.find((item) => item.id === activeGptAccountId)?.name || "当前账号"}：请先登录`
-        : result.extensionLoaded ? "GPT 已就绪 · 生产助手已接入" : "GPT 已打开 · 生产助手未加载";
-      state.dataset.tone = needsLogin ? "warning" : result.extensionLoaded ? "success" : "warning";
+        : result.ready ? "GPT 已就绪 · 生产助手已接入" : "GPT 网页加载中（最长20秒）";
+      state.dataset.tone = needsLogin ? "warning" : result.ready ? "success" : "busy";
       state.title = result.extensionError || "";
     }
     if ($("#gptBrowserBackBtn")) $("#gptBrowserBackBtn").disabled = !result.canGoBack;
     if ($("#gptBrowserForwardBtn")) $("#gptBrowserForwardBtn").disabled = !result.canGoForward;
+    if (!/\/auth\/(?:login|signup)/i.test(result.url || "") && !result.ready) {
+      const deadline = Date.now() + 20_000;
+      let readiness = result;
+      while (Date.now() < deadline && !readiness.ready) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        readiness = await window.gptWorkbench.status(activeGptAccountId);
+      }
+      if (state) {
+        state.textContent = readiness.ready ? "GPT 已就绪 · 生产助手已接入" : "GPT 网页加载超时，请点击刷新";
+        state.dataset.tone = readiness.ready ? "success" : "danger";
+        state.title = readiness.pageState?.error || readiness.extensionError || "网页没有在20秒内进入可生产状态";
+      }
+      if (!readiness.ready) {
+        showWorkbenchAssistantBubble("GPT 网页未在 20 秒内就绪，可点击网页顶部刷新后重试。", { duration: 0, tone: "danger" });
+      }
+    }
   } catch (error) {
     gptLastShowSignature = "";
+    host?.classList.remove("is-native-visible");
     if (state) {
       state.textContent = "GPT 打开失败";
       state.dataset.tone = "danger";
       state.title = error.message;
     }
+    showWorkbenchAssistantBubble(`GPT 打开失败：${error.message}`, { duration: 0, tone: "danger" });
   }
   })();
   try {
@@ -1860,6 +1964,20 @@ async function showEmbeddedGptView() {
   updateGptTestQueueStatus();
 }
 
+function restoreEmbeddedGptView() {
+  if (!$("#gptProductionTestView")?.classList.contains("active")) return;
+  gptLastShowSignature = "";
+  window.requestAnimationFrame(() => showEmbeddedGptView().catch(() => {}));
+  window.setTimeout(() => {
+    gptLastShowSignature = "";
+    showEmbeddedGptView().catch(() => {});
+  }, 180);
+  window.setTimeout(() => {
+    gptLastShowSignature = "";
+    showEmbeddedGptView().catch(() => {});
+  }, 700);
+}
+
 function renderGptProductionTest() {
   if (!$("#gptProductionTestView")) return;
   renderGptTestMaterials();
@@ -1868,6 +1986,8 @@ function renderGptProductionTest() {
   renderGptAutoSettings();
   refreshGptQuota();
   window.requestAnimationFrame(() => showEmbeddedGptView());
+  window.setTimeout(() => showEmbeddedGptView().catch(() => {}), 320);
+  window.setTimeout(() => showEmbeddedGptView().catch(() => {}), 1200);
 }
 
 async function refreshExpandedGptMaterialTrees() {
@@ -1904,6 +2024,7 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   task.autoRun = true;
   task.autoOptions = { ...gptAutoSettings, quotaAccountId: task.quotaAccountId };
   task._status = "running";
+  task._startedAt ||= new Date().toISOString();
   persistGptQueue();
   if (task.taskType === "material") await ensureGptTaskQuota(task, task.quotaAccountId);
   if (task.navigation === "new-chat") {
@@ -1936,10 +2057,13 @@ async function runGptTaskOnBrowser(task, account, tracker) {
     task._status = "failed";
     task._error = result?.detail || result?.error || "自动生产没有完整结束";
     tracker.failed += 1;
+    appendGptProductionHistory(task, "failed", result, task._error);
     persistGptQueue();
     throw new Error(`${account.name}：${task._error}`);
   }
   task._status = "completed";
+  task._percent = 100;
+  appendGptProductionHistory(task, "completed", result);
   tracker.completed += 1;
   persistGptQueue();
   return result;
@@ -1969,7 +2093,7 @@ async function sendMultiWindowGptTasks() {
   gptQueuePaused = false;
   window.gptWorkbench?.setProductionActive?.(true).catch(() => {});
   persistGptQueue();
-  updateGptTestQueueStatus(`多窗口轮询已启动 · ${workers.length} 个浏览器 · ${gptProductionWorkCount()} 个作品`);
+  updateGptTestQueueStatus(`多窗口自动已启动 · ${workers.length} 个浏览器 · ${gptProductionWorkCount()} 个作品`);
   const runWorker = async (account) => {
     while (!gptAutoPaused) {
       const groupIndex = nextGroup;
@@ -1987,13 +2111,7 @@ async function sendMultiWindowGptTasks() {
           gptLastFailedTask = task;
           gptLastFailedStage = task._stage || "";
           gptLastFailedPercent = task._percent || 0;
-          if (gptAutoSettings.pauseOnFailure !== false) {
-            gptAutoPaused = true;
-            gptQueuePaused = true;
-            persistGptQueue();
-            showWorkbenchAssistantBubble(`${error.message}；多窗口队列已停在安全检查点。`, { duration: 0 });
-            return;
-          }
+          showWorkbenchAssistantBubble(`${task.name}生产失败并已记录；正在继续下一个素材。`, { duration: 0 });
         }
       }
     }
@@ -2032,7 +2150,7 @@ async function sendNextGptTestTask() {
   persistGptQueue();
   button.disabled = true;
   const manualMode = gptAutoSettings.mode === "manual";
-  updateGptTestQueueStatus(`${manualMode ? "手动准备" : "自动生产"} · ${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号"} · ${gptProductionWorkCount()} 个作品`);
+  updateGptTestQueueStatus(`${manualMode ? "手动模式" : "单窗口自动"} · ${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号"} · ${gptProductionWorkCount()} 个作品`);
   let completedThisRun = 0;
   let failedThisRun = 0;
   try {
@@ -2043,8 +2161,13 @@ async function sendNextGptTestTask() {
         throw new Error(`已完成本轮 ${accountLimit} 套上限；点击“继续自动生产”后从第 ${gptTestQueueIndex + 1} 套续跑`);
       }
       const task = gptTestQueue[gptTestQueueIndex];
+      task._startedAt ||= new Date().toISOString();
       gptLastFailedStage = "";
       gptLastFailedPercent = 0;
+      if (resuming && task._stage && task._status !== "completed") {
+        task.retryFromStage = task._stage;
+        task.retryFromPercent = Number(task._percent || 0);
+      }
       task.accountId = runAccountId;
       task.autoRun = !manualMode;
       task.autoOptions = { ...gptAutoSettings };
@@ -2083,9 +2206,13 @@ async function sendNextGptTestTask() {
         gptLastFailedStage = String(result?.stage || gptLastFailedStage || "");
         gptLastFailedPercent = Number(result?.percent || gptLastFailedPercent || 0);
         const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
-        if (gptAutoSettings.pauseOnFailure !== false) throw taskError;
-        failedThisRun += 1;
+        task._stage = gptLastFailedStage;
+        task._percent = gptLastFailedPercent;
+        task._error = taskError.message;
         task._status = "failed";
+        appendGptProductionHistory(task, "failed", result, task._error);
+        persistGptQueue();
+        failedThisRun += 1;
         gptTestQueueIndex += 1;
         persistGptQueue();
         updateGptTestQueueStatus(`第 ${gptTestQueueIndex} 套失败并已记录：${taskError.message}；继续下一套`);
@@ -2100,6 +2227,7 @@ async function sendNextGptTestTask() {
       gptTestQueueIndex += 1;
       task._status = "completed";
       task._percent = 100;
+      appendGptProductionHistory(task, "completed", result);
       persistGptQueue();
       if (task.taskType === "material") completedThisRun += 1;
       if (progressBar) progressBar.style.width = `${Math.round(gptTestQueueIndex / gptTestQueue.length * 100)}%`;
@@ -2112,11 +2240,12 @@ async function sendNextGptTestTask() {
           : gptAutoSettings.autoPackage === false
             ? "套图已下载、文案已复制"
             : "图片、TXT 和作品包已核对落盘";
+      const completedNotice = `${task.name} 已完成：${completionLabel}${result?.packagePath ? " · 点击“查看生产记录”可直接打开成品文件夹" : ""}`;
       updateGptTestQueueStatus(gptTestQueueIndex < gptTestQueue.length
         ? `第 ${gptTestQueueIndex} 套${completionLabel}，继续下一套`
         : failedThisRun
           ? `本轮结束：成功 ${completedThisRun} 套，失败 ${failedThisRun} 套`
-          : `${gptTestQueue.length} 套全部完成：${completionLabel}`);
+          : completedNotice);
       if (gptTestQueueIndex < gptTestQueue.length && task.taskType === "material") {
         const minDelay = Math.max(5, Number(gptAutoSettings.minDelaySeconds || 25));
         const maxDelay = Math.max(minDelay, Number(gptAutoSettings.maxDelaySeconds || 55));
@@ -2129,7 +2258,12 @@ async function sendNextGptTestTask() {
     gptLastFailedTask = gptTestQueue[gptTestQueueIndex] || null;
     gptQueuePaused = true;
     const failedTask = gptTestQueue[gptTestQueueIndex];
-    if (failedTask && failedTask._status !== "completed") failedTask._status = "paused";
+    if (failedTask && failedTask._status !== "completed") {
+      failedTask._stage = gptLastFailedStage || failedTask._stage || "任务暂停";
+      failedTask._percent = Number(gptLastFailedPercent || failedTask._percent || 0);
+      failedTask._error = String(error?.message || failedTask._error || "自动生产已暂停");
+      failedTask._status = "paused";
+    }
     persistGptQueue();
     updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1} 套已暂停：${error.message}`);
     if (String(error.message || "").includes("用户暂停") || resuming) {
@@ -2175,7 +2309,7 @@ function completeCurrentManualGptTask() {
 function syncWorkbenchProductionSettings() {
   if ($("#productionPageCount")) $("#productionPageCount").value = $("#workbenchPageCount")?.value || "";
   if ($("#productionQuality")) $("#productionQuality").value = $("#workbenchQuality")?.value || "严格母版";
-  if ($("#productionTextModel")) $("#productionTextModel").value = $("#workbenchTextModel")?.value || "gpt-5.6-terra";
+  if ($("#productionTextModel")) $("#productionTextModel").value = $("#workbenchTextModel")?.value || "MiniMax-M2.7";
   const conversation = readTemplateConversation().filter((item) => item.role === "user").map((item) => item.text);
   const prompt = [
     pageSettings().production?.promptRules
@@ -2211,13 +2345,41 @@ async function packSelectedProductionWorks() {
 }
 
 function currentImageApiPayload() {
+  const provider = $("#productionApiProvider")?.value
+    || dashboard?.workspaceSettings?.imageApi?.provider
+    || "local-openai";
+  const providerDefaults = WORKBENCH_PROVIDER_DEFAULTS[provider] || WORKBENCH_PROVIDER_DEFAULTS["local-openai"];
+  return {
+    provider,
+    baseUrl: $("#productionApiBaseUrl")?.value || providerDefaults.baseUrl,
+    model: $("#productionApiModel")?.value || providerDefaults.imageModel,
+    apiKey: $("#productionApiKey")?.value || ""
+  };
+}
+
+function currentWorkbenchImageApiPayload() {
   const provider = currentWorkbenchProvider();
   const providerDefaults = WORKBENCH_PROVIDER_DEFAULTS[provider] || WORKBENCH_PROVIDER_DEFAULTS["local-openai"];
   return {
     provider,
     baseUrl: providerDefaults.baseUrl,
-    model: $("#workbenchImageModel")?.value || $("#productionApiModel")?.value || "",
+    model: $("#workbenchImageModel")?.value || providerDefaults.imageModel,
     apiKey: $("#productionApiKey")?.value || ""
+  };
+}
+
+function currentTextApiPayload({ workbench = false } = {}) {
+  const provider = $("#productionTextProvider")?.value
+    || dashboard?.workspaceSettings?.textApi?.provider
+    || "minimax";
+  const providerDefaults = WORKBENCH_TEXT_PROVIDER_DEFAULTS[provider] || WORKBENCH_TEXT_PROVIDER_DEFAULTS.minimax;
+  return {
+    provider,
+    baseUrl: $("#productionTextBaseUrl")?.value || providerDefaults.baseUrl,
+    model: (workbench ? $("#workbenchTextModel")?.value : "")
+      || $("#productionTextModel")?.value
+      || providerDefaults.textModel,
+    apiKey: $("#productionTextApiKey")?.value || ""
   };
 }
 
@@ -2253,30 +2415,48 @@ function setProductionLiveStatus(message, tone = "", progress = null, phase = ""
 }
 
 async function saveProductionApi() {
-  const payload = currentImageApiPayload();
-  const result = await api("/api/image-api/config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if ($("#productionApiKey")) $("#productionApiKey").value = "";
-  dashboard.workspaceSettings.imageApi = result.imageApi;
-  renderWorkspaceSettings();
-  setProductionLiveStatus(`${result.imageApi.model} 已保存到本机安全凭据区。`);
-}
-
-async function testProductionApi() {
-  setProductionLiveStatus("正在核对接口与模型……", "running");
-  try {
-    const result = await api("/api/image-api/test", {
+  const [imageResult, textResult] = await Promise.all([
+    api("/api/image-api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(currentImageApiPayload())
-    });
-    setProductionLiveStatus(result.modelAvailable ? "连接成功，当前模型可用。" : "接口已连接，但模型列表里没有当前模型。", result.modelAvailable ? "" : "error");
-  } catch (error) {
-    setProductionLiveStatus(error.message, "error");
-  }
+    }),
+    api("/api/text-api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(currentTextApiPayload())
+    })
+  ]);
+  if ($("#productionApiKey")) $("#productionApiKey").value = "";
+  if ($("#productionTextApiKey")) $("#productionTextApiKey").value = "";
+  dashboard.workspaceSettings.imageApi = imageResult.imageApi;
+  dashboard.workspaceSettings.textApi = textResult.textApi;
+  renderWorkspaceSettings();
+  renderWorkbenchModelOptions();
+  setProductionLiveStatus(`生图 ${imageResult.imageApi.model}、文案 ${textResult.textApi.model} 已保存到本机安全凭据区。`);
+}
+
+async function testProductionApi() {
+  setProductionLiveStatus("正在分别核对生图和文案接口……", "running");
+  const [imageTest, textTest] = await Promise.allSettled([
+    api("/api/image-api/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(currentImageApiPayload())
+    }),
+    api("/api/text-api/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(currentTextApiPayload())
+    })
+  ]);
+  const imageOk = imageTest.status === "fulfilled" && imageTest.value.modelAvailable;
+  const textOk = textTest.status === "fulfilled" && textTest.value.modelAvailable;
+  const details = [
+    imageTest.status === "fulfilled" ? `生图${imageOk ? "可用" : "已连接但模型未列出"}` : `生图失败：${imageTest.reason?.message || "连接失败"}`,
+    textTest.status === "fulfilled" ? `文案${textOk ? "可用" : "已连接但模型未列出"}` : `文案失败：${textTest.reason?.message || "连接失败"}`
+  ];
+  setProductionLiveStatus(details.join("；"), imageOk && textOk ? "" : "error");
 }
 
 function renderProductionOutputs(result) {
@@ -2393,7 +2573,7 @@ async function createProductionPlan() {
         materialPaths,
         templatePath: selectedTemplate.path,
         requestedPages: $("#productionPageCount")?.value || "",
-        textModel: $("#workbenchTextModel")?.value || $("#productionTextModel")?.value || "gpt-5.6-terra"
+        textModel: currentTextApiPayload({ workbench: true }).model
       })
     });
     activeProductionPlan = result.plan;
@@ -2422,13 +2602,13 @@ async function confirmProductionPlan() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ...currentImageApiPayload(),
+        ...currentWorkbenchImageApiPayload(),
         planId: activeProductionPlan.id,
         confirmed: true,
         runScope: "calibration",
         quality: $("#productionQuality")?.value || "严格母版",
         prompt: $("#productionPrompt")?.value || "",
-        textModel: $("#workbenchTextModel")?.value || $("#productionTextModel")?.value || "gpt-5.6-terra"
+        textModel: currentTextApiPayload({ workbench: true }).model
       })
     });
     activeProductionJobId = result.job.id;
@@ -2550,8 +2730,8 @@ async function resumeProductionJob(jobId) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      ...currentImageApiPayload(),
-      textModel: $("#workbenchTextModel")?.value || "gpt-5.6-terra",
+      ...currentWorkbenchImageApiPayload(),
+      textModel: currentTextApiPayload({ workbench: true }).model,
       action: "continue"
     })
   });
@@ -4208,32 +4388,40 @@ function assistantElements() {
   return {
     launcher: $("#workbenchAssistantLauncher"),
     panel: $("#workbenchAssistantPanel"),
-    bubble: $("#workbenchAssistantBubble")
+    bubble: $("#workbenchAssistantBubble"),
+    logPanel: $("#workbenchAssistantLogPanel")
   };
 }
 
 function syncWorkbenchAssistantDock(left, top) {
-  const { launcher, panel, bubble } = assistantElements();
+  const { launcher, panel, bubble, logPanel } = assistantElements();
   if (!launcher) return;
   if (Number.isFinite(left) && Number.isFinite(top)) {
     const size = launcher.getBoundingClientRect().width || 54;
-    const panelWidth = Math.min(380, Math.max(260, window.innerWidth - 32));
+    const gptHost = $("#gptEmbeddedHost")?.getBoundingClientRect();
+    const overNativeGpt = $("#gptProductionTestView")?.classList.contains("active")
+      && gptHost
+      && left + size > gptHost.left
+      && left < gptHost.right
+      && top + size / 2 > gptHost.top
+      && top - size / 2 < gptHost.bottom;
+    const safeTop = overNativeGpt ? Math.max(size / 2 + 8, gptHost.top - size / 2 - 8) : top;
     launcher.style.left = `${Math.max(8, Math.min(window.innerWidth - size - 8, left))}px`;
-    launcher.style.top = `${Math.max(size / 2 + 8, Math.min(window.innerHeight - size / 2 - 8, top))}px`;
+    launcher.style.top = `${Math.max(size / 2 + 8, Math.min(window.innerHeight - size / 2 - 8, safeTop))}px`;
     launcher.style.right = "auto";
     launcher.style.bottom = "auto";
     launcher.style.transform = "translateY(-50%)";
-    const panelLeft = Math.max(8, left - panelWidth - 14);
-    [panel, bubble].forEach((element) => {
+    [panel, bubble, logPanel].forEach((element) => {
       if (!element) return;
-      element.style.left = `${panelLeft}px`;
+      const width = element.getBoundingClientRect().width || (element === bubble ? 306 : 380);
+      element.style.left = `${Math.max(8, left - width + (element === bubble ? 6 : -4))}px`;
       element.style.right = "auto";
-      element.style.top = `${Math.max(8, Math.min(window.innerHeight - 8, top))}px`;
+      element.style.top = `${Math.max(8, Math.min(window.innerHeight - 8, safeTop))}px`;
       element.style.bottom = "auto";
       element.style.transform = "translateY(-50%)";
     });
   } else {
-    [launcher, panel, bubble].forEach((element) => {
+    [launcher, panel, bubble, logPanel].forEach((element) => {
       if (!element) return;
       element.style.left = "";
       element.style.top = "";
@@ -4246,8 +4434,8 @@ function syncWorkbenchAssistantDock(left, top) {
 
 function restoreWorkbenchAssistantDock() {
   try {
-    const stored = JSON.parse(localStorage.getItem("tb-workbench-assistant-position") || "null");
-    if (stored && Number.isFinite(stored.left) && Number.isFinite(stored.top)) {
+    const stored = JSON.parse(localStorage.getItem("tb-workbench-assistant-position-v5") || "null");
+    if (stored?.userMoved === true && Number.isFinite(stored.left) && Number.isFinite(stored.top)) {
       syncWorkbenchAssistantDock(stored.left, stored.top);
     }
   } catch {
@@ -4278,7 +4466,8 @@ function setupWorkbenchAssistantDrag() {
     if (!assistantDragState || assistantDragState.pointerId !== event.pointerId) return;
     if (assistantDragState.moved) {
       const rect = launcher.getBoundingClientRect();
-      localStorage.setItem("tb-workbench-assistant-position", JSON.stringify({ left: rect.left, top: rect.top + rect.height / 2 }));
+      localStorage.setItem("tb-workbench-assistant-position-v5", JSON.stringify({ userMoved: true, left: rect.left, top: rect.top + rect.height / 2 }));
+      assistantSuppressClickUntil = Date.now() + 350;
       event.preventDefault();
       event.stopPropagation();
     }
@@ -4289,8 +4478,8 @@ function setupWorkbenchAssistantDrag() {
   launcher.addEventListener("pointercancel", finish);
   window.addEventListener("resize", () => {
     try {
-      const stored = JSON.parse(localStorage.getItem("tb-workbench-assistant-position") || "null");
-      if (stored && Number.isFinite(stored.left) && Number.isFinite(stored.top)) syncWorkbenchAssistantDock(stored.left, stored.top);
+      const stored = JSON.parse(localStorage.getItem("tb-workbench-assistant-position-v5") || "null");
+      if (stored?.userMoved === true && Number.isFinite(stored.left) && Number.isFinite(stored.top)) syncWorkbenchAssistantDock(stored.left, stored.top);
     } catch {}
   });
   restoreWorkbenchAssistantDock();
@@ -4299,12 +4488,211 @@ function setupWorkbenchAssistantDrag() {
 function showWorkbenchAssistantBubble(message, options = {}) {
   const { bubble } = assistantElements();
   if (!bubble || !message) return;
-  bubble.textContent = String(message);
-  bubble.hidden = false;
-  clearTimeout(assistantBubbleTimer);
-  if (options.duration !== 0) {
-    assistantBubbleTimer = window.setTimeout(() => { bubble.hidden = true; }, Number(options.duration || 5600));
+  const page = document.querySelector(".view.active")?.id || "global";
+  const entry = { page, message: String(message), at: new Date().toISOString(), tone: String(options.tone || "") };
+  assistantEventLog.push(entry);
+  if (assistantEventLog.length > 300) assistantEventLog.splice(0, assistantEventLog.length - 300);
+  renderWorkbenchAssistantLog();
+  lastAssistantBubbleMessage = entry.message;
+  if (options.persistent !== false && options.transient !== true) {
+    assistantPersistentMessage = entry.message;
+    localStorage.setItem(ASSISTANT_PERSISTENT_MESSAGE_KEY, assistantPersistentMessage);
   }
+  if (Date.now() < assistantMuteUntil) {
+    bubble.hidden = true;
+    window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: false }).catch(() => {});
+    return;
+  }
+  const content = $("#workbenchAssistantBubbleContent");
+  if (content) content.textContent = entry.message;
+  else bubble.textContent = entry.message;
+  bubble.hidden = false;
+  window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: true }).catch(() => {});
+  clearTimeout(assistantBubbleTimer);
+  if (Number(options.duration || 0) > 0) {
+    assistantBubbleTimer = window.setTimeout(() => {
+      if (options.transient === true && assistantPersistentMessage && assistantPersistentMessage !== entry.message) {
+        const content = $("#workbenchAssistantBubbleContent");
+        if (content) content.textContent = assistantPersistentMessage;
+        bubble.hidden = false;
+        window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage, visible: true }).catch(() => {});
+      } else if (options.transient === true && assistantPersistentMessage) {
+        bubble.hidden = false;
+        window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage, visible: true }).catch(() => {});
+      } else {
+        bubble.hidden = true;
+        window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: false }).catch(() => {});
+      }
+    }, Number(options.duration));
+  }
+}
+
+function appendGptProductionHistory(task, status, result = {}, error = "") {
+  const startedAt = String(task?._startedAt || new Date().toISOString());
+  const finishedAt = new Date().toISOString();
+  const stageHistory = Array.isArray(result?.stageHistory) ? result.stageHistory : [];
+  const sumStageDuration = (matcher) => stageHistory.reduce((total, stage) =>
+    matcher.test(String(stage?.stage || "")) ? total + Number(stage?.durationMs || 0) : total, 0);
+  gptProductionHistory.unshift({
+    id: String(task?.requestId || Date.now()),
+    requestId: String(task?.requestId || ""),
+    name: String(task?.name || "未命名作品"),
+    status: String(status || "unknown"),
+    stage: String(task?._stage || ""),
+    percent: Number(task?._percent || 0),
+    startedAt,
+    finishedAt,
+    durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+    planDurationMs: sumStageDuration(/迁移计划|提交迁移计划/),
+    imageDurationMs: sumStageDuration(/确认出图|等待图片|生成图片/),
+    copyDurationMs: sumStageDuration(/小红书文案/),
+    packageDurationMs: sumStageDuration(/下载图片|打包作品|归档素材/),
+    stageHistory,
+    packagePath: String(result?.packagePath || result?.result?.packageResult?.packagePath || result?.packageResult?.packagePath || ""),
+    conversationUrl: String(result?.conversationUrl || result?.result?.conversationUrl || ""),
+    error: String(error || "")
+  });
+  gptProductionHistory = gptProductionHistory.slice(0, 200);
+  localStorage.setItem(GPT_HISTORY_STORAGE_KEY, JSON.stringify(gptProductionHistory));
+  renderGptProductionHistory();
+}
+
+function formatProductionDuration(value = 0) {
+  const seconds = Math.max(0, Math.round(Number(value || 0) / 1000));
+  if (seconds < 60) return `${seconds}秒`;
+  return `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, "0")}秒`;
+}
+
+function renderGptProductionHistory() {
+  const host = $("#gptProductionHistoryList");
+  if (!host) return;
+  const rows = [...gptProductionHistory].sort((left, right) => {
+    const rightTime = Date.parse(String(right.finishedAt || right.updatedAt || right.startedAt || "")) || 0;
+    const leftTime = Date.parse(String(left.finishedAt || left.updatedAt || left.startedAt || "")) || 0;
+    return rightTime - leftTime;
+  });
+  host.innerHTML = rows.length ? rows.map((item) => `
+    <article class="gpt-production-history-item" data-production-path="${escapeHtml(item.packagePath || item.productPath || "")}">
+      <strong>${escapeHtml(item.name)}</strong>
+      <p>${escapeHtml(item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : "已暂停")} · ${escapeHtml(item.stage || "未记录阶段")} · 总耗时 ${formatProductionDuration(item.durationMs)}</p>
+      ${(item.planDurationMs || item.imageDurationMs || item.copyDurationMs) ? `<div class="gpt-production-history-timings"><span>计划 ${formatProductionDuration(item.planDurationMs)}</span><span>出图 ${formatProductionDuration(item.imageDurationMs)}</span><span>文案 ${formatProductionDuration(item.copyDurationMs)}</span></div>` : ""}
+      ${(item.packagePath || item.productPath) ? `<button class="gpt-production-open-path" type="button" data-open-production-path="${escapeHtml(item.packagePath || item.productPath)}">打开成品文件夹</button><p>成品：${escapeHtml(item.packagePath || item.productPath)}</p>` : ""}
+      ${item.error ? `<p>原因：${escapeHtml(item.error)}</p>` : ""}
+      <p>${escapeHtml(new Date(item.finishedAt || item.updatedAt || Date.now()).toLocaleString("zh-CN", { hour12: false }))}</p>
+    </article>`).join("") : '<div class="empty-state"><strong>暂无生产记录</strong><p>自动闭环完成、暂停或失败后会保留在这里。</p></div>';
+  host.querySelectorAll("[data-open-production-path]").forEach((button) => button.addEventListener("click", async () => {
+    const target = button.dataset.openProductionPath || "";
+    if (!target) return;
+    await openPath(target).catch((error) => toast(error.message));
+  }));
+}
+
+async function syncGptProductionHistory() {
+  const result = await api("/api/gpt-production/history").catch(() => null);
+  if (!Array.isArray(result?.items)) return;
+  const byRequestId = new Map(gptProductionHistory.map((item) => [item.requestId, item]).filter(([requestId]) => requestId));
+  for (const checkpoint of result.items) {
+    if (!checkpoint.requestId) continue;
+    const packageName = String(checkpoint.packagePath || "").split(/[\\/]/).filter(Boolean).pop();
+    const existing = byRequestId.get(checkpoint.requestId);
+    if (existing) {
+      existing.stage ||= checkpoint.stage || "检查点";
+      existing.percent = Math.max(Number(existing.percent || 0), Number(checkpoint.percent || 0));
+      existing.packagePath ||= checkpoint.packagePath || "";
+      existing.productPath ||= checkpoint.packagePath || "";
+      existing.updatedAt = checkpoint.updatedAt || existing.updatedAt || existing.finishedAt || new Date().toISOString();
+      if (checkpoint.packagePath) existing.status = "completed";
+      continue;
+    }
+    const added = {
+      requestId: checkpoint.requestId,
+      name: packageName || checkpoint.requestId,
+      status: checkpoint.packagePath ? "completed" : Number(checkpoint.percent || 0) >= 100 ? "completed" : "paused",
+      stage: checkpoint.stage || "检查点",
+      durationMs: 0,
+      packagePath: checkpoint.packagePath || "",
+      productPath: checkpoint.packagePath || "",
+      finishedAt: checkpoint.updatedAt || new Date().toISOString(),
+      updatedAt: checkpoint.updatedAt || new Date().toISOString()
+    };
+    gptProductionHistory.push(added);
+    byRequestId.set(checkpoint.requestId, added);
+  }
+  gptProductionHistory.sort((left, right) => {
+    const rightTime = Date.parse(String(right.finishedAt || right.updatedAt || right.startedAt || "")) || 0;
+    const leftTime = Date.parse(String(left.finishedAt || left.updatedAt || left.startedAt || "")) || 0;
+    return rightTime - leftTime;
+  });
+  gptProductionHistory = gptProductionHistory.slice(0, 200);
+  localStorage.setItem(GPT_HISTORY_STORAGE_KEY, JSON.stringify(gptProductionHistory));
+}
+
+async function openGptProductionHistory(open = true) {
+  const panel = $("#gptProductionHistoryPanel");
+  if (!panel) return;
+  if (open) {
+    await syncGptProductionHistory();
+    renderGptProductionHistory();
+  }
+  panel.hidden = !open;
+  if ($("#gptProductionTestView")?.classList.contains("active")) {
+    if (open) window.gptWorkbench?.hide?.().catch(() => {});
+    else restoreEmbeddedGptView();
+  }
+}
+
+function renderWorkbenchAssistantLog() {
+  const host = $("#workbenchAssistantLogList");
+  if (!host) return;
+  const page = document.querySelector(".view.active")?.id || "global";
+  const rows = assistantEventLog.filter((item) => item.page === page || item.page === "global").slice(-50).reverse();
+  $("#workbenchAssistantLogPage").textContent = document.querySelector(".view.active h2")?.textContent?.trim() || "当前页面";
+  host.innerHTML = rows.length ? rows.map((item) => `<article class="workbench-assistant-log-item">${escapeHtml(item.message)}<time>${escapeHtml(new Date(item.at).toLocaleString("zh-CN", { hour12: false }))}</time></article>`).join("") : '<div class="empty-state"><strong>暂无状态</strong><p>本页操作、进度和错误会记录在这里。</p></div>';
+}
+
+function openWorkbenchAssistantLog(open = true) {
+  const { logPanel, panel } = assistantElements();
+  if (!logPanel) return;
+  if (open) {
+    if (panel) panel.hidden = true;
+    renderWorkbenchAssistantLog();
+  }
+  logPanel.hidden = !open;
+  if ($("#gptProductionTestView")?.classList.contains("active")) {
+    if (open) window.gptWorkbench?.hide?.().catch(() => {});
+    else restoreEmbeddedGptView();
+  }
+}
+
+function muteWorkbenchAssistant(minutes) {
+  assistantMuteUntil = Date.now() + Math.max(1, Number(minutes || 1)) * 60_000;
+  localStorage.setItem("tb-workbench-assistant-muted-until", String(assistantMuteUntil));
+  const { bubble } = assistantElements();
+  if (bubble) bubble.hidden = true;
+  window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage || lastAssistantBubbleMessage, visible: false }).catch(() => {});
+  clearTimeout(assistantMuteTimer);
+  assistantMuteTimer = window.setTimeout(() => {
+    assistantMuteUntil = 0;
+    localStorage.removeItem("tb-workbench-assistant-muted-until");
+    if (assistantPersistentMessage || lastAssistantBubbleMessage) showWorkbenchAssistantBubble(assistantPersistentMessage || lastAssistantBubbleMessage, { duration: 0, persistent: true });
+  }, Math.max(1000, assistantMuteUntil - Date.now()));
+  openWorkbenchAssistantLog(false);
+  const muteMenu = $("#workbenchAssistantMuteMenu");
+  if (muteMenu) muteMenu.hidden = true;
+}
+
+function openWorkbenchAssistantMuteMenu(event) {
+  const menu = $("#workbenchAssistantMuteMenu");
+  if (!menu) return;
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  const x = Number(event?.clientX || 0);
+  const y = Number(event?.clientY || 0);
+  menu.hidden = false;
+  const width = menu.offsetWidth || 150;
+  const height = menu.offsetHeight || 120;
+  menu.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, x))}px`;
+  menu.style.top = `${Math.max(8, Math.min(window.innerHeight - height - 8, y))}px`;
 }
 
 function appendWorkbenchAssistantMessage(message, role = "assistant") {
@@ -4315,7 +4703,6 @@ function appendWorkbenchAssistantMessage(message, role = "assistant") {
   item.textContent = message;
   container.appendChild(item);
   container.scrollTop = container.scrollHeight;
-  if (role !== "user") showWorkbenchAssistantBubble(message);
 }
 
 function toggleWorkbenchAssistant(open) {
@@ -4324,8 +4711,13 @@ function toggleWorkbenchAssistant(open) {
   if (!panel || !launcher) return;
   const shouldOpen = open ?? panel.hidden;
   panel.hidden = !shouldOpen;
-  if (shouldOpen) $("#workbenchAssistantBubble")?.setAttribute("hidden", "");
+  window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage || lastAssistantBubbleMessage, visible: !shouldOpen }).catch(() => {});
+  if (shouldOpen) openWorkbenchAssistantLog(false);
   launcher.setAttribute("aria-expanded", String(shouldOpen));
+  if ($("#gptProductionTestView")?.classList.contains("active")) {
+    if (shouldOpen) window.gptWorkbench?.hide?.().catch(() => {});
+    else restoreEmbeddedGptView();
+  }
   if (shouldOpen) window.setTimeout(() => $("#workbenchAssistantCommand")?.focus(), 0);
 }
 
@@ -4596,29 +4988,35 @@ function showDistributionPanel(panel) {
   $$(".distribution-panel").forEach((section) => section.classList.toggle("active", section.id === `distribution${activeDistributionPanel[0].toUpperCase()}${activeDistributionPanel.slice(1)}`));
 }
 
-function applyTheme(theme) {
+const WORKBENCH_THEME_ORDER = ["neo", "glass", "midnight", "midnight-glass"];
+const WORKBENCH_THEME_NAMES = { neo: "拟态浅色", glass: "玻璃浅色", midnight: "拟态深色", "midnight-glass": "玻璃深色" };
+
+function applyTheme(theme, options = {}) {
   const aliases = {
     solid: "neo",
     neumorphic: "neo",
     jianghu: "neo",
     editorial: "neo",
-    midnight: "glass"
+    dark: "midnight"
   };
-  const value = ["glass", "neo"].includes(theme) ? theme : (aliases[theme] || "neo");
+  const value = WORKBENCH_THEME_ORDER.includes(theme) ? theme : (aliases[theme] || "neo");
   document.body.dataset.theme = value;
-  localStorage.setItem("tb-dashboard-theme", value);
+  if (options.persist !== false) localStorage.setItem("tb-dashboard-theme", value);
   $$(".theme-option").forEach((button) => button.classList.toggle("active", button.dataset.theme === value));
   const cycleButton = $("#globalThemeCycleBtn");
   const themeName = $("#globalThemeName");
-  const currentName = value === "neo" ? "拟态" : "玻璃";
-  const nextName = value === "neo" ? "玻璃" : "拟态";
+  const currentIndex = WORKBENCH_THEME_ORDER.indexOf(value);
+  const nextValue = WORKBENCH_THEME_ORDER[(currentIndex + 1) % WORKBENCH_THEME_ORDER.length];
+  const currentName = WORKBENCH_THEME_NAMES[value];
+  const nextName = WORKBENCH_THEME_NAMES[nextValue];
   if (themeName) themeName.textContent = currentName;
   if (cycleButton) {
     cycleButton.dataset.currentTheme = value;
     cycleButton.title = `当前${currentName}，点击切换为${nextName}`;
     cycleButton.setAttribute("aria-label", cycleButton.title);
   }
-  syncConversionTheme(value);
+  syncConversionTheme(value.includes("glass") ? "glass" : "neo");
+  window.gptWorkbench?.setTheme?.(value).catch(() => {});
 }
 
 function syncConversionTheme(theme = document.body.dataset.theme || "neo") {
@@ -5302,6 +5700,20 @@ const PAGE_HELP = {
 
 const PLUGIN_MARKET_ITEMS = [
   {
+    id: "weflow",
+    name: "WeFlow",
+    type: "desktop",
+    typeLabel: "微信聊天记录导出",
+    version: "官方最新版",
+    status: "可下载",
+    statusTone: "ready",
+    description: "读取并导出本机微信聊天记录，支持媒体文件和本地 HTTP API，可作为流量转化知识库的原始聊天来源。",
+    capabilities: ["聊天导出", "媒体整理", "本地 HTTP API", "转化语料来源"],
+    sourceUrl: "https://github.com/hicccc77/WeFlow",
+    releaseUrl: "https://github.com/hicccc77/WeFlow/releases/latest",
+    sourceLabel: "官方开源仓库"
+  },
+  {
     id: "chatgpt-work-assistant",
     name: "ChatGPT 作品助手",
     type: "browser",
@@ -5880,6 +6292,19 @@ function bindEvents() {
   $("#dashboardView .work-canvas")?.addEventListener("scroll", maybeLoadMoreMaterials, { passive: true });
   $("#productsView .product-preview-pane")?.addEventListener("scroll", maybeLoadMoreProducts, { passive: true });
   document.addEventListener("contextmenu", (event) => {
+    const gptMaterialFolder = event.target.closest("[data-gpt-test-post-folder]");
+    if (gptMaterialFolder) {
+      const entry = findMaterialEntry(gptMaterialFolder.dataset.gptTestPostFolder);
+      if (!entry) return;
+      event.preventDefault();
+      contextMenuTarget = {
+        kind: "gpt-material-folder",
+        label: entry.item.name,
+        path: entry.item.path
+      };
+      showContextMenu(event.clientX, event.clientY);
+      return;
+    }
     const materialButton = event.target.closest("[data-workbench-material-filter]");
     const outputButton = event.target.closest("[data-workbench-output-filter]");
     if (!materialButton && !outputButton) return;
@@ -5895,6 +6320,38 @@ function bindEvents() {
       path: bindings[key] || ""
     };
     showContextMenu(event.clientX, event.clientY);
+  });
+  document.addEventListener("dragstart", (event) => {
+    const source = event.target.closest("[data-gpt-material-path]");
+    if (!source || gptAutoRunning) return event.preventDefault();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/x-teambuilding-material-path", source.dataset.gptMaterialPath || "");
+  });
+  document.addEventListener("dragover", (event) => {
+    const target = event.target.closest("[data-gpt-drop-category]");
+    if (!target || gptAutoRunning) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  });
+  document.addEventListener("drop", async (event) => {
+    const target = event.target.closest("[data-gpt-drop-category]");
+    if (!target || gptAutoRunning) return;
+    const sourcePath = event.dataTransfer.getData("text/x-teambuilding-material-path");
+    const targetPath = target.dataset.gptDropCategory || "";
+    if (!sourcePath || !targetPath) return;
+    event.preventDefault();
+    try {
+      await api("/api/extension/move-entry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourcePath, targetPath })
+      });
+      showWorkbenchAssistantBubble("素材文件夹已移动，正在刷新左侧目录。", { duration: 0 });
+      await loadDashboard(true);
+      renderGptTestMaterials();
+    } catch (error) {
+      showWorkbenchAssistantBubble(`移动失败：${error.message}`, { duration: 0 });
+    }
   });
   document.addEventListener("click", async (event) => {
     if (!event.target.closest(".custom-select")) closeCustomSelects();
@@ -6324,7 +6781,11 @@ function bindEvents() {
     const theme = event.target.closest("[data-theme]");
     if (theme) applyTheme(theme.dataset.theme);
     const themeCycle = event.target.closest("#globalThemeCycleBtn");
-    if (themeCycle) applyTheme(document.body.dataset.theme === "neo" ? "glass" : "neo");
+    if (themeCycle) {
+      const currentIndex = WORKBENCH_THEME_ORDER.indexOf(document.body.dataset.theme || "neo");
+      localStorage.setItem("tb-dashboard-theme-mode", "manual");
+      applyTheme(WORKBENCH_THEME_ORDER[(currentIndex + 1) % WORKBENCH_THEME_ORDER.length]);
+    }
   });
   document.addEventListener("change", (event) => {
     const classification = event.target.closest?.("[data-classify-collection]");
@@ -6459,31 +6920,25 @@ function bindEvents() {
   });
   $("#productionApiProvider")?.addEventListener("change", () => {
     const provider = $("#productionApiProvider").value;
-    const defaults = {
-      "local-openai": {
-        baseUrl: "http://localhost:62104/v1",
-        model: "gpt-image-2",
-        textModel: "gpt-5.6-terra",
-        message: "已切换本地 GPT 生图。"
-      },
-      bytecat: {
-        baseUrl: "https://bytecat.lamclod.cn/v1",
-        model: "gpt-image-2",
-        textModel: "gpt-5.6-terra",
-        message: "已切换 ByteCat Image 2.0；图片走 ByteCat，文案自动走本地接口。"
-      },
-      minimax: {
-        baseUrl: "https://api.minimaxi.com/v1",
-        model: "image-01",
-        textModel: "gpt-5.6-terra",
-        message: "已切换 MiniMax；请测试当前密钥是否有效。"
-      }
-    };
-    const selected = defaults[provider] || defaults["local-openai"];
+    const selected = WORKBENCH_PROVIDER_DEFAULTS[provider] || WORKBENCH_PROVIDER_DEFAULTS["local-openai"];
     $("#productionApiBaseUrl").value = selected.baseUrl;
-    $("#productionApiModel").value = selected.model;
-    if ($("#productionTextModel")) $("#productionTextModel").value = selected.textModel;
-    setProductionLiveStatus(selected.message);
+    $("#productionApiModel").value = selected.imageModel;
+    setProductionLiveStatus(`已切换 ${selected.label}；文案平台保持独立配置。`);
+  });
+  $("#productionTextProvider")?.addEventListener("change", () => {
+    const provider = $("#productionTextProvider").value;
+    const selected = WORKBENCH_TEXT_PROVIDER_DEFAULTS[provider] || WORKBENCH_TEXT_PROVIDER_DEFAULTS.minimax;
+    $("#productionTextBaseUrl").value = selected.baseUrl;
+    const modelSelect = $("#productionTextModel");
+    if (modelSelect) {
+      const options = [...new Set([selected.textModel, ...(provider === "minimax" ? ["MiniMax-M2.7"] : ["gpt-5.6-terra"])])];
+      modelSelect.innerHTML = options.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("");
+      modelSelect.value = selected.textModel;
+      syncCustomSelect(modelSelect);
+    }
+    workbenchModelsLoaded = false;
+    renderWorkbenchModelOptions();
+    setProductionLiveStatus(`已切换 ${selected.label}；请保存后测试文案连接。`);
   });
   renderProductionMode();
   $("#workbenchMaterialSearch")?.addEventListener("input", renderWorkbenchMaterials);
@@ -6561,6 +7016,16 @@ function bindEvents() {
       showSystemNotice("模板目录没有保存", error.message, { tone: "danger" });
     }
   });
+  [["#chooseGptDownloadRootBtn", "#gptDownloadRoot", "选择 GPT 图片下载暂存目录"], ["#chooseGptProductRootBtn", "#gptProductRoot", "选择 GPT 成品库目录"]].forEach(([buttonSelector, inputSelector, title]) => {
+    $(buttonSelector)?.addEventListener("click", async () => {
+      const input = $(inputSelector);
+      const selectedPath = await chooseFolder(title, input?.value || "");
+      if (!selectedPath || !input) return;
+      input.value = selectedPath;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.dispatchEvent(new Event("blur", { bubbles: true }));
+    });
+  });
   [
     "#productionTemplateRoot", "#productionPackedRoot", "#productionBasePromptRules", "#productionReserveThreshold",
     "#productionReserveCategory", "#productionItemsPerCollection", "#productionScheduleTime",
@@ -6626,6 +7091,8 @@ function bindEvents() {
     persistGptQueue();
     updateGptTestQueueStatus("已跳过当前队列步骤，可以继续剩余任务");
   });
+  $("#gptProductionHistoryBtn")?.addEventListener("click", () => openGptProductionHistory($("#gptProductionHistoryPanel")?.hidden !== false));
+  $("#closeGptProductionHistory")?.addEventListener("click", () => openGptProductionHistory(false));
   $("#gptBrowserBackBtn")?.addEventListener("click", () => navigateEmbeddedGpt("back"));
   $("#gptBrowserForwardBtn")?.addEventListener("click", () => navigateEmbeddedGpt("forward"));
   $("#gptBrowserReloadBtn")?.addEventListener("click", () => navigateEmbeddedGpt("reload"));
@@ -6817,7 +7284,21 @@ function bindEvents() {
     await checkDistributionDevices();
   });
   $("#openPublishRootBtn")?.addEventListener("click", () => openPath(dashboard?.distribution?.workflowRoot || dashboard?.distribution?.libraryRoot));
-  $("#workbenchAssistantLauncher")?.addEventListener("click", () => toggleWorkbenchAssistant());
+  $("#workbenchAssistantLauncher")?.addEventListener("click", () => {
+    if (Date.now() < assistantSuppressClickUntil) return;
+    toggleWorkbenchAssistant();
+  });
+  $("#workbenchAssistantBubble")?.addEventListener("click", (event) => event.preventDefault());
+  $("#workbenchAssistantBubble")?.addEventListener("contextmenu", openWorkbenchAssistantMuteMenu);
+  $("#closeWorkbenchAssistantLog")?.addEventListener("click", () => openWorkbenchAssistantLog(false));
+  document.querySelectorAll("[data-assistant-mute]").forEach((button) => button.addEventListener("click", () => {
+    muteWorkbenchAssistant(Number(button.dataset.assistantMute || 1));
+  }));
+  document.addEventListener("pointerdown", (event) => {
+    const menu = $("#workbenchAssistantMuteMenu");
+    if (!menu || menu.hidden || menu.contains(event.target)) return;
+    menu.hidden = true;
+  });
   $("#closeWorkbenchAssistant")?.addEventListener("click", () => toggleWorkbenchAssistant(false));
   $("#runWorkbenchAssistantCommand")?.addEventListener("click", async () => {
     const input = $("#workbenchAssistantCommand");
@@ -6983,11 +7464,20 @@ function bindEvents() {
 }
 
 bindEvents();
+if (window.gptWorkbench?.assistantOverlay) document.body.classList.add("native-assistant-overlay");
+window.gptWorkbench?.onAssistantAction?.((input = {}) => {
+  if (input.type === "chat") toggleWorkbenchAssistant();
+  if (input.type === "mute") muteWorkbenchAssistant(Number(input.minutes || 1));
+});
 window.gptWorkbench?.onPauseProduction?.(() => {
   if (!gptAutoRunning) return;
   gptAutoPaused = true;
   showWorkbenchAssistantBubble("已从系统托盘请求暂停，当前阶段结束后会停在安全检查点。", { duration: 0 });
   updateGptTestQueueStatus("将在当前阶段安全结束后暂停");
+});
+window.gptWorkbench?.onWindowRestored?.(() => {
+  if (!$("#gptProductionTestView")?.classList.contains("active")) return;
+  restoreEmbeddedGptView();
 });
 bindPaneResizers();
 prepareEmbeddedConversionApp();
@@ -7007,17 +7497,37 @@ window.addEventListener("desktop-gpt-transfer-result", (event) => {
     ? `已放入 ${result.fileCount} 个文件和生产指令，请在右侧确认发送`
     : "生产指令已填入；请打开一个对话后再次点击传 GPT 上传文件");
 });
-const themeDefaultVersion = "jianghu-knowledge-two-themes-v1";
+const themeDefaultVersion = "jianghu-workbench-four-themes-v2";
 const storedThemeDefaultVersion = localStorage.getItem("tb-dashboard-theme-default-version");
-const initialTheme = storedThemeDefaultVersion === themeDefaultVersion
-  ? (localStorage.getItem("tb-dashboard-theme") || "neo")
-  : "neo";
+const systemPrefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches === true;
+const storedThemeMode = localStorage.getItem("tb-dashboard-theme-mode") || "system";
+const initialTheme = storedThemeMode === "system"
+  ? (systemPrefersDark ? "midnight" : "neo")
+  : storedThemeDefaultVersion === themeDefaultVersion
+    ? (localStorage.getItem("tb-dashboard-theme") || "neo")
+    : "neo";
 localStorage.setItem("tb-dashboard-theme-default-version", themeDefaultVersion);
-applyTheme(initialTheme);
+applyTheme(initialTheme, { persist: storedThemeMode !== "system" });
+window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change", (event) => {
+  if ((localStorage.getItem("tb-dashboard-theme-mode") || "system") !== "system") return;
+  applyTheme(event.matches ? "midnight" : "neo", { persist: false });
+});
 loadDashboard()
   .then(async () => {
     await hydrateGptBrowserProfiles();
     restoreGptQueue();
+    await syncGptProductionHistory();
+    renderGptProductionHistory();
+    const latestProduction = [...gptProductionHistory].sort((left, right) => {
+      const rightTime = Date.parse(String(right.finishedAt || right.updatedAt || right.startedAt || "")) || 0;
+      const leftTime = Date.parse(String(left.finishedAt || left.updatedAt || left.startedAt || "")) || 0;
+      return rightTime - leftTime;
+    })[0];
+    if (latestProduction?.status === "completed") {
+      showWorkbenchAssistantBubble(`${latestProduction.name} 已完成${latestProduction.packagePath ? " · 成品已打包，点击“查看生产记录”可直接打开文件夹" : ""}`, { duration: 0, persistent: true });
+    } else if (latestProduction?.status === "failed") {
+      showWorkbenchAssistantBubble(`${latestProduction.name} 生产失败并已记录${latestProduction.error ? `：${latestProduction.error}` : ""}`, { duration: 0, persistent: true, tone: "danger" });
+    }
     renderPluginMarket();
     installPageHelpButtons();
     restoreTransferTasks();
@@ -7035,6 +7545,25 @@ loadDashboard()
   .catch((error) => {
     console.error(error);
     toast("读取本地库失败");
+  });
+  $("#contextTrashFolder")?.addEventListener("click", async () => {
+    const target = contextMenuTarget;
+    hideContextMenu();
+    if (!target?.path || !window.confirm(`确定把“${target.label || "这个文件夹"}”移到 Windows 回收站吗？可从回收站恢复。`)) return;
+    try {
+      await api("/api/trash-workspace-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: target.path })
+      });
+      gptTestSelectedMaterials.delete(target.path);
+      gptTestMaterialEntries.delete(target.path);
+      showWorkbenchAssistantBubble("文件夹已移到 Windows 回收站。", { duration: 0 });
+      await loadDashboard(true);
+      renderGptTestMaterials();
+    } catch (error) {
+      showWorkbenchAssistantBubble(`删除失败：${error.message}`, { duration: 0 });
+    }
   });
   $("#contextSetFolder")?.addEventListener("click", async () => {
     const target = contextMenuTarget;

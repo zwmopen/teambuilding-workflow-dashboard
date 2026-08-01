@@ -18,9 +18,14 @@ const GPT_PENDING_BACKUP_FILE = path.join(GPT_LOGIN_RECOVERY_ROOT, "pending-back
 const GPT_PENDING_RESTORE_FILE = path.join(GPT_LOGIN_RECOVERY_ROOT, "pending-restore.json");
 let serverProcess = null;
 let mainWindow = null;
+let assistantOverlayWindow = null;
+let assistantOverlayState = { message: "", visible: true, theme: "neo" };
 let tray = null;
 let isExplicitQuit = false;
+let quitFlushStarted = false;
+let quitFlushCompleted = false;
 let productionTaskActive = false;
+let gptThemeName = "neo";
 const gptAccounts = new Map();
 let activeGptAccountId = "account-1";
 
@@ -28,6 +33,105 @@ const GPT_PARTITION_PREFIX = "persist:teambuilding-gpt-production";
 const WORKBENCH_PARTITION = "persist:teambuilding-workbench-0.12.2";
 const GPT_URL = "https://chatgpt.com/";
 const GPT_BROWSER_PROFILES_FILE = "gpt-browser-profiles.json";
+const ASSISTANT_OVERLAY_POSITION_FILE = "assistant-overlay-position.json";
+
+function assistantOverlayPositionFile() {
+  return path.join(app.getPath("userData"), ASSISTANT_OVERLAY_POSITION_FILE);
+}
+
+function defaultAssistantOverlayBounds() {
+  const parent = mainWindow?.getBounds() || { x: 0, y: 0, width: 1520, height: 940 };
+  return { width: 420, height: 190, x: parent.x + parent.width - 438, y: parent.y + 54 };
+}
+
+function readAssistantOverlayBounds() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(assistantOverlayPositionFile(), "utf8"));
+    if ([parsed.x, parsed.y].every(Number.isFinite)) return { ...defaultAssistantOverlayBounds(), x: parsed.x, y: parsed.y };
+  } catch {}
+  return defaultAssistantOverlayBounds();
+}
+
+function clampAssistantOverlayBounds(bounds) {
+  const parent = mainWindow?.getBounds() || { x: 0, y: 0, width: 1520, height: 940 };
+  const width = 420;
+  const height = 190;
+  return {
+    width,
+    height,
+    x: Math.max(parent.x + 8, Math.min(parent.x + parent.width - width - 8, Number(bounds.x || parent.x))),
+    y: Math.max(parent.y + 34, Math.min(parent.y + parent.height - height - 8, Number(bounds.y || parent.y)))
+  };
+}
+
+function sendAssistantOverlayState() {
+  if (!assistantOverlayWindow || assistantOverlayWindow.isDestroyed()) return;
+  assistantOverlayWindow.webContents.send("assistant-overlay:state", assistantOverlayState);
+}
+
+async function ensureAssistantOverlay() {
+  if (!mainWindow || assistantOverlayWindow && !assistantOverlayWindow.isDestroyed()) return assistantOverlayWindow;
+  const overlay = new BrowserWindow({
+    ...clampAssistantOverlayBounds(readAssistantOverlayBounds()),
+    parent: mainWindow,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    show: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false,
+      preload: path.join(__dirname, "assistant-overlay-preload.js")
+    }
+  });
+  assistantOverlayWindow = overlay;
+  overlay.setMenuBarVisibility(false);
+  overlay.on("close", (event) => {
+    if (isExplicitQuit) return;
+    event.preventDefault();
+    overlay.hide();
+  });
+  overlay.on("closed", () => { assistantOverlayWindow = null; });
+  await overlay.loadURL(`${APP_URL}assistant-overlay.html?appVersion=${encodeURIComponent(APP_VERSION)}`);
+  sendAssistantOverlayState();
+  if (mainWindow.isVisible()) overlay.showInactive();
+  return overlay;
+}
+
+function durableRuntimeAppRoot() {
+  return path.join(RUNTIME_ROOT, "runtime-builds", APP_VERSION, "app");
+}
+
+function ensureDurableRuntimeResources() {
+  if (!app.isPackaged) return path.resolve(__dirname, "..");
+  const source = path.resolve(__dirname, "..");
+  const target = durableRuntimeAppRoot();
+  const manifestFile = path.join(target, "runtime-manifest.json");
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+    if (manifest.version === APP_VERSION && fs.existsSync(path.join(target, "server.js"))) return target;
+  } catch {
+    // First launch or an interrupted older copy: refresh this version in place.
+  }
+  fs.mkdirSync(target, { recursive: true });
+  fs.cpSync(source, target, { recursive: true, force: true, errorOnExist: false });
+  fs.writeFileSync(manifestFile, JSON.stringify({ version: APP_VERSION, copiedAt: new Date().toISOString(), source }, null, 2), "utf8");
+  appendDesktopLog("durable-runtime-ready", target);
+  return target;
+}
+
+function runtimeAppRoot() {
+  if (!app.isPackaged) return path.resolve(__dirname, "..");
+  const durable = durableRuntimeAppRoot();
+  return fs.existsSync(path.join(durable, "runtime-manifest.json")) ? durable : ensureDurableRuntimeResources();
+}
 
 function gptBrowserProfilesFile() {
   return path.join(app.getPath("userData"), GPT_BROWSER_PROFILES_FILE);
@@ -42,6 +146,7 @@ function defaultBrowserProfiles() {
       name: "浏览器 1",
       quotaGroup: "account-1",
       hidden: false,
+      lastUrl: GPT_URL,
       createdAt: new Date().toISOString(),
       lastOpenedAt: new Date().toISOString()
     }]
@@ -57,6 +162,7 @@ function readBrowserProfiles() {
         name: String(profile.name || `浏览器 ${index + 1}`).slice(0, 24),
         quotaGroup: safeGptAccountId(profile.quotaGroup || profile.id),
         hidden: Boolean(profile.hidden),
+        lastUrl: safeGptUrl(profile.lastUrl),
         createdAt: String(profile.createdAt || new Date().toISOString()),
         lastOpenedAt: String(profile.lastOpenedAt || "")
       })).slice(0, 8)
@@ -70,6 +176,28 @@ function readBrowserProfiles() {
   } catch {
     return writeBrowserProfiles(defaultBrowserProfiles());
   }
+}
+
+function safeGptUrl(value = "") {
+  try {
+    const parsed = new URL(String(value || ""));
+    if (parsed.protocol !== "https:" || !["chatgpt.com", "chat.openai.com"].includes(parsed.hostname)) return GPT_URL;
+    if (/^\/(?:auth|login|logout)(?:\/|$)/i.test(parsed.pathname)) return GPT_URL;
+    return parsed.href;
+  } catch {
+    return GPT_URL;
+  }
+}
+
+function rememberGptUrl(accountId, value) {
+  const nextUrl = safeGptUrl(value);
+  if (nextUrl === GPT_URL && String(value || "").trim() !== GPT_URL) return;
+  const state = readBrowserProfiles();
+  const profile = state.profiles.find((item) => item.id === safeGptAccountId(accountId));
+  if (!profile || profile.lastUrl === nextUrl) return;
+  profile.lastUrl = nextUrl;
+  profile.lastOpenedAt = new Date().toISOString();
+  writeBrowserProfiles(state);
 }
 
 function writeBrowserProfiles(value) {
@@ -116,7 +244,11 @@ async function releaseGptAccountView(accountId = activeGptAccountId) {
   const id = safeGptAccountId(accountId);
   const account = gptAccounts.get(id);
   if (!account) return;
-  await account.session?.flushStorageData?.().catch(() => {});
+  try {
+    await Promise.resolve(account.session?.flushStorageData?.());
+  } catch {
+    // Releasing a view must continue even when Chromium cannot flush one store.
+  }
   if (account.view && !account.view.webContents.isDestroyed()) {
     account.view.setVisible(false);
     try {
@@ -174,7 +306,7 @@ function applyPendingGptLoginBackup() {
 
 function resolveGptExtensionPath() {
   const configured = String(process.env.TEAMBUILDING_GPT_EXTENSION || "").trim();
-  const bundled = path.resolve(__dirname, "..", "integrations", "gpt-production-extension");
+  const bundled = path.join(runtimeAppRoot(), "integrations", "gpt-production-extension");
   const development = path.resolve(__dirname, "..", "..", "..", "teambuilding-gpt-production-extension", "src");
   const candidates = configured
     ? [configured, bundled, development]
@@ -203,6 +335,103 @@ async function initializeEmbeddedGptPage(account) {
     localStorage.setItem("tb-workbench-account-id", ${JSON.stringify(account.id)});
     return true;
   })()`, true).catch((error) => appendDesktopLog("gpt-init-failed", error.message));
+  await applyEmbeddedGptTheme(account, gptThemeName);
+}
+
+function embeddedGptPalette(theme = "neo") {
+  const palettes = {
+    neo: {
+      dark: false, main: "#e9f0f6", sidebar: "#dce7f0", secondary: "#f4f7fa", tertiary: "#e2ebf2", composer: "#f7f9fb"
+    },
+    glass: {
+      dark: false, main: "#edf4f8", sidebar: "#dfeaf1", secondary: "#f7fafc", tertiary: "#e5eef4", composer: "#f8fbfc"
+    },
+    midnight: {
+      dark: true, main: "#0b1925", sidebar: "#07131e", secondary: "#142a3a", tertiary: "#1b3445", composer: "#173042"
+    },
+    "midnight-glass": {
+      dark: true, main: "#091722", sidebar: "#06111b", secondary: "#12293a", tertiary: "#19364a", composer: "#163246"
+    }
+  };
+  return palettes[theme] || palettes.neo;
+}
+
+async function applyEmbeddedGptTheme(account, theme = "neo") {
+  const view = account?.view;
+  if (!view || view.webContents.isDestroyed()) return false;
+  const palette = embeddedGptPalette(theme);
+  const isDark = palette.dark;
+  view.setBackgroundColor(palette.main);
+  return view.webContents.executeJavaScript(`(() => {
+    const root = document.documentElement;
+    const palette = ${JSON.stringify(palette)};
+    root.dataset.tbWorkbenchTheme = ${JSON.stringify(theme)};
+    root.dataset.tbWorkbenchColorScheme = ${JSON.stringify(isDark ? "dark" : "light")};
+    const apply = () => {
+      const dark = root.dataset.tbWorkbenchColorScheme === "dark";
+      root.classList.toggle("dark", dark);
+      root.style.colorScheme = dark ? "dark" : "light";
+      document.body?.style.setProperty("background-color", palette.main, "important");
+      document.body?.style.setProperty("color-scheme", dark ? "dark" : "light");
+      const values = {
+        "--main-surface-primary": palette.main,
+        "--sidebar-surface-primary": palette.sidebar,
+        "--sidebar-surface": palette.sidebar,
+        "--bg-secondary-surface": palette.sidebar,
+        "--main-surface-secondary": palette.secondary,
+        "--main-surface-secondary-selected": palette.tertiary,
+        "--main-surface-tertiary": palette.tertiary,
+        "--main-surface-background": palette.secondary,
+        "--composer-surface-primary": palette.composer,
+        "--composer-surface": palette.composer
+      };
+      Object.entries(values).forEach(([name, value]) => root.style.setProperty(name, value));
+    };
+    window.__tbWorkbenchThemeObserver?.disconnect?.();
+    window.__tbWorkbenchThemeObserver = new MutationObserver(() => queueMicrotask(apply));
+    window.__tbWorkbenchThemeObserver.observe(root, { attributes: true, attributeFilter: ["class"] });
+    apply();
+    return root.dataset.tbWorkbenchColorScheme;
+  })()`, true).then(() => true).catch((error) => {
+    appendDesktopLog("gpt-theme-sync-failed", `${account.id} ${error.message}`);
+    return false;
+  });
+}
+
+function waitForExtensionReady(profileSession, extensionId, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ready) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      profileSession.off("extension-ready", onReady);
+      resolve(Boolean(ready));
+    };
+    const onReady = (_event, extension) => {
+      if (!extensionId || extension?.id === extensionId) finish(true);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    profileSession.on("extension-ready", onReady);
+    const alreadyLoaded = profileSession.extensions?.getAllExtensions?.()
+      ?.some((extension) => extension?.id === extensionId);
+    if (alreadyLoaded) finish(true);
+  });
+}
+
+async function readEmbeddedExtensionState(account, attempts = 12, intervalMs = 250) {
+  const contents = account?.view?.webContents;
+  if (!contents || contents.isDestroyed()) return { ready: false, version: "", source: "" };
+  for (let index = 0; index < attempts; index += 1) {
+    const state = await contents.executeJavaScript(`({
+      ready: document.documentElement.dataset.tbGptProductionExtension === "ready" || Boolean(document.getElementById("tb-gpt-production-extension-marker")),
+      version: document.documentElement.dataset.tbGptProductionExtensionVersion || document.getElementById("tb-gpt-production-extension-marker")?.content || "",
+      source: document.documentElement.dataset.tbGptProductionExtensionSource || ""
+    })`, true).catch(() => ({ ready: false, version: "", source: "" }));
+    if (state.ready) return state;
+    if (index + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return { ready: false, version: "", source: "" };
 }
 
 async function ensureGptAccount(accountId = activeGptAccountId) {
@@ -217,16 +446,29 @@ async function ensureGptAccount(accountId = activeGptAccountId) {
     session: session.fromPartition(`${GPT_PARTITION_PREFIX}-${id}`),
     view: null,
     extensionInfo: null,
+    extensionPath: "",
+    extensionRuntimeReady: false,
     extensionError: "",
+    pageState: {
+      loading: true,
+      domReady: false,
+      finished: false,
+      extensionReady: false,
+      error: "",
+      startedAt: new Date().toISOString(),
+      finishedAt: ""
+    },
     lastUsedAt: Date.now(),
     initializing: null
   };
   gptAccounts.set(id, account);
   account.initializing = (async () => {
   const extensionPath = resolveGptExtensionPath();
+  account.extensionPath = extensionPath;
   try {
     if (!fs.existsSync(path.join(extensionPath, "manifest.json"))) throw new Error(`扩展目录不存在：${extensionPath}`);
-    account.extensionInfo = await account.session.loadExtension(extensionPath, { allowFileAccess: true });
+    account.extensionInfo = await account.session.extensions.loadExtension(extensionPath, { allowFileAccess: true });
+    account.extensionRuntimeReady = await waitForExtensionReady(account.session, account.extensionInfo.id);
     appendDesktopLog("gpt-extension-loaded", `${id} ${account.extensionInfo.name} ${account.extensionInfo.version}`);
   } catch (error) {
     account.extensionError = error.message;
@@ -237,19 +479,45 @@ async function ensureGptAccount(accountId = activeGptAccountId) {
       partition: account.partition,
       contextIsolation: true,
       sandbox: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Automatic production must continue while the workbench is minimized
+      // to the tray. Chromium otherwise heavily throttles or suspends timers
+      // in this hidden WebContentsView and the workflow appears stuck after 1.
+      backgroundThrottling: false
     }
   });
   const currentUserAgent = account.view.webContents.getUserAgent();
   account.view.webContents.setUserAgent(`${currentUserAgent} TeambuildingWorkbenchGPT/0.2`);
-  account.view.setBackgroundColor("#f5f7f5");
+  account.view.setBackgroundColor(embeddedGptPalette(gptThemeName).main);
+  account.view.setBorderRadius(16);
   mainWindow.contentView.addChildView(account.view);
   account.view.setVisible(false);
-  account.view.webContents.on("did-finish-load", () => initializeEmbeddedGptPage(account));
+  account.view.webContents.on("did-start-loading", () => {
+    Object.assign(account.pageState, { loading: true, domReady: false, finished: false, extensionReady: false, error: "", startedAt: new Date().toISOString(), finishedAt: "" });
+  });
+  account.view.webContents.on("dom-ready", () => {
+    account.pageState.domReady = true;
+  });
+  account.view.webContents.on("did-finish-load", async () => {
+    Object.assign(account.pageState, { loading: false, domReady: true, finished: true, finishedAt: new Date().toISOString() });
+    await initializeEmbeddedGptPage(account);
+    const embeddedExtension = await readEmbeddedExtensionState(account);
+    account.pageState.extensionReady = embeddedExtension.ready;
+    account.pageState.extensionVersion = embeddedExtension.version;
+    account.pageState.extensionSource = embeddedExtension.source;
+    if (!embeddedExtension.ready) {
+      account.pageState.error = "生产扩展未注入，已停止自动生产；可刷新网页重试";
+      appendDesktopLog("gpt-extension-not-injected", `account=${id} path=${account.extensionPath}`);
+    }
+  });
+  account.view.webContents.on("did-navigate", (_event, url) => rememberGptUrl(id, url));
+  account.view.webContents.on("did-navigate-in-page", (_event, url) => rememberGptUrl(id, url));
   account.view.webContents.on("did-fail-load", (_event, code, description, validatedURL, isMainFrame) => {
+    if (isMainFrame) Object.assign(account.pageState, { loading: false, finished: false, error: `${code}: ${description}` });
     appendDesktopLog("gpt-load-failed", `account=${id} code=${code} main=${isMainFrame} url=${validatedURL} ${description}`);
   });
-  await account.view.webContents.loadURL(GPT_URL);
+  const savedProfile = readBrowserProfiles().profiles.find((profile) => profile.id === id);
+  await account.view.webContents.loadURL(safeGptUrl(savedProfile?.lastUrl));
   await initializeEmbeddedGptPage(account);
   return account;
   })();
@@ -362,6 +630,7 @@ ipcMain.handle("desktop:gpt-profile-save", async (_event, input = {}) => {
     name: String(input.name || existing?.name || `浏览器 ${state.profiles.length + 1}`).trim().slice(0, 24),
     quotaGroup: safeGptAccountId(input.quotaGroup || existing?.quotaGroup || id),
     hidden: Boolean(input.hidden ?? existing?.hidden),
+    lastUrl: safeGptUrl(input.lastUrl || existing?.lastUrl),
     createdAt: existing?.createdAt || new Date().toISOString(),
     lastOpenedAt: String(input.lastOpenedAt || existing?.lastOpenedAt || new Date().toISOString())
   };
@@ -401,7 +670,7 @@ ipcMain.handle("desktop:gpt-profile-remove", async (_event, accountId = "") => {
 ipcMain.handle("desktop:gpt-profile-delete-login", async (_event, accountId = "") => {
   const id = safeGptAccountId(accountId);
   await releaseGptAccountView(id);
-  const profileSession = session.fromPartition(gptPartition(id));
+  const profileSession = session.fromPartition(`${GPT_PARTITION_PREFIX}-${id}`);
   await profileSession.clearStorageData();
   return { ok: true, id };
 });
@@ -421,15 +690,65 @@ ipcMain.handle("desktop:notify", async (_event, input = {}) => {
   return { ok: true };
 });
 
+ipcMain.handle("desktop:assistant-update", async (_event, input = {}) => {
+  assistantOverlayState = {
+    ...assistantOverlayState,
+    message: String(input.message || assistantOverlayState.message || ""),
+    visible: input.visible !== false
+  };
+  const overlay = await ensureAssistantOverlay();
+  sendAssistantOverlayState();
+  if (assistantOverlayState.visible && mainWindow?.isVisible()) overlay.showInactive();
+  else overlay.hide();
+  return { ok: true };
+});
+
+ipcMain.on("assistant-overlay:action", (_event, input = {}) => {
+  mainWindow?.webContents.send("desktop:assistant-action", input);
+});
+
+ipcMain.on("assistant-overlay:move", (_event, input = {}) => {
+  if (!assistantOverlayWindow || assistantOverlayWindow.isDestroyed()) return;
+  const [x, y] = assistantOverlayWindow.getPosition();
+  const next = clampAssistantOverlayBounds({ x: x + Number(input.dx || 0), y: y + Number(input.dy || 0) });
+  assistantOverlayWindow.setBounds(next, false);
+  fs.writeFileSync(assistantOverlayPositionFile(), JSON.stringify({ x: next.x, y: next.y }, null, 2), "utf8");
+});
+
 ipcMain.handle("desktop:gpt-status", async (_event, accountId = activeGptAccountId) => {
   const id = safeGptAccountId(accountId);
   const account = gptAccounts.get(id);
   const contents = account?.view && !account.view.webContents.isDestroyed() ? account.view.webContents : null;
+  const liveState = contents ? await contents.executeJavaScript(`({
+    readyState: document.readyState,
+    extensionReady: document.documentElement.dataset.tbGptProductionExtension === "ready" || Boolean(document.getElementById("tb-gpt-production-extension-marker")),
+    extensionVersion: document.documentElement.dataset.tbGptProductionExtensionVersion || document.getElementById("tb-gpt-production-extension-marker")?.content || "",
+    extensionSource: document.documentElement.dataset.tbGptProductionExtensionSource || "",
+    composerReady: Boolean(document.querySelector('#prompt-textarea, textarea[data-id="root"], [contenteditable="true"]'))
+  })`, true).catch(() => ({ readyState: "", extensionReady: false, extensionVersion: "", extensionSource: "", composerReady: false })) : null;
+  if (account?.pageState && liveState) {
+    account.pageState.domReady = ["interactive", "complete"].includes(liveState.readyState);
+    account.pageState.extensionReady = Boolean(liveState.extensionReady);
+  }
   return {
     available: Boolean(WebContentsView),
     accountId: id,
     loaded: Boolean(contents),
+    ready: Boolean(contents && account?.pageState?.domReady && liveState?.extensionReady),
+    domReady: Boolean(account?.pageState?.domReady),
+    extensionReady: Boolean(liveState?.extensionReady),
+    composerReady: Boolean(liveState?.composerReady),
+    pageState: account?.pageState || null,
     extensionLoaded: Boolean(account?.extensionInfo),
+    extensionRuntimeReady: Boolean(account?.extensionRuntimeReady),
+    extensionInfo: account?.extensionInfo ? {
+      id: account.extensionInfo.id,
+      name: account.extensionInfo.name,
+      version: account.extensionInfo.version,
+      path: account.extensionPath
+    } : null,
+    extensionVersion: liveState?.extensionVersion || "",
+    extensionSource: liveState?.extensionSource || "",
     extensionError: account?.extensionError || "",
     url: contents?.getURL() || GPT_URL,
     canGoBack: Boolean(contents?.canGoBack()),
@@ -445,12 +764,33 @@ ipcMain.handle("desktop:gpt-show", async (_event, input = {}) => {
   const view = account.view;
   hideAllGptViews(accountId);
   view.setBounds(safeGptBounds(input.bounds || input));
+  view.setBorderRadius(16);
   view.setVisible(true);
+  const liveReady = await view.webContents.executeJavaScript(`({
+    readyState: document.readyState,
+    extensionReady: document.documentElement.dataset.tbGptProductionExtension === "ready" || Boolean(document.getElementById("tb-gpt-production-extension-marker")),
+    extensionVersion: document.documentElement.dataset.tbGptProductionExtensionVersion || document.getElementById("tb-gpt-production-extension-marker")?.content || "",
+    extensionSource: document.documentElement.dataset.tbGptProductionExtensionSource || "",
+    composerReady: Boolean(document.querySelector('#prompt-textarea, textarea[data-id="root"], [contenteditable="true"]'))
+  })`, true).catch(() => ({ readyState: "", extensionReady: false, extensionVersion: "", extensionSource: "", composerReady: false }));
   return {
     ok: true,
     accountId,
     extensionLoaded: Boolean(account.extensionInfo),
+    extensionRuntimeReady: Boolean(account.extensionRuntimeReady),
+    extensionInfo: account.extensionInfo ? {
+      id: account.extensionInfo.id,
+      name: account.extensionInfo.name,
+      version: account.extensionInfo.version,
+      path: account.extensionPath
+    } : null,
+    extensionVersion: liveReady.extensionVersion || "",
+    extensionSource: liveReady.extensionSource || "",
     extensionError: account.extensionError,
+    ready: ["interactive", "complete"].includes(liveReady.readyState) && Boolean(liveReady.extensionReady),
+    domReady: ["interactive", "complete"].includes(liveReady.readyState),
+    extensionReady: Boolean(liveReady.extensionReady),
+    composerReady: Boolean(liveReady.composerReady),
     url: view.webContents.getURL(),
     canGoBack: view.webContents.canGoBack(),
     canGoForward: view.webContents.canGoForward()
@@ -460,6 +800,14 @@ ipcMain.handle("desktop:gpt-show", async (_event, input = {}) => {
 ipcMain.handle("desktop:gpt-hide", async () => {
   hideAllGptViews();
   return { ok: true };
+});
+
+ipcMain.handle("desktop:gpt-theme", async (_event, input = {}) => {
+  gptThemeName = ["neo", "glass", "midnight", "midnight-glass"].includes(input.theme) ? input.theme : "neo";
+  assistantOverlayState = { ...assistantOverlayState, theme: gptThemeName };
+  sendAssistantOverlayState();
+  const results = await Promise.all([...gptAccounts.values()].map((account) => applyEmbeddedGptTheme(account, gptThemeName)));
+  return { ok: true, theme: gptThemeName, dark: embeddedGptPalette(gptThemeName).dark, updated: results.filter(Boolean).length };
 });
 
 ipcMain.handle("desktop:gpt-release-idle", async (_event, input = {}) => {
@@ -502,6 +850,16 @@ ipcMain.handle("desktop:gpt-workflow-status", async (_event, accountId = activeG
     try { return JSON.parse(document.getElementById("tb-workbench-bridge-progress")?.textContent || "null"); }
     catch { return null; }
   })()`, true).catch(() => null);
+});
+
+ipcMain.handle("desktop:gpt-manual-action", async (_event, input = {}) => {
+  const accountId = safeGptAccountId(input.accountId || activeGptAccountId);
+  const account = await ensureGptAccount(accountId);
+  const action = String(input.action || "download").replace(/[^a-z-]/g, "").slice(0, 32) || "download";
+  const contents = account?.view?.webContents;
+  if (!contents || contents.isDestroyed()) return { ok: false, error: "GPT 网页尚未就绪" };
+  return contents.executeJavaScript(`Promise.resolve(window.CGPTImageDownloadDebug?.manualAction(${JSON.stringify(action)}) || ({ ok: false, error: "网页下载工具尚未加载" }))`, true)
+    .catch((error) => ({ ok: false, error: error?.message || String(error) }));
 });
 
 ipcMain.handle("desktop:gpt-login-recovery-status", async (_event, accountId = activeGptAccountId) => {
@@ -567,6 +925,22 @@ function appendDesktopLog(event, detail = "") {
   } catch {
     // Diagnostics must never prevent the app from starting.
   }
+}
+
+async function flushAllGptStorageData() {
+  const profileState = readBrowserProfiles();
+  const ids = new Set([
+    ...profileState.profiles.map((profile) => safeGptAccountId(profile.id)),
+    ...gptAccounts.keys(),
+  ]);
+  await Promise.all([...ids].map(async (id) => {
+    try {
+      await Promise.resolve(session.fromPartition(`${GPT_PARTITION_PREFIX}-${id}`).flushStorageData());
+    } catch (error) {
+      appendDesktopLog("gpt-storage-flush-failed", `${id} ${error.message}`);
+    }
+  }));
+  appendDesktopLog("gpt-storage-flushed", [...ids].join(","));
 }
 
 function restoreMainWindow() {
@@ -635,7 +1009,7 @@ function canReachServer() {
 
 async function ensureServer() {
   if (await canReachServer()) return;
-  const serverFile = path.join(__dirname, "..", "server.js");
+  const serverFile = path.join(runtimeAppRoot(), "server.js");
   const releaseRoot = app.isPackaged
     ? (process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath))
     : path.resolve(__dirname, "..", "..", "releases");
@@ -683,8 +1057,18 @@ async function createWindow() {
     }
   });
   mainWindow = window;
-  window.on("minimize", () => hideAllGptViews());
-  window.on("hide", () => hideAllGptViews());
+  window.on("minimize", () => {
+    hideAllGptViews();
+    assistantOverlayWindow?.hide();
+  });
+  window.on("hide", () => {
+    hideAllGptViews();
+    assistantOverlayWindow?.hide();
+  });
+  window.on("show", () => {
+    window.webContents.send("desktop:window-restored");
+    if (assistantOverlayState.visible) assistantOverlayWindow?.showInactive();
+  });
   window.on("close", (event) => {
     if (isExplicitQuit) return;
     event.preventDefault();
@@ -699,6 +1083,8 @@ async function createWindow() {
     }
   });
   window.on("closed", () => {
+    if (assistantOverlayWindow && !assistantOverlayWindow.isDestroyed()) assistantOverlayWindow.destroy();
+    assistantOverlayWindow = null;
     for (const account of gptAccounts.values()) {
       if (account.view && !account.view.webContents.isDestroyed()) account.view.webContents.close();
     }
@@ -719,6 +1105,7 @@ async function createWindow() {
   const versionedUrl = new URL(APP_URL);
   versionedUrl.searchParams.set("appVersion", APP_VERSION);
   await window.loadURL(versionedUrl.toString());
+  await ensureAssistantOverlay();
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -732,6 +1119,7 @@ if (!hasSingleInstanceLock) {
     mainWindow.focus();
   });
   app.whenReady().then(() => {
+    ensureDurableRuntimeResources();
     applyPendingGptLoginBackup();
     applyPendingGptLoginRestore();
     createTray();
@@ -747,7 +1135,18 @@ app.on("window-all-closed", () => {
   if (isExplicitQuit && serverProcess && !serverProcess.killed) serverProcess.kill();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (!quitFlushCompleted) {
+    event.preventDefault();
+    if (!quitFlushStarted) {
+      quitFlushStarted = true;
+      flushAllGptStorageData().finally(() => {
+        quitFlushCompleted = true;
+        app.quit();
+      });
+    }
+    return;
+  }
   isExplicitQuit = true;
   if (serverProcess && !serverProcess.killed) serverProcess.kill();
 });

@@ -69,23 +69,29 @@ test("material category index stays shallow so opening the workbench does not sc
 });
 
 test("saved global index supplies real parent-folder counts without rescanning every post", () => {
-  const root = path.resolve("D:\\素材库");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "material-count-index-"));
   const first = path.join(root, "精准流量贴");
   const second = path.join(root, "泛流量贴");
-  const counts = materialCategoryCountMap(root, {
-    root,
-    categories: [
-      { path: first, count: 31 },
-      { path: second, count: 18 },
-      { path: path.join(root, "损坏数据"), count: -1 }
-    ]
-  });
+  try {
+    fs.mkdirSync(path.join(first, "帖子一"), { recursive: true });
+    fs.mkdirSync(path.join(second, "帖子二"), { recursive: true });
+    const counts = materialCategoryCountMap(root, {
+      root,
+      categories: [
+        { path: first, count: 31, sourceSignature: materialTreeSignature(first) },
+        { path: second, count: 18, sourceSignature: materialTreeSignature(second) },
+        { path: path.join(root, "损坏数据"), count: -1 }
+      ]
+    });
 
-  assert.equal(counts.get(path.resolve(first)), 31);
-  assert.equal(counts.get(path.resolve(second)), 18);
-  assert.equal(counts.has(path.resolve(root, "损坏数据")), false);
-  assert.equal(materialCategoryCountMap("D:\\另一个素材库", {
-    root,
-    categories: [{ path: first, count: 31 }]
-  }).size, 0);
+    assert.equal(counts.get(path.resolve(first)), 31);
+    assert.equal(counts.get(path.resolve(second)), 18);
+    assert.equal(counts.has(path.resolve(root, "损坏数据")), false);
+    assert.equal(materialCategoryCountMap(path.join(root, "另一个素材库"), {
+      root,
+      categories: [{ path: first, count: 31, sourceSignature: materialTreeSignature(first) }]
+    }).size, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

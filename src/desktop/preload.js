@@ -17,6 +17,16 @@ contextBridge.exposeInMainWorld("desktopDialogs", {
 
 contextBridge.exposeInMainWorld("gptWorkbench", {
   available: true,
+  assistantOverlay: true,
+  updateAssistant(input = {}) {
+    return ipcRenderer.invoke("desktop:assistant-update", input);
+  },
+  onAssistantAction(callback) {
+    if (typeof callback !== "function") return () => {};
+    const listener = (_event, input) => callback(input || {});
+    ipcRenderer.on("desktop:assistant-action", listener);
+    return () => ipcRenderer.removeListener("desktop:assistant-action", listener);
+  },
   status(accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-status", String(accountId || ""));
   },
@@ -28,6 +38,9 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   },
   hide() {
     return ipcRenderer.invoke("desktop:gpt-hide");
+  },
+  setTheme(theme = "neo") {
+    return ipcRenderer.invoke("desktop:gpt-theme", { theme: String(theme || "neo") });
   },
   releaseIdle(minutes = 30) {
     return ipcRenderer.invoke("desktop:gpt-release-idle", { minutes: Number(minutes || 30) });
@@ -49,6 +62,12 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   },
   workflowStatus(accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-workflow-status", String(accountId || ""));
+  },
+  manualAction(action = "download", accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-manual-action", {
+      action: String(action || "download"),
+      accountId: String(accountId || "")
+    });
   },
   loginRecoveryStatus(accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-login-recovery-status", String(accountId || ""));
@@ -88,5 +107,11 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
     const listener = () => callback();
     ipcRenderer.on("desktop:pause-production", listener);
     return () => ipcRenderer.removeListener("desktop:pause-production", listener);
+  },
+  onWindowRestored(callback) {
+    if (typeof callback !== "function") return () => {};
+    const listener = () => callback();
+    ipcRenderer.on("desktop:window-restored", listener);
+    return () => ipcRenderer.removeListener("desktop:window-restored", listener);
   }
 });

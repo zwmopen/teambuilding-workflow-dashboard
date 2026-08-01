@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const sharp = require("sharp");
-const { fetchWithRetry, generateMinimax, generateOpenAiCompatible, generateText, imageDimensions, networkFetch, normalizeImageApiConfig, normalizeToThreeByFour } = require("./image-generation");
+const { fetchWithRetry, generateMinimax, generateOpenAiCompatible, generateText, imageDimensions, networkFetch, normalizeImageApiConfig, normalizeTextApiConfig, normalizeToThreeByFour } = require("./image-generation");
 
 test("image API defaults to the verified local image gateway", () => {
   assert.deepEqual(normalizeImageApiConfig({}), {
@@ -19,6 +19,14 @@ test("ByteCat Image 2.0 uses the official OpenAI-compatible gateway", () => {
     provider: "bytecat",
     baseUrl: "https://bytecat.lamclod.cn/v1",
     model: "gpt-image-2"
+  });
+});
+
+test("text API defaults to the selectable MiniMax copy model", () => {
+  assert.deepEqual(normalizeTextApiConfig({}), {
+    provider: "minimax",
+    baseUrl: "https://api.minimaxi.com/v1",
+    model: "MiniMax-M2.7"
   });
 });
 
@@ -146,6 +154,20 @@ test("local compatible text generation returns copy", async () => {
     fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: "团建文案" } }] }), { status: 200 })
   });
   assert.equal(result, "团建文案");
+});
+
+test("MiniMax OpenAI-compatible text generation returns copy", async () => {
+  let request;
+  const result = await generateText({
+    config: normalizeTextApiConfig({ provider: "minimax" }), apiKey: "secret", prompt: "写文案",
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return new Response(JSON.stringify({ choices: [{ message: { content: "MiniMax 团建文案" } }] }), { status: 200 });
+    }
+  });
+  assert.match(request.url, /\/chat\/completions$/);
+  assert.equal(JSON.parse(request.options.body).model, "MiniMax-M2.7");
+  assert.equal(result, "MiniMax 团建文案");
 });
 
 test("transient image gateway errors are retried before succeeding", async () => {

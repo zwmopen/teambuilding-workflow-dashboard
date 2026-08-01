@@ -19,9 +19,25 @@ const PROVIDER_DEFAULTS = {
   minimax: { baseUrl: "https://api.minimaxi.com/v1", model: "image-01" }
 };
 
+const TEXT_PROVIDER_DEFAULTS = {
+  "local-openai": { baseUrl: "http://localhost:62104/v1", model: "gpt-5.6-terra" },
+  bytecat: { baseUrl: "https://bytecat.lamclod.cn/v1", model: "gpt-5.6-terra" },
+  minimax: { baseUrl: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7" }
+};
+
 function normalizeImageApiConfig(value = {}) {
   const provider = Object.hasOwn(PROVIDER_DEFAULTS, value.provider) ? value.provider : "local-openai";
   const defaults = PROVIDER_DEFAULTS[provider];
+  return {
+    provider,
+    baseUrl: String(value.baseUrl || defaults.baseUrl).replace(/\/+$/, ""),
+    model: String(value.model || defaults.model)
+  };
+}
+
+function normalizeTextApiConfig(value = {}) {
+  const provider = Object.hasOwn(TEXT_PROVIDER_DEFAULTS, value.provider) ? value.provider : "minimax";
+  const defaults = TEXT_PROVIDER_DEFAULTS[provider];
   return {
     provider,
     baseUrl: String(value.baseUrl || defaults.baseUrl).replace(/\/+$/, ""),
@@ -352,16 +368,17 @@ async function generateMinimax({ config, apiKey, prompt, fetchImpl = networkFetc
   };
 }
 
-async function generateText({ config, apiKey, prompt, model = "gpt-5.6-terra", fetchImpl = networkFetch }) {
+async function generateText({ config, apiKey, prompt, model = "", fetchImpl = networkFetch }) {
   if (!apiKey) throw new Error("没有找到本机 API 密钥");
-  if (!["local-openai", "bytecat"].includes(config.provider)) throw new Error("当前文案生成只支持 OpenAI 兼容接口");
+  if (!["local-openai", "bytecat", "minimax"].includes(config.provider)) throw new Error("当前文案生成只支持 OpenAI 兼容接口");
   const endpoint = `${config.baseUrl}/chat/completions`;
   assertSafeUrl(endpoint);
+  const selectedModel = String(model || (config.provider === "minimax" ? "MiniMax-M2.7" : "gpt-5.6-terra"));
   const response = await fetchImpl(endpoint, {
     method: "POST",
     headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model,
+      model: selectedModel,
       messages: [{ role: "user", content: prompt }],
       temperature: 0.7
     }),
@@ -394,6 +411,7 @@ async function generateImages(options) {
 
 module.exports = {
   PROVIDER_DEFAULTS,
+  TEXT_PROVIDER_DEFAULTS,
   generateImages,
   generateMinimax,
   generateOpenAiCompatible,
@@ -403,5 +421,6 @@ module.exports = {
   networkFetch,
   normalizeToThreeByFour,
   normalizeImageApiConfig,
+  normalizeTextApiConfig,
   referenceSheetDataUrl
 };

@@ -8,6 +8,7 @@ const app = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const css = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const desktopMain = fs.readFileSync(path.join(__dirname, "..", "desktop", "main.js"), "utf8");
 const desktopPreload = fs.readFileSync(path.join(__dirname, "..", "desktop", "preload.js"), "utf8");
+const assistantOverlay = fs.readFileSync(path.join(__dirname, "assistant-overlay.html"), "utf8");
 const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 const gptSidebar = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "sidebar.js"), "utf8");
 const gptBackground = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "background.js"), "utf8");
@@ -35,6 +36,9 @@ test("GPT 内置测试把本地素材和模板与持久原生网页合成一个�
   assert.match(serverSource, /sharp\(bytes\)\.metadata\(\)/);
   assert.match(serverSource, /new TextDecoder\("gb18030"\)/);
   assert.match(serverSource, /\/\^OK\$\/m/);
+  assert.match(serverSource, /\/\^DUPLICATE\$\/m/);
+  assert.match(serverSource, /duplicateReason:\s*String\(fields\.DuplicateReason/);
+  assert.match(serverSource, /deletedImages:\s*Math\.max\(0, Number\(fields\.DeletedImages/);
   assert.match(desktopMain, /tb-workbench-upload/);
   assert.match(desktopPreload, /gptWorkbench/);
   assert.match(css, /\.gpt-production-test-grid/);
@@ -229,11 +233,23 @@ test("GPT production keeps a recoverable queue and supports multiple permanent b
   assert.match(app, /function restoreGptQueue\(/);
   assert.match(app, /sendMultiWindowGptTasks/);
   assert.match(app, /parallelWorkers/);
-  assert.match(html, /value="multi">多窗口轮询/);
+  assert.match(html, /value="automatic">单窗口自动/);
+  assert.match(html, /value="multi">多窗口自动/);
+  assert.match(html, /value="manual">手动模式/);
   assert.match(html, /添加浏览器/);
   assert.match(html, /id="gptBrowserManager"/);
   assert.match(desktopMain, /gpt-browser-profiles\.json/);
   assert.match(desktopMain, /desktop:gpt-profile-save/);
+});
+
+test("GPT queue recovery persists the final failed stage and replaces stale retry checkpoints", () => {
+  assert.match(app, /task\._stage = gptLastFailedStage;/);
+  assert.match(app, /task\._error = taskError\.message;/);
+  assert.match(app, /if \(resuming && task\._stage && task\._status !== "completed"\)/);
+  assert.match(app, /failedTask\._stage = gptLastFailedStage \|\| failedTask\._stage/);
+  assert.match(server, /GPT_PRODUCTION_CHECKPOINT_FILE/);
+  assert.match(server, /gpt-production\/recover-image-batch/);
+  assert.match(server, /图片暂存目录必须位于工作台下载目录内/);
 });
 
 test("desktop close goes to tray without clearing GPT cache or login partitions", () => {
@@ -244,6 +260,93 @@ test("desktop close goes to tray without clearing GPT cache or login partitions"
   assert.match(desktopMain, /window\.hide\(\)/);
   assert.doesNotMatch(desktopMain, /\.clearCache\(\)/);
   assert.match(desktopMain, /persist:teambuilding-gpt-production/);
+  assert.match(desktopMain, /async function flushAllGptStorageData\(\)/);
+  assert.match(desktopMain, /flushStorageData\(\)/);
+  assert.match(desktopMain, /if \(!quitFlushCompleted\)/);
+});
+
+test("portable desktop copies runtime resources to a durable version directory before background service starts", () => {
+  assert.match(desktopMain, /ensureDurableRuntimeResources/);
+  assert.match(desktopMain, /durableRuntimeAppRoot/);
+  assert.match(desktopMain, /runtime-manifest\.json/);
+  assert.match(desktopMain, /serverFile = path\.join\(runtimeAppRoot\(\), "server\.js"\)/);
+});
+
+test("embedded GPT reports real page readiness instead of treating a created view as loaded", () => {
+  assert.match(desktopMain, /pageState/);
+  assert.match(desktopMain, /did-start-loading/);
+  assert.match(desktopMain, /did-finish-load/);
+  assert.match(desktopMain, /domReady/);
+  assert.match(desktopMain, /extensionReady/);
+  assert.match(desktopMain, /document\.documentElement\.dataset\.tbGptProductionExtension/);
+  assert.match(desktopMain, /setBorderRadius\(16\)/);
+  assert.match(app, /function restoreEmbeddedGptView/);
+});
+
+test("global assistant is a draggable cat with separate status log and chat layers", () => {
+  assert.match(html, /workbenchAssistantCat/);
+  assert.match(html, /assistant-black-cat-v2\.png/);
+  assert.match(html, /workbenchAssistantBubbleContent/);
+  assert.match(html, /workbenchAssistantLogPanel/);
+  assert.match(html, /data-assistant-mute="1"/);
+  assert.match(html, /data-assistant-mute="5"/);
+  assert.match(html, /data-assistant-mute="60"/);
+  assert.match(css, /@keyframes tb-cat-bounce/);
+  assert.match(app, /assistantEventLog/);
+  assert.match(app, /openWorkbenchAssistantLog/);
+  assert.match(app, /tb-workbench-assistant-position-v5/);
+  assert.doesNotMatch(app, /const assistantRail = 76/);
+  assert.doesNotMatch(app, /const inset = 12/);
+  assert.match(app, /x:\s*rect\.left,[\s\S]*?width:\s*Math\.max\(320, rect\.width\)/);
+  assert.doesNotMatch(html, /id="gptSelectionAssistant"/);
+  assert.match(css, /\.workbench-assistant-bubble\s*\{[\s\S]*?background:\s*#fff/);
+  assert.match(css, /\.workbench-assistant-bubble::after/);
+  assert.match(css, /\.workbench-assistant-launcher\s*\{[\s\S]*?top:\s*96px/);
+  assert.match(app, /gptProductionHistoryPanel"\)\?\.hidden !== false/);
+  assert.match(desktopMain, /assistantOverlayWindow/);
+  assert.match(desktopMain, /assistant-overlay\.html/);
+  assert.match(desktopPreload, /assistantOverlay:\s*true/);
+  assert.match(assistantOverlay, /data-theme="midnight-glass"/);
+  assert.match(assistantOverlay, /document\.documentElement\.dataset\.theme = state\.theme/);
+  assert.match(desktopMain, /assistantOverlayState = \{ \.\.\.assistantOverlayState, theme: gptThemeName \}/);
+  assert.match(app, /native-assistant-overlay/);
+  assert.doesNotMatch(app, /workbenchAssistantBubble"\)\?\.addEventListener\("mouseenter"/);
+  assert.match(app, /assistantSuppressClickUntil/);
+});
+
+test("GPT automatic production keeps a durable user-visible production history", () => {
+  assert.match(html, /id="gptProductionHistoryBtn"/);
+  assert.match(html, /id="gptProductionHistoryPanel"/);
+  assert.match(app, /GPT_HISTORY_STORAGE_KEY/);
+  assert.match(app, /appendGptProductionHistory/);
+  assert.match(app, /openGptProductionHistory/);
+  assert.match(app, /\/api\/gpt-production\/history/);
+  assert.match(app, /planDurationMs/);
+  assert.match(app, /imageDurationMs/);
+  assert.match(app, /data-open-production-path/);
+  assert.match(server, /pathname === "\/api\/gpt-production\/history"/);
+});
+
+test("GPT browser profiles remember the last safe conversation URL", () => {
+  assert.match(desktopMain, /lastUrl:\s*GPT_URL/);
+  assert.match(desktopMain, /function safeGptUrl/);
+  assert.match(desktopMain, /did-navigate-in-page/);
+  assert.match(desktopMain, /loadURL\(safeGptUrl\(savedProfile\?\.lastUrl\)\)/);
+});
+
+test("GPT material folders support context editing, recycle-bin deletion and drag move", () => {
+  assert.match(html, /id="contextTrashFolder"/);
+  assert.match(app, /data-gpt-material-path/);
+  assert.match(app, /text\/x-teambuilding-material-path/);
+  assert.match(app, /\/api\/extension\/move-entry/);
+  assert.match(app, /\/api\/trash-workspace-folder/);
+  assert.match(server, /function trashEditableWorkspaceDirectory/);
+  assert.match(server, /RecycleOption\]::SendToRecycleBin/);
+});
+
+test("embedded GPT packages do not leak a foreground login page title", () => {
+  assert.match(server, /conversationTitle:\s*publishTitle/);
+  assert.match(server, /验证你的身份 - OpenAI/);
 });
 
 test("GPT production exposes real paths, minimum image checks, tool toggles and scheduled start", () => {
@@ -257,6 +360,11 @@ test("GPT production exposes real paths, minimum image checks, tool toggles and 
   assert.match(app, /scheduleGptQuotaReminder/);
   assert.match(server, /requestedDownloadRoot/);
   assert.match(server, /requestedProductRoot/);
+});
+
+test("GPT packaging writes its task manifest beside the actual downloaded images", () => {
+  assert.match(server, /const effectiveDownloadRoot = requestedDownloadRoot/);
+  assert.match(server, /taskFile = path\.join\(effectiveDownloadRoot, `chatgpt-workpkg-task-/);
 });
 
 test("GPT material parent checkbox keeps valid independent accessibility attributes", () => {
@@ -284,9 +392,38 @@ test("cloud backup exposes automatic schedule and monthly upload budget controls
   assert.match(html, /id="cloudBackupSourceRoot"/);
 });
 
+test("settings keep image and copy credentials separate and default copy to MiniMax", () => {
+  assert.match(html, /id="productionTextProvider"[\s\S]*?<option value="minimax" selected>MiniMax 文案<\/option>/);
+  assert.match(html, /id="productionTextModel"[\s\S]*?<option value="MiniMax-M2\.7" selected>MiniMax-M2\.7<\/option>/);
+  assert.match(html, /id="productionTextApiKey"/);
+  assert.match(app, /const WORKBENCH_TEXT_PROVIDER_DEFAULTS =/);
+  assert.match(app, /function currentTextApiPayload\(/);
+  assert.match(app, /api\("\/api\/text-api\/config"/);
+  assert.match(app, /api\("\/api\/text-api\/test"/);
+  assert.match(app, /#productionTextProvider/);
+  assert.match(server, /\/api\/text-api\/config/);
+  assert.match(server, /publicTextApiSettings/);
+});
+
 test("integrated conversion view shares the workbench background without a nested card shell", () => {
   assert.match(css, /#conversionView\s*\{[\s\S]*?padding:\s*0;/);
   assert.match(css, /\.conversion-embedded-shell\s*\{[\s\S]*?border-radius:\s*0;/);
   assert.match(css, /\.conversion-embedded-shell\s*\{[\s\S]*?box-shadow:\s*none;/);
   assert.match(css, /\.conversion-embedded-shell iframe\s*\{[\s\S]*?background:\s*transparent;/);
+});
+
+test("embedded GPT follows the workbench light or dark theme without a duplicate card shell", () => {
+  assert.match(app, /gptWorkbench\?\.setTheme\?\.\(value\)/);
+  assert.match(desktopPreload, /setTheme\(theme = "neo"\)/);
+  assert.match(desktopMain, /ipcMain\.handle\("desktop:gpt-theme"/);
+  assert.match(desktopMain, /function applyEmbeddedGptTheme/);
+  assert.match(desktopMain, /function embeddedGptPalette/);
+  assert.match(desktopMain, /document\.body\?\.style\.setProperty\("background-color", palette\.main, "important"\)/);
+  assert.match(css, /\.gpt-production-browser-panel\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border:\s*0;[\s\S]*?background:\s*transparent;[\s\S]*?box-shadow:\s*none;/);
+  assert.match(css, /\.gpt-embedded-host\s*\{[\s\S]*?margin:\s*0;/);
+  assert.match(css, /\.gpt-embedded-host\s*\{[\s\S]*?background:\s*var\(--page-bg/);
+  assert.match(css, /#gptProductionTestView\s*\{[\s\S]*?overflow:\s*hidden/);
+  assert.match(css, /\.gpt-production-test-shell\s*\{[\s\S]*?height:\s*100%;[\s\S]*?min-height:\s*0;/);
+  assert.match(css, /\.gpt-production-test-library\s*\{[\s\S]*?overflow-y:\s*auto;[\s\S]*?overscroll-behavior:\s*contain;/);
+  assert.match(css, /body\[data-theme="midnight-glass"\] \.rail-tab\.active span\s*\{[\s\S]*?color:\s*inherit/);
 });
