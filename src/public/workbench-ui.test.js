@@ -175,6 +175,7 @@ test("low-output generation is a batch-level limit signal", () => {
   assert.match(app, /const lowOutputLimit = isLowOutputGptLimitMessage/);
   assert.match(app, /已识别为触顶征兆，本批暂停/);
   assert.match(app, /等待下一轮额度探测/);
+  assert.match(app, /本轮图片低于安全线，判定为触顶\/降级征兆/);
 });
 
 test("GPT material tree never presents an unloaded parent folder as a fake zero", () => {

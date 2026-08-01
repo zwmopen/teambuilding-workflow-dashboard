@@ -1823,8 +1823,9 @@ function recordActualGptLimit(message, accountId = activeGptAccountId, kind = "u
     message: String(message || "").slice(0, 500)
   };
   try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* private mode */ }
+  const lowOutputSignal = isLowOutputGptLimitMessage(message);
   showWorkbenchAssistantBubble(
-    `GPT 网页返回了真实限额提示，已暂停当前任务，不再盲目重试。上传本轮起点：${uploadCycleStartAt ? new Date(uploadCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}；生图本轮起点：${generationCycleStartAt ? new Date(generationCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}；最晚检查：${nextProbeAt ? new Date(nextProbeAt).toLocaleString("zh-CN", { hour12: false }) : "等待真实消耗后计算"}。`,
+    `${lowOutputSignal ? "本轮图片低于安全线，判定为触顶/降级征兆" : "GPT 网页返回了真实限额提示"}，已暂停当前批次，不再盲目重试。上传本轮起点：${uploadCycleStartAt ? new Date(uploadCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}；生图本轮起点：${generationCycleStartAt ? new Date(generationCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}；最晚检查：${nextProbeAt ? new Date(nextProbeAt).toLocaleString("zh-CN", { hour12: false }) : "等待真实消耗后计算"}。`,
     { duration: 0, persistent: true, tone: "warning" }
   );
   if (nextProbeAt) scheduleGptQuotaReminder(new Date(nextProbeAt).toISOString(), accountId);
