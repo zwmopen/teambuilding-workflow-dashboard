@@ -1675,13 +1675,19 @@
     await saveCheckpoint("作品打包完成", 96);
     reportWorkbenchProgress(task, "完成", 100, `已打包 ${downloadedImages} 张图片和小红书文案`);
     let archiveResult = null;
-    if (options.autoArchive !== false && task.entry.taskType === "material" && task.entry.materialPath) {
+    // Material rows from the local tree carry `entryKind` and `path`; bridge
+    // messages may carry `taskType` and `materialPath`.  Accept both shapes so
+    // a successful production always archives the exact source folder once,
+    // instead of silently leaving it in the source category.
+    const materialPath = String(task.entry.materialPath || task.entry.path || "").trim();
+    const isMaterialTask = task.entry.entryKind === "material" || task.entry.taskType === "material";
+    if (options.autoArchive !== false && isMaterialTask && materialPath) {
       reportWorkbenchProgress(task, "归档素材", 97, "作品已校验，正在登记使用次数并移动原素材");
       archiveResult = await api("/api/gpt-production/archive-material", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          entryPath: task.entry.materialPath,
+          entryPath: materialPath,
           requestId: task.entry.externalRequestId,
           templateId: task.entry.templateId || "",
           conversationUrl: location.href,

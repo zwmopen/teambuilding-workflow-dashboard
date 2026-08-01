@@ -947,6 +947,12 @@ function safeArchiveDestination(targetRoot, sourcePath, fingerprint) {
   return destination;
 }
 
+function materialUsageDirectoryName(usageCount) {
+  const count = Math.max(1, Number(usageCount) || 1);
+  const names = { 1: "一次", 2: "两次", 3: "三次" };
+  return `已使用${names[count] || `${count}次`}`;
+}
+
 function archiveMaterialAfterProduction(body = {}) {
   const settings = getWorkspaceSettings();
   const materialRoot = path.resolve(settings.materialRoot);
@@ -970,7 +976,7 @@ function archiveMaterialAfterProduction(body = {}) {
     status: "used",
     conversationUrl: body.conversationUrl
   }, { skipMetadataIncrement: true });
-  const targetRoot = path.join(materialRoot, `已上传 ${usageCount} 次`);
+  const targetRoot = path.join(materialRoot, materialUsageDirectoryName(usageCount));
   fs.mkdirSync(targetRoot, { recursive: true });
   const destination = safeArchiveDestination(targetRoot, sourcePath, usageRecord.fingerprint);
   if (path.resolve(path.dirname(sourcePath)).toLowerCase() !== path.resolve(targetRoot).toLowerCase()) {
@@ -5723,6 +5729,7 @@ module.exports = {
   checkMaterialUsage,
   moveWorkspaceEntry,
   materialUsageFingerprint,
+  materialUsageDirectoryName,
   materialFolderHash,
   inferMaterialMainTag,
   getLegacyMaterialEvidence,
