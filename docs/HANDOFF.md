@@ -10,6 +10,7 @@
 - Electron 原生层改动需要重启开发进程；普通前端、样式和服务端改动可直接刷新验证。重启不得删除 `C:\Users\z\AppData\Roaming\Electron`，浏览器档案 ID 与 `persist:teambuilding-gpt-production-*` 分区保持不变。
 - 当前运行地址 `http://127.0.0.1:4327/`，主源码位于 `src/`，独立 GPT 网页执行扩展仍以 `D:\AICode\工具开发\projects\teambuilding-gpt-production-extension` 为唯一真源，工作台内只保留发布同步副本。
 - 已确认下一项生产设计：模板区提供“链接模板／文件夹模板”切换。链接模板保存名称、ChatGPT 会话 URL 与可选浏览器绑定，直接复用已调教会话；文件夹模板上传真实母版图片和提示词初始化新会话。链接模板以模板库根目录的 `链接模板.txt` 为真源，界面手动维护与用户直接编辑 TXT 必须双向同步。实现和验收标准见 `docs/REGRESSION-CHECKLIST.md` 的 `TEMPLATE-001`。
+- 已确认生产模式需要完整的可编辑流程：右键模式名称或从生产设置进入，按触发条件编辑上传、确认、下载、请求文案、复制、打包和归档阶段；配置写入 `app-settings.json`，启动任务时冻结为批次快照。见 `WORKFLOW-001`。
 
 ### 已实现并验证
 
