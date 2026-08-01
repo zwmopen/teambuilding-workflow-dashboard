@@ -950,6 +950,36 @@ function restoreMainWindow() {
   mainWindow.focus();
 }
 
+let gptWindowRestoreTimer = null;
+function notifyWindowRestored(reason = "show") {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  clearTimeout(gptWindowRestoreTimer);
+  // A minimized BrowserWindow emits `restore`, not necessarily `show`.
+  // Wait until Chromium has laid the workbench out again before asking the
+  // renderer to re-attach the native GPT surface. This preserves the live
+  // page/session and avoids reloading ChatGPT just to recover its pixels.
+  gptWindowRestoreTimer = setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized() || !mainWindow.isVisible()) return;
+    const account = activeGptAccount();
+    if (account?.view && !account.view.webContents.isDestroyed()) {
+      try {
+        const bounds = account.view.getBounds();
+        mainWindow.contentView.removeChildView(account.view);
+        mainWindow.contentView.addChildView(account.view);
+        account.view.setBounds(bounds);
+        account.view.setBackgroundColor(embeddedGptPalette(gptThemeName).main);
+        account.view.setBorderRadius(16);
+        account.view.setVisible(false);
+        appendDesktopLog("gpt-surface-restored", `${reason} ${account.id} ${bounds.width}x${bounds.height}`);
+      } catch (error) {
+        appendDesktopLog("gpt-surface-restore-failed", `${reason} ${error.message}`);
+      }
+    }
+    mainWindow.webContents.send("desktop:window-restored", { reason });
+    if (assistantOverlayState.visible) assistantOverlayWindow?.showInactive();
+  }, 140);
+}
+
 async function requestExplicitQuit() {
   if (productionTaskActive && mainWindow) {
     const result = await dialog.showMessageBox(mainWindow, {
@@ -1066,8 +1096,10 @@ async function createWindow() {
     assistantOverlayWindow?.hide();
   });
   window.on("show", () => {
-    window.webContents.send("desktop:window-restored");
-    if (assistantOverlayState.visible) assistantOverlayWindow?.showInactive();
+    notifyWindowRestored("show");
+  });
+  window.on("restore", () => {
+    notifyWindowRestored("restore");
   });
   window.on("close", (event) => {
     if (isExplicitQuit) return;

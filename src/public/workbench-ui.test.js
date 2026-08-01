@@ -265,6 +265,15 @@ test("desktop close goes to tray without clearing GPT cache or login partitions"
   assert.match(desktopMain, /if \(!quitFlushCompleted\)/);
 });
 
+test("restoring a minimized workbench reattaches the live GPT surface without reloading it", () => {
+  assert.match(desktopMain, /window\.on\("restore",/);
+  assert.match(desktopMain, /notifyWindowRestored\("restore"\)/);
+  assert.match(desktopMain, /contentView\.removeChildView\(account\.view\)/);
+  assert.match(desktopMain, /contentView\.addChildView\(account\.view\)/);
+  assert.match(desktopMain, /desktop:window-restored/);
+  assert.doesNotMatch(desktopMain, /notifyWindowRestored[\s\S]{0,1800}reload\(/);
+});
+
 test("portable desktop copies runtime resources to a durable version directory before background service starts", () => {
   assert.match(desktopMain, /ensureDurableRuntimeResources/);
   assert.match(desktopMain, /durableRuntimeAppRoot/);
