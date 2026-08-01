@@ -19,16 +19,16 @@ test("GPT all-day settings preserve automatic restart and cross-midnight work ho
       launchAtLogin: true,
       continuousAutoStart: true,
       continuousWorkHoursEnabled: true,
-      continuousWorkStart: "08:00",
-      continuousWorkEnd: "01:00"
+      continuousWorkStart: "07:00",
+      continuousWorkEnd: "02:00"
     }
   });
   assert.equal(settings.gptAuto.mode, "all-day");
   assert.equal(settings.gptAuto.launchAtLogin, true);
   assert.equal(settings.gptAuto.continuousAutoStart, true);
   assert.equal(settings.gptAuto.continuousWorkHoursEnabled, true);
-  assert.equal(settings.gptAuto.continuousWorkStart, "08:00");
-  assert.equal(settings.gptAuto.continuousWorkEnd, "01:00");
+  assert.equal(settings.gptAuto.continuousWorkStart, "07:00");
+  assert.equal(settings.gptAuto.continuousWorkEnd, "02:00");
 });
 
 test("page settings keep safe defaults and clamp DIY values", () => {
@@ -52,7 +52,7 @@ test("page settings keep safe defaults and clamp DIY values", () => {
   assert.equal(settings.backup.frequency, "daily");
   assert.equal(settings.backup.intervalHours, 24);
   assert.equal(settings.backup.monthlyLargeFileLimitMb, 2560);
-  assert.equal(settings.gptAuto.mode, "automatic");
+  assert.equal(settings.gptAuto.mode, "all-day");
   assert.equal(settings.gptAuto.accounts[0].uploadLimit, 80);
 });
 

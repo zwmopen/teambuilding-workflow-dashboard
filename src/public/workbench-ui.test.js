@@ -24,7 +24,7 @@ test("GPT production exposes prompt and random current-session modes", () => {
 });
 
 test("GPT production exposes the all-day scheduled mode and low-usage material selection", () => {
-  assert.match(html, /value="all-day">单窗口全天自动/);
+  assert.match(html, /value="all-day">单窗口自动（永不停歇）/);
   assert.match(app, /async function prepareAllDayGptQueue/);
   assert.match(app, /isHiddenMaterialPath/);
   assert.match(app, /Number\(left\.item\.usageCount/);
@@ -38,8 +38,8 @@ test("GPT all-day production persists across restarts and obeys cross-midnight w
   assert.match(html, /id="gptContinuousAutoStart"/);
   assert.match(html, /id="gptLaunchAtLogin"/);
   assert.match(html, /id="gptContinuousWorkHoursEnabled"/);
-  assert.match(html, /id="gptContinuousWorkStart"[^>]*value="08:00"/);
-  assert.match(html, /id="gptContinuousWorkEnd"[^>]*value="01:00"/);
+  assert.match(html, /id="gptContinuousWorkStart"[^>]*value="07:00"/);
+  assert.match(html, /id="gptContinuousWorkEnd"[^>]*value="02:00"/);
   assert.match(app, /GPT_CONTINUOUS_RUN_STORAGE_KEY/);
   assert.match(app, /function getGptContinuousWorkWindow/);
   assert.match(app, /const crossesMidnight = startMinutes > endMinutes/);
@@ -47,6 +47,8 @@ test("GPT all-day production persists across restarts and obeys cross-midnight w
   assert.match(app, /window\.addEventListener\("online"/);
   assert.match(app, /document\.addEventListener\("visibilitychange"/);
   assert.match(app, /gptAutoSettings\.continuousAutoStart !== false/);
+  assert.match(app, /GPT_DEFAULT_MODE_MIGRATION_KEY/);
+  assert.match(app, /openPageSettings\("gptAuto"\)/);
   assert.match(desktopPreload, /setLaunchAtLogin/);
   assert.match(desktopMain, /app\.setLoginItemSettings/);
 });

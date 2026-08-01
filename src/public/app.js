@@ -87,6 +87,7 @@ let assistantMuteUntil = Number(localStorage.getItem("tb-workbench-assistant-mut
 let assistantMuteTimer = null;
 const GPT_ACCOUNTS_STORAGE_KEY = "teambuilding-gpt-accounts";
 const GPT_AUTO_SETTINGS_STORAGE_KEY = "teambuilding-gpt-auto-settings";
+const GPT_DEFAULT_MODE_MIGRATION_KEY = "teambuilding-gpt-default-mode-endless-v1";
 const GPT_QUEUE_STORAGE_KEY = "teambuilding-gpt-queue-v1";
 const GPT_CONTINUOUS_RUN_STORAGE_KEY = "teambuilding-gpt-continuous-run-v1";
 const GPT_HISTORY_STORAGE_KEY = "teambuilding-gpt-production-history-v1";
@@ -208,7 +209,7 @@ function loadGptAutoSettings() {
     return /(?:^|[\\/])(?:_测试验收|验收)(?:[\\/]|$)/i.test(path) ? fallback : (path || fallback);
   };
   const defaults = {
-    mode: "automatic",
+    mode: "all-day",
     autoConfirm: true,
     autoCopy: true,
     autoPackage: true,
@@ -239,8 +240,8 @@ function loadGptAutoSettings() {
     launchAtLogin: true,
     continuousAutoStart: true,
     continuousWorkHoursEnabled: true,
-    continuousWorkStart: "08:00",
-    continuousWorkEnd: "01:00"
+    continuousWorkStart: "07:00",
+    continuousWorkEnd: "02:00"
   };
   try {
     const loaded = {
@@ -287,8 +288,8 @@ function renderGptAutoSettings() {
   if ($("#gptLaunchAtLogin")) $("#gptLaunchAtLogin").checked = values.launchAtLogin !== false;
   if ($("#gptContinuousAutoStart")) $("#gptContinuousAutoStart").checked = values.continuousAutoStart !== false;
   if ($("#gptContinuousWorkHoursEnabled")) $("#gptContinuousWorkHoursEnabled").checked = values.continuousWorkHoursEnabled !== false;
-  if ($("#gptContinuousWorkStart")) $("#gptContinuousWorkStart").value = values.continuousWorkStart || "08:00";
-  if ($("#gptContinuousWorkEnd")) $("#gptContinuousWorkEnd").value = values.continuousWorkEnd || "01:00";
+  if ($("#gptContinuousWorkStart")) $("#gptContinuousWorkStart").value = values.continuousWorkStart || "07:00";
+  if ($("#gptContinuousWorkEnd")) $("#gptContinuousWorkEnd").value = values.continuousWorkEnd || "02:00";
   if ($("#gptDownloadRoot")) $("#gptDownloadRoot").value = values.downloadRoot;
   if ($("#gptProductRoot")) $("#gptProductRoot").value = values.productRoot;
   if ($("#gptPromptLibraryEnabled")) $("#gptPromptLibraryEnabled").checked = values.promptLibraryEnabled !== false;
@@ -332,8 +333,8 @@ function saveGptAutoSettings() {
     launchAtLogin: $("#gptLaunchAtLogin")?.checked !== false,
     continuousAutoStart: $("#gptContinuousAutoStart")?.checked !== false,
     continuousWorkHoursEnabled: $("#gptContinuousWorkHoursEnabled")?.checked !== false,
-    continuousWorkStart: String($("#gptContinuousWorkStart")?.value || "08:00"),
-    continuousWorkEnd: String($("#gptContinuousWorkEnd")?.value || "01:00")
+    continuousWorkStart: String($("#gptContinuousWorkStart")?.value || "07:00"),
+    continuousWorkEnd: String($("#gptContinuousWorkEnd")?.value || "02:00")
   };
   localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
   window.gptWorkbench?.setLaunchAtLogin?.(gptAutoSettings.launchAtLogin !== false).catch(() => {});
@@ -682,6 +683,26 @@ async function loadDashboard(force = false, libraryPath = "") {
       windowHours: activeAccountSettings.windowHours ?? gptAutoSettings.windowHours
     };
     localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
+  }
+  if (localStorage.getItem(GPT_DEFAULT_MODE_MIGRATION_KEY) !== "done") {
+    gptAutoSettings = {
+      ...gptAutoSettings,
+      mode: "all-day",
+      launchAtLogin: true,
+      continuousAutoStart: true,
+      continuousWorkHoursEnabled: true,
+      continuousWorkStart: "07:00",
+      continuousWorkEnd: "02:00"
+    };
+    localStorage.setItem(GPT_DEFAULT_MODE_MIGRATION_KEY, "done");
+    localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
+    api("/api/page-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gptAuto: gptAutoSettings })
+    }).then((result) => {
+      if (dashboard?.workspaceSettings) dashboard.workspaceSettings.pageSettings = result.settings;
+    }).catch(() => {});
   }
   if (previousCategories && dashboard?.materials?.categories) {
     dashboard.materials.categories = dashboard.materials.categories.map((category) => {
@@ -1693,18 +1714,23 @@ function getGptContinuousWorkWindow(now = new Date()) {
   if (gptAutoSettings.continuousWorkHoursEnabled === false) {
     return { allowed: true, nextStartAt: null };
   }
-  const startMinutes = parseGptWorkTime(gptAutoSettings.continuousWorkStart, "08:00");
-  const endMinutes = parseGptWorkTime(gptAutoSettings.continuousWorkEnd, "01:00");
+  const startMinutes = parseGptWorkTime(gptAutoSettings.continuousWorkStart, "07:00");
+  const endMinutes = parseGptWorkTime(gptAutoSettings.continuousWorkEnd, "02:00");
   if (startMinutes === endMinutes) return { allowed: true, nextStartAt: null };
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const beijingNow = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+  const currentMinutes = beijingNow.getUTCHours() * 60 + beijingNow.getUTCMinutes();
   const crossesMidnight = startMinutes > endMinutes;
   const allowed = crossesMidnight
     ? currentMinutes >= startMinutes || currentMinutes < endMinutes
     : currentMinutes >= startMinutes && currentMinutes < endMinutes;
   if (allowed) return { allowed: true, nextStartAt: null };
-  const nextStartAt = new Date(now);
-  nextStartAt.setHours(Math.floor(startMinutes / 60), startMinutes % 60, 0, 0);
-  if (!crossesMidnight && currentMinutes >= endMinutes) nextStartAt.setDate(nextStartAt.getDate() + 1);
+  const minutesUntilStart = currentMinutes < startMinutes
+    ? startMinutes - currentMinutes
+    : 24 * 60 - currentMinutes + startMinutes;
+  const nextStartAt = new Date(now.getTime()
+    - now.getUTCSeconds() * 1000
+    - now.getUTCMilliseconds()
+    + minutesUntilStart * 60_000);
   return { allowed: false, nextStartAt };
 }
 
@@ -1716,7 +1742,7 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
   if (!workWindow.allowed) {
     const nextStartAt = workWindow.nextStartAt;
     const waitMs = Math.max(1500, Number(nextStartAt?.getTime() || 0) - Date.now() + 1000);
-    showWorkbenchAssistantBubble(`当前是休息时段，全天自动将在 ${nextStartAt?.toLocaleString("zh-CN", { hour12: false })} 继续。`, { duration: 0 });
+    showWorkbenchAssistantBubble(`当前是休息时段，永不停歇模式将在北京时间 ${nextStartAt?.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })} 继续。`, { duration: 0 });
     gptContinuousLaunchTimer = setTimeout(() => {
       gptContinuousLaunchTimer = null;
       scheduleContinuousGptProduction(1500);
@@ -7557,6 +7583,11 @@ function bindEvents() {
       showWorkbenchAssistantBubble("已收到手动继续指令：本地额度提醒不再拦截本轮，网页真实返回限流时才停止。", { duration: 5200 });
     }
     sendNextGptTestTask({ allowQuotaOverride, userInitiated: true });
+  });
+  $("#gptProductionMode")?.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openPageSettings("gptAuto");
+    showWorkbenchAssistantBubble("已打开当前生产模式设置，可修改永不停歇工作时段和自动恢复规则。", { duration: 3600 });
   });
   $("#gptManualNextBtn")?.addEventListener("click", completeCurrentManualGptTask);
   $("#gptPauseQueueBtn")?.addEventListener("click", () => {

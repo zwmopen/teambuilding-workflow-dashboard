@@ -34,7 +34,7 @@ const DEFAULT_PAGE_SETTINGS = Object.freeze({
     sourceRoot: ""
   },
   gptAuto: {
-    mode: "automatic",
+    mode: "all-day",
     autoConfirm: true,
     autoCopy: true,
     autoPackage: true,
@@ -48,8 +48,8 @@ const DEFAULT_PAGE_SETTINGS = Object.freeze({
     launchAtLogin: true,
     continuousAutoStart: true,
     continuousWorkHoursEnabled: true,
-    continuousWorkStart: "08:00",
-    continuousWorkEnd: "01:00",
+    continuousWorkStart: "07:00",
+    continuousWorkEnd: "02:00",
     accounts: [{ id: "account-1", name: "账号 1", uploadLimit: 80, generationLimit: 50, windowHours: 3 }]
   }
 });
@@ -113,7 +113,8 @@ function normalizePageSettings(value = {}) {
       sourceRoot: String(backup.sourceRoot || "").trim().slice(0, 1000)
     },
     gptAuto: {
-      mode: ["manual", "multi", "random", "all-day", "scheduled"].includes(gptAuto.mode) ? gptAuto.mode : "automatic",
+      mode: ["manual", "multi", "random", "all-day", "scheduled"].includes(gptAuto.mode)
+        ? gptAuto.mode : DEFAULT_PAGE_SETTINGS.gptAuto.mode,
       autoConfirm: gptAuto.autoConfirm !== false,
       autoCopy: gptAuto.autoCopy !== false,
       autoPackage: gptAuto.autoPackage !== false,
