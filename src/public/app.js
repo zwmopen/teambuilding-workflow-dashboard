@@ -75,6 +75,7 @@ let gptLastFailedTask = null;
 let gptLastFailedStage = "";
 let gptLastFailedPercent = 0;
 let gptQuotaSnapshot = null;
+let gptContinuousLaunchTimer = null;
 let assistantBubbleTimer = null;
 let assistantSuppressClickUntil = 0;
 const ASSISTANT_PERSISTENT_MESSAGE_KEY = "tb-workbench-assistant-persistent-message-v1";
@@ -87,6 +88,7 @@ let assistantMuteTimer = null;
 const GPT_ACCOUNTS_STORAGE_KEY = "teambuilding-gpt-accounts";
 const GPT_AUTO_SETTINGS_STORAGE_KEY = "teambuilding-gpt-auto-settings";
 const GPT_QUEUE_STORAGE_KEY = "teambuilding-gpt-queue-v1";
+const GPT_CONTINUOUS_RUN_STORAGE_KEY = "teambuilding-gpt-continuous-run-v1";
 const GPT_HISTORY_STORAGE_KEY = "teambuilding-gpt-production-history-v1";
 let gptProductionHistory = (() => {
   try {
@@ -115,6 +117,16 @@ function persistGptQueue() {
       _percent: Number(task._percent || 0)
     }))
   }));
+}
+
+function isContinuousGptProductionArmed() {
+  return gptAutoSettings.mode === "all-day"
+    && localStorage.getItem(GPT_CONTINUOUS_RUN_STORAGE_KEY) === "true";
+}
+
+function setContinuousGptProductionArmed(armed) {
+  if (armed) localStorage.setItem(GPT_CONTINUOUS_RUN_STORAGE_KEY, "true");
+  else localStorage.removeItem(GPT_CONTINUOUS_RUN_STORAGE_KEY);
 }
 
 function restoreGptQueue() {
@@ -223,7 +235,12 @@ function loadGptAutoSettings() {
     scheduledEnabled: false,
     scheduledTime: "09:30",
     scheduledJitterMinutes: 10,
-    schedulePlan: "09:30,8"
+    schedulePlan: "09:30,8",
+    launchAtLogin: true,
+    continuousAutoStart: true,
+    continuousWorkHoursEnabled: true,
+    continuousWorkStart: "08:00",
+    continuousWorkEnd: "01:00"
   };
   try {
     const loaded = {
@@ -267,6 +284,11 @@ function renderGptAutoSettings() {
   if ($("#gptScheduledTime")) $("#gptScheduledTime").value = values.scheduledTime || "09:30";
   if ($("#gptScheduledJitter")) $("#gptScheduledJitter").value = values.scheduledJitterMinutes ?? 10;
   if ($("#gptSchedulePlan")) $("#gptSchedulePlan").value = values.schedulePlan || "09:30,8";
+  if ($("#gptLaunchAtLogin")) $("#gptLaunchAtLogin").checked = values.launchAtLogin !== false;
+  if ($("#gptContinuousAutoStart")) $("#gptContinuousAutoStart").checked = values.continuousAutoStart !== false;
+  if ($("#gptContinuousWorkHoursEnabled")) $("#gptContinuousWorkHoursEnabled").checked = values.continuousWorkHoursEnabled !== false;
+  if ($("#gptContinuousWorkStart")) $("#gptContinuousWorkStart").value = values.continuousWorkStart || "08:00";
+  if ($("#gptContinuousWorkEnd")) $("#gptContinuousWorkEnd").value = values.continuousWorkEnd || "01:00";
   if ($("#gptDownloadRoot")) $("#gptDownloadRoot").value = values.downloadRoot;
   if ($("#gptProductRoot")) $("#gptProductRoot").value = values.productRoot;
   if ($("#gptPromptLibraryEnabled")) $("#gptPromptLibraryEnabled").checked = values.promptLibraryEnabled !== false;
@@ -306,9 +328,15 @@ function saveGptAutoSettings() {
     scheduledEnabled: Boolean($("#gptScheduledEnabled")?.checked),
     scheduledTime: String($("#gptScheduledTime")?.value || "09:30"),
     scheduledJitterMinutes: Math.max(0, Math.min(60, Number($("#gptScheduledJitter")?.value || 0))),
-    schedulePlan: String($("#gptSchedulePlan")?.value || "09:30,8").trim() || "09:30,8"
+    schedulePlan: String($("#gptSchedulePlan")?.value || "09:30,8").trim() || "09:30,8",
+    launchAtLogin: $("#gptLaunchAtLogin")?.checked !== false,
+    continuousAutoStart: $("#gptContinuousAutoStart")?.checked !== false,
+    continuousWorkHoursEnabled: $("#gptContinuousWorkHoursEnabled")?.checked !== false,
+    continuousWorkStart: String($("#gptContinuousWorkStart")?.value || "08:00"),
+    continuousWorkEnd: String($("#gptContinuousWorkEnd")?.value || "01:00")
   };
   localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
+  window.gptWorkbench?.setLaunchAtLogin?.(gptAutoSettings.launchAtLogin !== false).catch(() => {});
   renderGptAutoSettings();
   if (dashboard?.workspaceSettings?.pageSettings) {
     const existingAccounts = dashboard.workspaceSettings.pageSettings.gptAuto?.accounts || [];
@@ -1653,6 +1681,76 @@ async function prepareAllDayGptQueue() {
   return prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "全天自动");
 }
 
+function parseGptWorkTime(value, fallback) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || fallback || ""));
+  if (!match) return parseGptWorkTime(fallback === value ? "00:00" : fallback, "00:00");
+  const hour = Math.max(0, Math.min(23, Number(match[1])));
+  const minute = Math.max(0, Math.min(59, Number(match[2])));
+  return hour * 60 + minute;
+}
+
+function getGptContinuousWorkWindow(now = new Date()) {
+  if (gptAutoSettings.continuousWorkHoursEnabled === false) {
+    return { allowed: true, nextStartAt: null };
+  }
+  const startMinutes = parseGptWorkTime(gptAutoSettings.continuousWorkStart, "08:00");
+  const endMinutes = parseGptWorkTime(gptAutoSettings.continuousWorkEnd, "01:00");
+  if (startMinutes === endMinutes) return { allowed: true, nextStartAt: null };
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const crossesMidnight = startMinutes > endMinutes;
+  const allowed = crossesMidnight
+    ? currentMinutes >= startMinutes || currentMinutes < endMinutes
+    : currentMinutes >= startMinutes && currentMinutes < endMinutes;
+  if (allowed) return { allowed: true, nextStartAt: null };
+  const nextStartAt = new Date(now);
+  nextStartAt.setHours(Math.floor(startMinutes / 60), startMinutes % 60, 0, 0);
+  if (!crossesMidnight && currentMinutes >= endMinutes) nextStartAt.setDate(nextStartAt.getDate() + 1);
+  return { allowed: false, nextStartAt };
+}
+
+function scheduleContinuousGptProduction(delayMs = 2500) {
+  if (gptContinuousLaunchTimer) return;
+  if (!isContinuousGptProductionArmed() || gptAutoRunning || gptAutoPaused) return;
+
+  const workWindow = getGptContinuousWorkWindow();
+  if (!workWindow.allowed) {
+    const nextStartAt = workWindow.nextStartAt;
+    const waitMs = Math.max(1500, Number(nextStartAt?.getTime() || 0) - Date.now() + 1000);
+    showWorkbenchAssistantBubble(`当前是休息时段，全天自动将在 ${nextStartAt?.toLocaleString("zh-CN", { hour12: false })} 继续。`, { duration: 0 });
+    gptContinuousLaunchTimer = setTimeout(() => {
+      gptContinuousLaunchTimer = null;
+      scheduleContinuousGptProduction(1500);
+    }, Math.min(waitMs, 2_147_000_000));
+    return;
+  }
+
+  const account = gptAccounts.find((item) => item.id === activeGptAccountId);
+  const quotaAccountId = account?.quotaGroup || account?.id || activeGptAccountId;
+  const cycleState = readGptCycleState(quotaAccountId);
+  if (Number(cycleState.nextProbeAt || 0) > Date.now()) {
+    scheduleGptQuotaReminder(new Date(Number(cycleState.nextProbeAt)).toISOString(), quotaAccountId);
+    return;
+  }
+
+  gptContinuousLaunchTimer = setTimeout(async () => {
+    gptContinuousLaunchTimer = null;
+    if (!isContinuousGptProductionArmed() || gptAutoRunning || gptAutoPaused) return;
+    let hasPendingQueue = gptTestQueueIndex < gptTestQueue.length;
+    if (!hasPendingQueue) {
+      hasPendingQueue = Boolean(await prepareAllDayGptQueue());
+    }
+    if (!hasPendingQueue) {
+      showWorkbenchAssistantBubble("全天自动仍在运行，但素材库暂时没有可用帖子；10 分钟后再扫描。", { duration: 0 });
+      scheduleContinuousGptProduction(10 * 60_000);
+      return;
+    }
+    gptQueuePaused = gptTestQueueIndex < gptTestQueue.length;
+    persistGptQueue();
+    showWorkbenchAssistantBubble("全天自动正在继续下一批素材。", { duration: 0 });
+    await sendNextGptTestTask({ continuousResume: true });
+  }, Math.max(1500, Number(delayMs || 0)));
+}
+
 function buildGptTemplateInitTask(template) {
   return {
     requestId: `gpt-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1862,6 +1960,14 @@ async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
   const state = readGptCycleState(key);
   if (Number(state.nextProbeAt || 0) !== Number(expectedProbeAt || 0)) return;
   if (gptAutoSettings.mode === "manual") return;
+  if (gptAutoSettings.mode === "all-day") {
+    if (!isContinuousGptProductionArmed()) return;
+    const workWindow = getGptContinuousWorkWindow();
+    if (!workWindow.allowed) {
+      scheduleContinuousGptProduction();
+      return;
+    }
+  }
   if (gptAutoRunning) {
     clearTimeout(gptQuotaReminderTimers.get(key));
     gptQuotaReminderTimers.set(key, setTimeout(() => {
@@ -2425,6 +2531,9 @@ async function sendMultiWindowGptTasks() {
 async function sendNextGptTestTask(options = {}) {
   if (!window.gptWorkbench?.available || gptAutoRunning) return;
   if (gptAutoSettings.mode === "multi") return sendMultiWindowGptTasks();
+  if (gptAutoSettings.mode === "all-day" && options.userInitiated) {
+    setContinuousGptProductionArmed(true);
+  }
   if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
     gptTestQueue = buildGptProductionQueue();
     gptTestQueueIndex = 0;
@@ -2612,6 +2721,9 @@ async function sendNextGptTestTask(options = {}) {
     persistGptQueue();
     updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
     refreshGptQuota();
+    if (isContinuousGptProductionArmed() && !gptQueuePaused && gptTestQueueIndex >= gptTestQueue.length) {
+      scheduleContinuousGptProduction();
+    }
   }
 }
 
@@ -7432,23 +7544,33 @@ function bindEvents() {
     gptTestQueueIndex = 0;
     updateGptTestQueueStatus();
   });
-  $("#gptTestSendBtn")?.addEventListener("click", () => {
+  $("#gptTestSendBtn")?.addEventListener("click", async () => {
+    if (gptAutoSettings.mode === "all-day") {
+      setContinuousGptProductionArmed(true);
+      if (gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
+        await prepareAllDayGptQueue();
+      }
+    }
     const pausedTaskError = String(gptLastFailedTask?._error || "");
     const allowQuotaOverride = gptQueuePaused && /额度|限额|quota|rate limit|usage limit/i.test(pausedTaskError);
     if (allowQuotaOverride) {
       showWorkbenchAssistantBubble("已收到手动继续指令：本地额度提醒不再拦截本轮，网页真实返回限流时才停止。", { duration: 5200 });
     }
-    sendNextGptTestTask({ allowQuotaOverride });
+    sendNextGptTestTask({ allowQuotaOverride, userInitiated: true });
   });
   $("#gptManualNextBtn")?.addEventListener("click", completeCurrentManualGptTask);
   $("#gptPauseQueueBtn")?.addEventListener("click", () => {
     if (!gptAutoRunning && gptQueuePaused) {
+      if (gptAutoSettings.mode === "all-day") setContinuousGptProductionArmed(true);
       const pausedTaskError = String(gptLastFailedTask?._error || "");
       const allowQuotaOverride = /额度|限额|quota|rate limit|usage limit/i.test(pausedTaskError);
-      sendNextGptTestTask({ allowQuotaOverride });
+      sendNextGptTestTask({ allowQuotaOverride, userInitiated: true });
       return;
     }
     if (!gptAutoRunning) return;
+    setContinuousGptProductionArmed(false);
+    clearTimeout(gptContinuousLaunchTimer);
+    gptContinuousLaunchTimer = null;
     gptAutoPaused = true;
     persistGptQueue();
     updateGptTestQueueStatus("将在当前阶段安全结束后暂停");
@@ -7506,7 +7628,8 @@ function bindEvents() {
     "#gptProductionModeSetting", "#gptAutoArchiveEnabled", "#gptQuotaReminderEnabled", "#gptAutoMinDelay", "#gptAutoMaxDelay",
     "#gptAutoTaskTimeout", "#gptAutoAccountLimit", "#gptParallelWorkers", "#gptUploadLimit", "#gptGenerationLimit", "#gptQuotaWindowHours",
     "#gptMinimumImageCount", "#gptConfirmText", "#gptCopyPrompt", "#gptIdleUnloadMinutes", "#gptDownloadRoot", "#gptProductRoot",
-    "#gptPromptLibraryEnabled", "#gptMessageDownloadsEnabled", "#gptScheduledEnabled", "#gptScheduledTime", "#gptScheduledJitter"
+    "#gptPromptLibraryEnabled", "#gptMessageDownloadsEnabled", "#gptScheduledEnabled", "#gptScheduledTime", "#gptScheduledJitter",
+    "#gptLaunchAtLogin", "#gptContinuousAutoStart", "#gptContinuousWorkHoursEnabled", "#gptContinuousWorkStart", "#gptContinuousWorkEnd"
   ].forEach((selector) => {
     $(selector)?.addEventListener("change", () => {
       if (gptAutoRunning) {
@@ -7515,6 +7638,16 @@ function bindEvents() {
         return;
       }
       saveGptAutoSettings();
+      if (gptAutoSettings.mode === "all-day" && gptAutoSettings.continuousAutoStart !== false) {
+        setContinuousGptProductionArmed(true);
+        clearTimeout(gptContinuousLaunchTimer);
+        gptContinuousLaunchTimer = null;
+        scheduleContinuousGptProduction();
+      } else if (gptAutoSettings.mode !== "all-day") {
+        setContinuousGptProductionArmed(false);
+        clearTimeout(gptContinuousLaunchTimer);
+        gptContinuousLaunchTimer = null;
+      }
       gptTestQueue = [];
       gptTestQueueIndex = 0;
       gptCurrentManualTask = null;
@@ -7913,6 +8046,22 @@ loadDashboard()
     window.setInterval(checkScheduledGptProduction, 30_000);
     checkScheduledGptProduction();
     restoreGptQuotaProbeTimers();
+    if (gptAutoSettings.mode === "all-day" && gptAutoSettings.continuousAutoStart !== false) {
+      setContinuousGptProductionArmed(true);
+      scheduleContinuousGptProduction(1800);
+    }
+    window.gptWorkbench?.setLaunchAtLogin?.(gptAutoSettings.launchAtLogin !== false).catch(() => {});
+    window.addEventListener("online", () => {
+      if (isContinuousGptProductionArmed()) scheduleContinuousGptProduction(1500);
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && isContinuousGptProductionArmed()) scheduleContinuousGptProduction(1500);
+    });
+    window.setInterval(() => {
+      if (isContinuousGptProductionArmed() && !gptAutoRunning && !gptAutoPaused) {
+        scheduleContinuousGptProduction(1500);
+      }
+    }, 60_000);
     window.setInterval(() => refreshExpandedGptMaterialTrees().catch(() => {}), 15_000);
     window.setInterval(() => {
       window.gptWorkbench?.releaseIdle?.(gptAutoSettings.idleUnloadMinutes || 30).catch(() => {});

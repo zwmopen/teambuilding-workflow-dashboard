@@ -34,6 +34,23 @@ test("GPT production exposes the all-day scheduled mode and low-usage material s
   assert.match(server, /scanPostFolders\(categoryRoot, \{ includeHidden: true \}\)/);
 });
 
+test("GPT all-day production persists across restarts and obeys cross-midnight work hours", () => {
+  assert.match(html, /id="gptContinuousAutoStart"/);
+  assert.match(html, /id="gptLaunchAtLogin"/);
+  assert.match(html, /id="gptContinuousWorkHoursEnabled"/);
+  assert.match(html, /id="gptContinuousWorkStart"[^>]*value="08:00"/);
+  assert.match(html, /id="gptContinuousWorkEnd"[^>]*value="01:00"/);
+  assert.match(app, /GPT_CONTINUOUS_RUN_STORAGE_KEY/);
+  assert.match(app, /function getGptContinuousWorkWindow/);
+  assert.match(app, /const crossesMidnight = startMinutes > endMinutes/);
+  assert.match(app, /function scheduleContinuousGptProduction/);
+  assert.match(app, /window\.addEventListener\("online"/);
+  assert.match(app, /document\.addEventListener\("visibilitychange"/);
+  assert.match(app, /gptAutoSettings\.continuousAutoStart !== false/);
+  assert.match(desktopPreload, /setLaunchAtLogin/);
+  assert.match(desktopMain, /app\.setLoginItemSettings/);
+});
+
 test("GPT production exposes explicit material refresh and multi-slot scheduled mode", () => {
   assert.match(html, /id="gptTestMaterialRefreshBtn"/);
   assert.match(html, /value="scheduled">定时启动/);

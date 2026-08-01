@@ -682,6 +682,30 @@ ipcMain.handle("desktop:production-active", async (_event, active = false) => {
   return { ok: true, active: productionTaskActive };
 });
 
+function launchAtLoginOptions(openAtLogin) {
+  if (app.isPackaged) return { openAtLogin: Boolean(openAtLogin) };
+  return {
+    openAtLogin: Boolean(openAtLogin),
+    path: process.execPath,
+    args: [path.resolve(__dirname, "..")]
+  };
+}
+
+ipcMain.handle("desktop:launch-at-login-get", async () => {
+  if (process.platform !== "win32") return { supported: false, enabled: false };
+  const options = launchAtLoginOptions(true);
+  const state = app.getLoginItemSettings({ path: options.path, args: options.args });
+  return { supported: true, enabled: Boolean(state.openAtLogin) };
+});
+
+ipcMain.handle("desktop:launch-at-login-set", async (_event, enabled = false) => {
+  if (process.platform !== "win32") return { supported: false, enabled: false };
+  app.setLoginItemSettings(launchAtLoginOptions(enabled));
+  const state = app.getLoginItemSettings(launchAtLoginOptions(enabled));
+  appendDesktopLog("launch-at-login", `enabled=${Boolean(state.openAtLogin)}`);
+  return { supported: true, enabled: Boolean(state.openAtLogin) };
+});
+
 ipcMain.handle("desktop:notify", async (_event, input = {}) => {
   if (!Notification.isSupported()) return { ok: false };
   new Notification({

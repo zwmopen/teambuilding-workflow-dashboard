@@ -12,6 +12,25 @@ test("GPT production settings preserve random no-prompt mode", () => {
   assert.equal(settings.gptAuto.mode, "random");
 });
 
+test("GPT all-day settings preserve automatic restart and cross-midnight work hours", () => {
+  const settings = normalizePageSettings({
+    gptAuto: {
+      mode: "all-day",
+      launchAtLogin: true,
+      continuousAutoStart: true,
+      continuousWorkHoursEnabled: true,
+      continuousWorkStart: "08:00",
+      continuousWorkEnd: "01:00"
+    }
+  });
+  assert.equal(settings.gptAuto.mode, "all-day");
+  assert.equal(settings.gptAuto.launchAtLogin, true);
+  assert.equal(settings.gptAuto.continuousAutoStart, true);
+  assert.equal(settings.gptAuto.continuousWorkHoursEnabled, true);
+  assert.equal(settings.gptAuto.continuousWorkStart, "08:00");
+  assert.equal(settings.gptAuto.continuousWorkEnd, "01:00");
+});
+
 test("page settings keep safe defaults and clamp DIY values", () => {
   const settings = normalizePageSettings({
     production: { reserveThreshold: 0, itemsPerCollection: 200, compressCollections: true },

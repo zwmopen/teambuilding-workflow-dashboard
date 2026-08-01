@@ -45,6 +45,11 @@ const DEFAULT_PAGE_SETTINGS = Object.freeze({
     maxDelaySeconds: 55,
     taskTimeoutMinutes: 30,
     accountTaskLimit: 8,
+    launchAtLogin: true,
+    continuousAutoStart: true,
+    continuousWorkHoursEnabled: true,
+    continuousWorkStart: "08:00",
+    continuousWorkEnd: "01:00",
     accounts: [{ id: "account-1", name: "账号 1", uploadLimit: 80, generationLimit: 50, windowHours: 3 }]
   }
 });
@@ -108,7 +113,7 @@ function normalizePageSettings(value = {}) {
       sourceRoot: String(backup.sourceRoot || "").trim().slice(0, 1000)
     },
     gptAuto: {
-      mode: ["manual", "multi", "random", "all-day"].includes(gptAuto.mode) ? gptAuto.mode : "automatic",
+      mode: ["manual", "multi", "random", "all-day", "scheduled"].includes(gptAuto.mode) ? gptAuto.mode : "automatic",
       autoConfirm: gptAuto.autoConfirm !== false,
       autoCopy: gptAuto.autoCopy !== false,
       autoPackage: gptAuto.autoPackage !== false,
@@ -119,6 +124,13 @@ function normalizePageSettings(value = {}) {
       maxDelaySeconds: clampInteger(gptAuto.maxDelaySeconds, 55, 5, 900),
       taskTimeoutMinutes: clampInteger(gptAuto.taskTimeoutMinutes, 30, 5, 90),
       accountTaskLimit: clampInteger(gptAuto.accountTaskLimit, 8, 1, 50),
+      launchAtLogin: gptAuto.launchAtLogin !== false,
+      continuousAutoStart: gptAuto.continuousAutoStart !== false,
+      continuousWorkHoursEnabled: gptAuto.continuousWorkHoursEnabled !== false,
+      continuousWorkStart: /^\d{2}:\d{2}$/.test(String(gptAuto.continuousWorkStart || ""))
+        ? String(gptAuto.continuousWorkStart) : DEFAULT_PAGE_SETTINGS.gptAuto.continuousWorkStart,
+      continuousWorkEnd: /^\d{2}:\d{2}$/.test(String(gptAuto.continuousWorkEnd || ""))
+        ? String(gptAuto.continuousWorkEnd) : DEFAULT_PAGE_SETTINGS.gptAuto.continuousWorkEnd,
       accounts: (Array.isArray(gptAuto.accounts) ? gptAuto.accounts : DEFAULT_PAGE_SETTINGS.gptAuto.accounts)
         .filter((account) => account && /^[a-z0-9_-]+$/i.test(String(account.id || "")))
         .slice(0, 8)

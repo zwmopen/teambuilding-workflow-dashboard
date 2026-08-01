@@ -96,6 +96,12 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   setProductionActive(active = false) {
     return ipcRenderer.invoke("desktop:production-active", Boolean(active));
   },
+  getLaunchAtLogin() {
+    return ipcRenderer.invoke("desktop:launch-at-login-get");
+  },
+  setLaunchAtLogin(enabled = false) {
+    return ipcRenderer.invoke("desktop:launch-at-login-set", Boolean(enabled));
+  },
   notify(input = "", body = "") {
     const payload = input && typeof input === "object"
       ? input

@@ -722,11 +722,16 @@
               <label><span>定时启动时间</span><input id="gptScheduledTime" type="time" value="09:30" /></label>
               <label><span>启动延迟范围（分钟）</span><input id="gptScheduledJitter" type="number" min="0" max="60" value="10" /></label>
               <label class="settings-wide-field"><span>定时启动计划</span><textarea id="gptSchedulePlan" rows="3" placeholder="09:00,5\n14:00,5">09:30,8</textarea><small>每行一个时间点：时间,帖子数；定时启动模式会优先选择使用次数较低的素材。</small></label>
+              <label><span>全天自动开始时间</span><input id="gptContinuousWorkStart" type="time" value="08:00" /></label>
+              <label><span>全天自动停止时间</span><input id="gptContinuousWorkEnd" type="time" value="01:00" /><small>支持跨午夜；到点后不再启动新作品，当前作品会安全完成。</small></label>
                   <label><span>下载暂存目录</span><div class="inline-setting-control"><input id="gptDownloadRoot" type="text" value="D:\Download" /><button id="chooseGptDownloadRootBtn" type="button">选择</button></div></label>
                   <label><span>成品库目录</span><div class="inline-setting-control"><input id="gptProductRoot" type="text" value="D:\AICode\项目推进\projects\江湖有旅人\主项目\成品库（GPT+本地脚本制作）" /><button id="chooseGptProductRootBtn" type="button">选择</button></div></label>
             </div>
             <label class="switch-setting"><span><b>网页内提示词库</b><small>在 GPT 输入区显示可点击的提示词入口</small></span><input id="gptPromptLibraryEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>网页内下载与打包按钮</b><small>按当前回复绑定下载本组和下载并打包</small></span><input id="gptMessageDownloadsEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>Windows 登录后启动工作台</b><small>启动后会退到后台并按全天自动设置恢复，不会清理 GPT 登录状态。</small></span><input id="gptLaunchAtLogin" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>打开工作台后自动继续</b><small>仅对“单窗口全天自动”生效；开机、联网或合盖唤醒后会从上次检查点继续。</small></span><input id="gptContinuousAutoStart" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>仅在工作时段启动新任务</b><small>默认 08:00 至次日 01:00；休息时段保持等待，不消耗上传或生图额度。</small></span><input id="gptContinuousWorkHoursEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>定时启动</b><small>全天自动模式会在到点扫描素材库，优先选择使用次数低的素材；名称以“.”开头的隐藏文件夹不会读取。</small></span><input id="gptScheduledEnabled" type="checkbox" /></label>
             <p class="settings-footnote">每套完成后会在最短与最长时间之间随机等待，让任务节奏更稳定；遇到登录验证、限流或异常提示会立即暂停。</p>
           </div>
@@ -777,6 +782,6 @@
     </div>
     <script src="/distribution-ui.js?v=0.14.4"></script>
     <script src="/material-workspace.js?v=0.14.4"></script>
-    <script src="/app.js?v=0.14.4-quota-probe1"></script>
+    <script src="/app.js?v=0.14.4-continuous-work-hours1"></script>
   </body>
 </html>
