@@ -23,6 +23,15 @@ test("GPT production exposes prompt and random current-session modes", () => {
   assert.match(gptSidebar, /复用当前会话母版计划/);
 });
 
+test("GPT production exposes the all-day scheduled mode and low-usage material selection", () => {
+  assert.match(html, /value="all-day">单窗口全天自动/);
+  assert.match(app, /async function prepareAllDayGptQueue/);
+  assert.match(app, /isHiddenMaterialPath/);
+  assert.match(app, /Number\(left\.item\.usageCount/);
+  assert.match(app, /gptAutoSettings\.mode === "all-day"/);
+  assert.match(server, /!entry\.name\.startsWith\("\."\)/);
+});
+
 test("GPT production history exposes cumulative work, time and average plan summary", () => {
   assert.match(html, /id="gptProductionHistorySummary"/);
   assert.match(app, /function renderGptProductionSummary/);

@@ -233,7 +233,7 @@ function loadGptAutoSettings() {
 
 function renderGptAutoSettings() {
   const values = gptAutoSettings;
-  const mode = ["manual", "multi", "random"].includes(values.mode) ? values.mode : "automatic";
+  const mode = ["manual", "multi", "random", "all-day"].includes(values.mode) ? values.mode : "automatic";
   if ($("#gptProductionMode")) $("#gptProductionMode").value = mode;
   if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = mode;
   if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
@@ -268,7 +268,7 @@ function saveGptAutoSettings() {
   const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
   const selectedMode = activePageSettings === "gptAuto" ? $("#gptProductionModeSetting")?.value : $("#gptProductionMode")?.value;
   gptAutoSettings = {
-    mode: ["manual", "multi", "random"].includes(selectedMode) ? selectedMode : "automatic",
+    mode: ["manual", "multi", "random", "all-day"].includes(selectedMode) ? selectedMode : "automatic",
     autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
     autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
     autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
@@ -1549,6 +1549,45 @@ function selectedGptTestTemplates() {
   return (dashboard?.templates?.templates || []).filter((template) => gptTestSelectedTemplates.has(template.id));
 }
 
+function isHiddenMaterialPath(materialPath) {
+  return String(materialPath || "").split(/[\\/]+/).some((segment) => segment.startsWith("."));
+}
+
+async function prepareAllDayGptQueue() {
+  if (gptAutoSettings.mode !== "all-day" || gptAutoRunning) return false;
+  await loadDashboard("materials").catch(() => {});
+  for (const category of dashboard?.materials?.categories || []) {
+    if (category.loaded === false && !isHiddenMaterialPath(category.path)) {
+      await loadDashboard(false, category.path).catch(() => {});
+    }
+  }
+  const entries = (dashboard?.materials?.categories || [])
+    .filter((category) => !isHiddenMaterialPath(category.path))
+    .flatMap((category) => (category.items || [])
+      .filter((item) => !isHiddenMaterialPath(item.path))
+      .map((item) => ({ item, category })))
+    .sort((left, right) => {
+      const usage = Number(left.item.usageCount || 0) - Number(right.item.usageCount || 0);
+      if (usage) return usage;
+      const leftTime = Date.parse(left.item.updatedAt || left.item.modifiedAt || "") || 0;
+      const rightTime = Date.parse(right.item.updatedAt || right.item.modifiedAt || "") || 0;
+      return leftTime - rightTime || String(left.item.name || "").localeCompare(String(right.item.name || ""), "zh-Hans-CN", { numeric: true });
+    })
+    .slice(0, Math.max(1, Number(gptAutoSettings.accountTaskLimit || 8)));
+  if (!entries.length) return false;
+  gptTestSelectedMaterials.clear();
+  gptTestMaterialEntries.clear();
+  entries.forEach((entry) => {
+    gptTestSelectedMaterials.add(entry.item.path);
+    gptTestMaterialEntries.set(entry.item.path, entry);
+  });
+  gptTestQueue = [];
+  gptTestQueueIndex = 0;
+  renderGptTestMaterials();
+  showWorkbenchAssistantBubble(`全天自动已选 ${entries.length} 个素材，按使用次数从低到高排队。`, { duration: 0 });
+  return true;
+}
+
 function buildGptTemplateInitTask(template) {
   return {
     requestId: `gpt-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1658,7 +1697,7 @@ function scheduleGptQuotaReminder(nextExpiryAt, accountId) {
   }, delay));
 }
 
-function checkScheduledGptProduction() {
+async function checkScheduledGptProduction() {
   if (!gptAutoSettings.scheduledEnabled || gptAutoRunning || gptScheduledLaunchTimer) return;
   const now = new Date();
   const dayKey = now.toISOString().slice(0, 10);
@@ -1668,6 +1707,14 @@ function checkScheduledGptProduction() {
   const target = new Date(now);
   target.setHours(hour, minute, 0, 0);
   if (now < target || now.getTime() - target.getTime() > 65_000) return;
+  if (gptAutoSettings.mode === "all-day" && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
+    gptScheduledDayKey = dayKey;
+    const prepared = await prepareAllDayGptQueue();
+    if (!prepared) {
+      showWorkbenchAssistantBubble("已到全天自动时间，但素材库没有可用素材；点号隐藏文件夹已跳过。", { duration: 0 });
+      return;
+    }
+  }
   const hasReadyQueue = gptTestQueueIndex < gptTestQueue.length || gptTestSelectedMaterials.size > 0;
   if (!hasReadyQueue) {
     gptScheduledDayKey = dayKey;
@@ -1698,7 +1745,9 @@ function updateGptTestQueueStatus(message = "") {
       ? "多窗口"
       : gptAutoSettings.mode === "random"
         ? "单窗口自动-随机"
-        : "单窗口自动（有提示词）";
+        : gptAutoSettings.mode === "all-day"
+          ? "单窗口全天自动"
+          : "单窗口自动（有提示词）";
   if (message) node.textContent = message;
   else if (canResumeQueue) node.textContent = `已恢复未完成队列，还有 ${gptTestQueue.length - gptTestQueueIndex} 个步骤待处理`;
   else if (!selectedCount) node.textContent = "请至少选择一个素材文件夹；模板可以不选";
