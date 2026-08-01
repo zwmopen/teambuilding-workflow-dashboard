@@ -129,7 +129,7 @@ test("GPT automatic production exposes safe retry, quota and real archive contro
 
 test("quota reminders do not hard-block a deliberate manual continuation", () => {
   assert.match(app, /allowManualOverride/);
-  assert.match(app, /网页真实限流时才会停止/);
+  assert.match(app, /不会阻止本次上传/);
   assert.match(app, /allowQuotaOverride/);
 });
 
@@ -141,6 +141,21 @@ test("single-window continuation keeps quota warnings informational and reattach
   assert.match(desktopMain, /forceUpload: Boolean\(task\.forceUpload\)/);
   assert.match(gptSidebar, /const forceUpload = Boolean\(message\.forceUpload\)/);
   assert.match(gptSidebar, /!entry\.forceUpload/);
+});
+
+test("local quota estimates never block uploads and real web limits are recorded separately", () => {
+  assert.match(app, /不会阻止本次上传；以 GPT 网页真实提示为准/);
+  assert.match(app, /return \{ quota, warningOnly: true \}/);
+  assert.match(app, /function isActualGptLimitMessage/);
+  assert.match(app, /function recordActualGptLimit/);
+  assert.match(app, /function inferGptQuotaLimitKind/);
+  assert.match(app, /上传本轮起点/);
+  assert.match(app, /等待真实消耗后计算/);
+  assert.doesNotMatch(app, /scheduleGptQuotaReminder\(quota\.nextExpiryAt/);
+  assert.match(app, /uploadCycleStartAt/);
+  assert.match(app, /generationCycleStartAt/);
+  assert.match(app, /nextUploadProbeAt/);
+  assert.match(app, /nextGenerationProbeAt/);
 });
 
 test("GPT material tree never presents an unloaded parent folder as a fake zero", () => {

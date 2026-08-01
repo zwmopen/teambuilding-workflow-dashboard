@@ -1715,16 +1715,89 @@ async function ensureGptTaskQuota(task, quotaAccountId = activeGptAccountId, opt
   const generatedImages = Math.max(1, Number(task.expectedImages || 1));
   if (uploadImages <= Number(quota.remainingUploads || 0)
     && generatedImages <= Number(quota.remainingGenerations || 0)) return;
-  const restoreAt = quota.nextExpiryAt ? new Date(quota.nextExpiryAt).toLocaleString("zh-CN", { hour12: false }) : "额度窗口恢复后";
-  scheduleGptQuotaReminder(quota.nextExpiryAt, quotaAccountId);
-  if (options.allowManualOverride) {
-    showWorkbenchAssistantBubble(
-      `本地额度只是估算提醒：当前预计还可上传 ${quota.remainingUploads} 张、生成 ${quota.remainingGenerations} 张。已按你的手动指令继续，网页真实限流时才会停止。`,
-      { duration: 7200, persistent: true }
-    );
-    return { quota, overridden: true };
+  // Local ledger estimates are informational only.  If we schedule a reminder,
+  // anchor it to the first real upload/generation recorded for this account,
+  // never to the moment an estimate happened to report a shortage.
+  const cycle = readGptCycleState(quotaAccountId);
+  if (cycle.nextProbeAt) {
+    scheduleGptQuotaReminder(new Date(Number(cycle.nextProbeAt)).toISOString(), quotaAccountId);
   }
-  throw new Error(`当前账号本地估算额度不足：还可上传 ${quota.remainingUploads} 张、生成 ${quota.remainingGenerations} 张；预计 ${restoreAt} 可继续`);
+  // This is only a local estimate.  It must never be an upload gate: the
+  // official GPT page is the authority and will pause the task when it really
+  // refuses an upload or generation.  Keep `options` for callers from older
+  // builds, but deliberately ignore it here so a single-window run can keep
+  // going for as long as the user wants.
+  showWorkbenchAssistantBubble(
+    `本地额度估算提醒：预计还可上传 ${quota.remainingUploads} 张、生成 ${quota.remainingGenerations} 张。不会阻止本次上传；以 GPT 网页真实提示为准。`,
+    { duration: 7200, persistent: true }
+  );
+  return { quota, warningOnly: true };
+}
+
+function isActualGptLimitMessage(message = "") {
+  return /(达到|已达|超出|没有更多|用完|不足|稍后再试|请在.*后|try again later|rate limit|upload limit|generation limit|too many requests)/i.test(String(message || ""))
+    && /(额度|限制|上传|生成|图片|请求|limit|quota|rate)/i.test(String(message || ""));
+}
+
+function inferGptQuotaLimitKind(task, message = "") {
+  const context = `${task?._stage || ""} ${message || ""}`;
+  if (/(上传|附件|文件|upload)/i.test(context)) return "upload";
+  if (/(生成|生图|图片|generation|image)/i.test(context)) return "generation";
+  return "unknown";
+}
+
+function gptCycleStateKey(accountId = activeGptAccountId) {
+  return `teambuilding-gpt-web-limit-v1:${String(accountId || "account-1")}`;
+}
+
+function readGptCycleState(accountId = activeGptAccountId) {
+  try { return JSON.parse(localStorage.getItem(gptCycleStateKey(accountId)) || "null") || {}; } catch { return {}; }
+}
+
+function recordGptQuotaConsumption(task, accountId = activeGptAccountId, kind = "upload") {
+  if (!task || task.taskType !== "material") return;
+  const now = Date.now();
+  const state = readGptCycleState(accountId);
+  if (kind === "generation") state.generationCycleStartAt ||= now;
+  else if ((task.attachments || []).some((filePath) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(filePath))) {
+    state.uploadCycleStartAt ||= now;
+  }
+  state.accountId = String(accountId || activeGptAccountId);
+  state.updatedAt = now;
+  try { localStorage.setItem(gptCycleStateKey(accountId), JSON.stringify(state)); } catch { /* private mode */ }
+  return state;
+}
+
+function recordActualGptLimit(message, accountId = activeGptAccountId, kind = "unknown") {
+  const now = Date.now();
+  const key = gptCycleStateKey(accountId);
+  const previous = readGptCycleState(accountId);
+  const uploadCycleStartAt = Number(previous.uploadCycleStartAt || (kind === "upload" ? now : 0)) || null;
+  const generationCycleStartAt = Number(previous.generationCycleStartAt || (kind === "generation" ? now : 0)) || null;
+  const windowMs = Math.max(1, Number(gptAutoSettings.windowHours || 3)) * 60 * 60 * 1000;
+  const nextUploadProbeAt = uploadCycleStartAt ? uploadCycleStartAt + windowMs : null;
+  const nextGenerationProbeAt = generationCycleStartAt ? generationCycleStartAt + windowMs : null;
+  const probeTimes = [nextUploadProbeAt, nextGenerationProbeAt].filter((value) => Number.isFinite(value));
+  const nextProbeAt = probeTimes.length ? Math.max(...probeTimes) : null;
+  const startTimes = [uploadCycleStartAt, generationCycleStartAt].filter((value) => Number.isFinite(value));
+  const state = {
+    ...previous,
+    firstAt: Number(previous.firstAt || (startTimes.length ? Math.min(...startTimes) : now)),
+    uploadCycleStartAt,
+    generationCycleStartAt,
+    nextUploadProbeAt,
+    nextGenerationProbeAt,
+    nextProbeAt,
+    lastAt: now,
+    message: String(message || "").slice(0, 500)
+  };
+  try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* private mode */ }
+  showWorkbenchAssistantBubble(
+    `GPT 网页返回了真实限额提示，已暂停当前任务，不再盲目重试。上传本轮起点：${uploadCycleStartAt ? new Date(uploadCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}；生图本轮起点：${generationCycleStartAt ? new Date(generationCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}；最晚检查：${nextProbeAt ? new Date(nextProbeAt).toLocaleString("zh-CN", { hour12: false }) : "等待真实消耗后计算"}。`,
+    { duration: 0, persistent: true, tone: "warning" }
+  );
+  if (nextProbeAt) scheduleGptQuotaReminder(new Date(nextProbeAt).toISOString(), accountId);
+  return state;
 }
 
 const gptQuotaReminderTimers = new Map();
@@ -2134,6 +2207,7 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   task._status = "running";
   task._startedAt ||= new Date().toISOString();
   persistGptQueue();
+  recordGptQuotaConsumption(task, task.quotaAccountId, "upload");
   if (task.taskType === "material") await ensureGptTaskQuota(task, task.quotaAccountId);
   if (task.navigation === "new-chat") {
     await window.gptWorkbench.navigate("new-chat", account.id);
@@ -2146,6 +2220,7 @@ async function runGptTaskOnBrowser(task, account, tracker) {
       if (status?.requestId === task.requestId) {
         task._stage = String(status.stage || "");
         task._percent = Number(status.percent || 0);
+        if (/生成|图片|生图/i.test(task._stage)) recordGptQuotaConsumption(task, task.quotaAccountId, "generation");
         persistGptQueue();
         const overall = Math.round(((tracker.completed + tracker.failed + task._percent / 100) / tracker.total) * 100);
         if ($("#gptAutoProgressBar")) $("#gptAutoProgressBar").style.width = `${overall}%`;
@@ -2164,6 +2239,7 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   if (!result?.ok) {
     task._status = "failed";
     task._error = result?.detail || result?.error || "自动生产没有完整结束";
+    if (isActualGptLimitMessage(task._error)) recordActualGptLimit(task._error, task.quotaAccountId, inferGptQuotaLimitKind(task, task._error));
     tracker.failed += 1;
     appendGptProductionHistory(task, "failed", result, task._error);
     persistGptQueue();
@@ -2305,6 +2381,7 @@ async function sendNextGptTestTask(options = {}) {
             gptLastFailedPercent = Number(status.percent || 0);
             task._stage = gptLastFailedStage;
             task._percent = gptLastFailedPercent;
+            if (/生成|图片|生图/i.test(task._stage)) recordGptQuotaConsumption(task, runAccountId, "generation");
             task._status = "running";
             persistGptQueue();
             const overall = Math.round(((gptTestQueueIndex + Number(status.percent || 0) / 100) / gptTestQueue.length) * 100);
@@ -2318,6 +2395,7 @@ async function sendNextGptTestTask(options = {}) {
       let result;
       try {
         task._submittedToGpt = true;
+        recordGptQuotaConsumption(task, runAccountId, "upload");
         persistGptQueue();
         result = await window.gptWorkbench.sendTask(task);
       } finally {
@@ -2386,6 +2464,7 @@ async function sendNextGptTestTask(options = {}) {
       failedTask._error = String(error?.message || failedTask._error || "自动生产已暂停");
       failedTask._status = "paused";
     }
+    if (isActualGptLimitMessage(error?.message)) recordActualGptLimit(error.message, activeGptAccountId, inferGptQuotaLimitKind(failedTask, error?.message));
     persistGptQueue();
     updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1} 套已暂停：${error.message}`);
     if (String(error.message || "").includes("用户暂停") || resuming) {
