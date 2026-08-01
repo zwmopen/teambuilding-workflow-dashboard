@@ -14,6 +14,22 @@ const gptSidebar = fs.readFileSync(path.join(__dirname, "..", "integrations", "g
 const gptBackground = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "background.js"), "utf8");
 const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
+test("GPT production exposes prompt and random current-session modes", () => {
+  assert.match(html, /value="automatic">单窗口自动（有提示词）/);
+  assert.match(html, /value="random">单窗口自动-随机/);
+  assert.match(app, /gptAutoSettings\.mode === "random"/);
+  assert.match(app, /const prompt = randomMode \? ""/);
+  assert.match(gptSidebar, /noPromptMode/);
+  assert.match(gptSidebar, /复用当前会话母版计划/);
+});
+
+test("GPT production exposes prompt and random current-session modes", () => {
+  assert.match(html, /value="automatic">单窗口自动（有提示词）/);
+  assert.match(html, /value="random">单窗口自动-随机/);
+  assert.match(app, /gptAutoSettings\.mode === "random"/);
+  assert.match(app, /const prompt = randomMode \? ""/);
+});
+
 test("GPT 内置测试把本地素材和模板与持久原生网页合成一个生产界面", () => {
   assert.match(html, /data-tab="gptProductionTest"/);
   assert.match(html, /id="gptTestMaterialFolders"/);

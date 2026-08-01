@@ -7,6 +7,11 @@ const {
   normalizePageSettings
 } = require("./workbench-settings");
 
+test("GPT production settings preserve random no-prompt mode", () => {
+  const settings = normalizePageSettings({ gptAuto: { mode: "random" } });
+  assert.equal(settings.gptAuto.mode, "random");
+});
+
 test("page settings keep safe defaults and clamp DIY values", () => {
   const settings = normalizePageSettings({
     production: { reserveThreshold: 0, itemsPerCollection: 200, compressCollections: true },

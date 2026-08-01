@@ -233,7 +233,7 @@ function loadGptAutoSettings() {
 
 function renderGptAutoSettings() {
   const values = gptAutoSettings;
-  const mode = ["manual", "multi"].includes(values.mode) ? values.mode : "automatic";
+  const mode = ["manual", "multi", "random"].includes(values.mode) ? values.mode : "automatic";
   if ($("#gptProductionMode")) $("#gptProductionMode").value = mode;
   if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = mode;
   if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
@@ -268,7 +268,7 @@ function saveGptAutoSettings() {
   const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
   const selectedMode = activePageSettings === "gptAuto" ? $("#gptProductionModeSetting")?.value : $("#gptProductionMode")?.value;
   gptAutoSettings = {
-    mode: ["manual", "multi"].includes(selectedMode) ? selectedMode : "automatic",
+    mode: ["manual", "multi", "random"].includes(selectedMode) ? selectedMode : "automatic",
     autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
     autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
     autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
@@ -1564,7 +1564,11 @@ function buildGptTestTask(entry, template = null) {
   const materialFiles = (entry.item.attachments || []).filter(Boolean);
   const attachments = [...new Set(materialFiles)].slice(0, 30);
   const extra = String($("#gptTestExtraPrompt")?.value || "").trim();
-  const prompt = [
+  // The random/current-session mode is prompt-free only when no physical
+  // template was selected. A selected template still needs its normal
+  // initialization/migration prompt in the new conversation.
+  const randomMode = gptAutoSettings.mode === "random" && !template;
+  const prompt = randomMode ? "" : [
     template ? `继续使用当前会话刚初始化的「${template.name}」母版。` : "继续使用当前 GPT 会话里已经沉淀好的母版环境。",
     "本次附件全部是待迁移素材和 TXT 参考内容，不是新模板。",
     `当前素材文件夹：${entry.item.name}`,
@@ -1688,7 +1692,13 @@ function updateGptTestQueueStatus(message = "") {
   if (!node || !button) return;
   const selectedCount = gptTestSelectedMaterials.size;
   const canResumeQueue = gptQueuePaused && gptTestQueue.length > 0 && gptTestQueueIndex < gptTestQueue.length;
-  const mode = gptAutoSettings.mode === "manual" ? "手动" : gptAutoSettings.mode === "multi" ? "多窗口" : "自动";
+  const mode = gptAutoSettings.mode === "manual"
+    ? "手动"
+    : gptAutoSettings.mode === "multi"
+      ? "多窗口"
+      : gptAutoSettings.mode === "random"
+        ? "单窗口自动-随机"
+        : "单窗口自动（有提示词）";
   if (message) node.textContent = message;
   else if (canResumeQueue) node.textContent = `已恢复未完成队列，还有 ${gptTestQueue.length - gptTestQueueIndex} 个步骤待处理`;
   else if (!selectedCount) node.textContent = "请至少选择一个素材文件夹；模板可以不选";

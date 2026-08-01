@@ -1483,6 +1483,18 @@
     const initialAssistantKeys = workflow.initialAssistantKeys ?? assistantTurnKeys();
     workflow.initialAssistantKeys = initialAssistantKeys;
     const templateInitialization = task.entry.taskType === "template-init";
+    // Current-session random mode reuses the plan already present in the
+    // conversation instead of injecting another migration prompt.
+    if (noPromptMode && !workflow.planDone) {
+      const existingPlanText = assistantTurns().map(cleanAssistantText).join("\n").trim();
+      const existingPlanCount = parsePlannedImageCount(existingPlanText);
+      if (existingPlanCount && /迁移计划|逐页|P\s*1|第\s*1\s*页/i.test(existingPlanText)) {
+        workflow.planDone = true;
+        workflow.planText = existingPlanText;
+        workflow.plannedImageCount = existingPlanCount;
+        await saveCheckpoint("复用当前会话母版计划", 32);
+      }
+    }
     if (!workflow.planDone) {
       if (!workflow.planSubmitted) {
         reportWorkbenchProgress(
@@ -2326,11 +2338,12 @@
     const prompt = String(message.prompt || "").trim().slice(0, 30000);
     const retryFromStage = String(message.retryFromStage || "").trim();
     const taskOptions = message.autoOptions && typeof message.autoOptions === "object" ? message.autoOptions : {};
+    const noPromptMode = taskOptions.mode === "random";
     localStorage.setItem("tb-workbench-prompt-library-enabled", taskOptions.promptLibraryEnabled === false ? "0" : "1");
     localStorage.setItem("tb-workbench-message-downloads-enabled", taskOptions.messageDownloadsEnabled === false ? "0" : "1");
     window.dispatchEvent(new CustomEvent("tb-workbench-tools-visibility"));
     const resumeOnly = Boolean(retryFromStage);
-    if (!requestId || (!resumeOnly && (!attachments.length || !prompt))) {
+    if (!requestId || (!resumeOnly && (!attachments.length || (!prompt && !noPromptMode)))) {
       window.postMessage({
         source: "tb-gpt-production-extension",
         type: "tb-workbench-task-result",

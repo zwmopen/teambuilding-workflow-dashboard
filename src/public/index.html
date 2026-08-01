@@ -368,8 +368,9 @@
               <section class="gpt-test-send-dock">
                 <div class="gpt-mode-row">
                   <label for="gptProductionMode">生产模式</label>
-                  <select id="gptProductionMode">
-                    <option value="automatic">单窗口自动</option>
+                    <select id="gptProductionMode">
+                      <option value="automatic">单窗口自动（有提示词）</option>
+                      <option value="random">单窗口自动-随机</option>
                     <option value="multi">多窗口自动</option>
                     <option value="manual">手动模式</option>
                   </select>
@@ -689,7 +690,7 @@
         <section id="gptAutoPageSettings" class="page-settings-section" hidden>
           <div class="settings-group">
             <h3>模式与归档</h3>
-            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="automatic">单窗口自动</option><option value="multi">多窗口自动</option><option value="manual">手动模式</option></select></label>
+            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="automatic">单窗口自动（有提示词）</option><option value="random">单窗口自动-随机</option><option value="multi">多窗口自动</option><option value="manual">手动模式</option></select></label>
             <label class="switch-setting"><span><b>成功后归档原素材</b><small>仅在图片、TXT 和作品包全部校验成功后移动到“已上传 N 次”</small></span><input id="gptAutoArchiveEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>显示账号额度提醒</b><small>按本地滚动账本估算，网页实际限流优先</small></span><input id="gptQuotaReminderEnabled" type="checkbox" checked /></label>
           </div>
