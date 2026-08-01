@@ -173,9 +173,17 @@ test("low-output generation is a batch-level limit signal", () => {
   assert.match(app, /function isLowOutputGptLimitMessage/);
   assert.match(app, /生成结果不足\|本轮只检测到\|安全线为\|额度触顶\|生成不完整/);
   assert.match(app, /const lowOutputLimit = isLowOutputGptLimitMessage/);
-  assert.match(app, /已识别为触顶征兆，本批暂停/);
+  assert.match(app, /已识别为触顶征兆，当前素材跳过，本批暂停/);
   assert.match(app, /等待下一轮额度探测/);
   assert.match(app, /本轮图片低于安全线，判定为触顶\/降级征兆/);
+  assert.match(app, /if \(lowOutputLimit\) gptTestQueueIndex \+= 1/);
+  assert.match(app, /quotaPausedTask = task/);
+  assert.match(app, /if \(!quotaPausedTask && failedTask/);
+  assert.match(app, /function resetGptCycleForAutomaticProbe/);
+  assert.match(app, /async function resumeGptQueueAfterQuotaProbe/);
+  assert.match(app, /正在用下一条素材自动试跑/);
+  assert.match(app, /function restoreGptQuotaProbeTimers/);
+  assert.match(app, /restoreGptQuotaProbeTimers\(\)/);
 });
 
 test("GPT material tree never presents an unloaded parent folder as a fake zero", () => {

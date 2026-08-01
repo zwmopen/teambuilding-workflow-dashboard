@@ -1837,19 +1837,82 @@ let gptScheduledLaunchTimer = null;
 let gptScheduledDayKey = "";
 const gptScheduledLaunchKeys = new Set();
 
+function resetGptCycleForAutomaticProbe(accountId, expectedProbeAt) {
+  const key = String(accountId || activeGptAccountId);
+  const state = readGptCycleState(key);
+  if (Number(state.nextProbeAt || 0) !== Number(expectedProbeAt || 0)) return false;
+  const nextState = {
+    ...state,
+    previousCycleStartAt: Number(state.generationCycleStartAt || state.uploadCycleStartAt || 0) || null,
+    uploadCycleStartAt: null,
+    generationCycleStartAt: null,
+    nextUploadProbeAt: null,
+    nextGenerationProbeAt: null,
+    nextProbeAt: null,
+    probeStartedAt: Date.now(),
+    autoResumePending: false,
+    updatedAt: Date.now()
+  };
+  try { localStorage.setItem(gptCycleStateKey(key), JSON.stringify(nextState)); } catch { /* private mode */ }
+  return true;
+}
+
+async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
+  const key = String(accountId || activeGptAccountId);
+  const state = readGptCycleState(key);
+  if (Number(state.nextProbeAt || 0) !== Number(expectedProbeAt || 0)) return;
+  if (gptAutoSettings.mode === "manual") return;
+  if (gptAutoRunning) {
+    clearTimeout(gptQuotaReminderTimers.get(key));
+    gptQuotaReminderTimers.set(key, setTimeout(() => {
+      resumeGptQueueAfterQuotaProbe(key, expectedProbeAt).catch(() => {});
+    }, 60_000));
+    return;
+  }
+
+  let hasPendingQueue = gptTestQueueIndex < gptTestQueue.length;
+  if (!hasPendingQueue && (gptAutoSettings.mode === "all-day" || gptAutoSettings.mode === "scheduled")) {
+    hasPendingQueue = Boolean(await prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "额度恢复自动探测"));
+  }
+  if (!hasPendingQueue) {
+    showWorkbenchAssistantBubble("额度探测时间已到，但当前批次没有剩余素材；本次不自动新增普通生产任务。", { duration: 0 });
+    return;
+  }
+  if (!resetGptCycleForAutomaticProbe(key, expectedProbeAt)) return;
+  gptQueuePaused = true;
+  gptAutoPaused = false;
+  persistGptQueue();
+  showWorkbenchAssistantBubble("已到下一次额度探测时间，正在用下一条素材自动试跑；若仍只生成 1–3 张，会再次停止。", { duration: 0, tone: "info" });
+  await sendNextGptTestTask({ quotaProbe: true });
+}
+
 function scheduleGptQuotaReminder(nextExpiryAt, accountId) {
   const timestamp = Date.parse(String(nextExpiryAt || ""));
-  if (!Number.isFinite(timestamp) || timestamp <= Date.now()) return;
+  if (!Number.isFinite(timestamp)) return;
   const key = String(accountId || activeGptAccountId);
   clearTimeout(gptQuotaReminderTimers.get(key));
-  const delay = Math.min(timestamp - Date.now() + 1500, 2_147_000_000);
+  const delay = Math.max(1500, Math.min(timestamp - Date.now() + 1500, 2_147_000_000));
   gptQuotaReminderTimers.set(key, setTimeout(() => {
     const account = gptAccounts.find((item) => item.id === key || item.quotaGroup === key);
-    const message = `${account?.name || "GPT 账号"}的本地估算额度已逐笔释放，可以继续检查生产队列。`;
+    const message = `${account?.name || "GPT 账号"}已到本轮生图起点后的额度探测时间。`;
     showWorkbenchAssistantBubble(message, { duration: 0 });
-    window.gptWorkbench?.notify?.({ title: "额度已恢复", body: message }).catch(() => {});
+    window.gptWorkbench?.notify?.({ title: "开始额度探测", body: message }).catch(() => {});
     refreshGptQuota(key);
+    resumeGptQueueAfterQuotaProbe(key, timestamp).catch((error) => {
+      showWorkbenchAssistantBubble(`额度探测未能启动：${error?.message || "未知错误"}`, { duration: 0, tone: "warning" });
+    });
   }, delay));
+}
+
+function restoreGptQuotaProbeTimers() {
+  const accountIds = new Set([activeGptAccountId]);
+  gptAccounts.forEach((account) => accountIds.add(account.quotaGroup || account.id));
+  accountIds.forEach((accountId) => {
+    const state = readGptCycleState(accountId);
+    if (Number.isFinite(Number(state.nextProbeAt)) && Number(state.nextProbeAt) > 0) {
+      scheduleGptQuotaReminder(new Date(Number(state.nextProbeAt)).toISOString(), accountId);
+    }
+  });
 }
 
 async function checkScheduledGptProduction() {
@@ -2382,6 +2445,7 @@ async function sendNextGptTestTask(options = {}) {
   updateGptTestQueueStatus(`${manualMode ? "手动模式" : "单窗口自动"} · ${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号"} · ${gptProductionWorkCount()} 个作品`);
   let completedThisRun = 0;
   let failedThisRun = 0;
+  let quotaPausedTask = null;
   try {
     while (gptTestQueueIndex < gptTestQueue.length) {
       if (gptAutoPaused) throw new Error("已由用户暂停；可以继续剩余队列");
@@ -2461,14 +2525,18 @@ async function sendNextGptTestTask(options = {}) {
         persistGptQueue();
         failedThisRun += 1;
         if (actualLimit) {
-          // Keep the failed task at the current index so resume/retry can
-          // reattach to the same checkpoint after the next quota probe.
+          // A low-output result is not worth continuing. Keep its history,
+          // skip it, and probe the next fresh material after the cycle window.
           gptQueuePaused = true;
-          task._status = "paused";
+          quotaPausedTask = task;
+          task._status = lowOutputLimit ? "failed" : "paused";
+          task._endedAt = new Date().toISOString();
+          task._quotaSkipped = lowOutputLimit;
           task._error = lowOutputLimit
-            ? `${taskError.message}；已识别为触顶征兆，本批暂停，不继续发送后续素材`
+            ? `${taskError.message}；已识别为触顶征兆，当前素材跳过，本批暂停，不继续发送后续素材`
             : taskError.message;
           recordActualGptLimit(task._error, activeGptAccountId, lowOutputLimit ? "generation" : inferGptQuotaLimitKind(task, taskError.message));
+          if (lowOutputLimit) gptTestQueueIndex += 1;
           persistGptQueue();
           const detectedLowOutputCount = Number(taskError.message.match(/只检测到\s*(\d+)/)?.[1] || result?.detectedImages || 0);
           throw new Error(lowOutputLimit
@@ -2517,16 +2585,18 @@ async function sendNextGptTestTask(options = {}) {
       }
     }
   } catch (error) {
-    gptLastFailedTask = gptTestQueue[gptTestQueueIndex] || null;
+    gptLastFailedTask = quotaPausedTask || gptTestQueue[gptTestQueueIndex] || null;
     gptQueuePaused = true;
-    const failedTask = gptTestQueue[gptTestQueueIndex];
-    if (failedTask && failedTask._status !== "completed") {
+    const failedTask = quotaPausedTask || gptTestQueue[gptTestQueueIndex];
+    if (!quotaPausedTask && failedTask && failedTask._status !== "completed") {
       failedTask._stage = gptLastFailedStage || failedTask._stage || "任务暂停";
       failedTask._percent = Number(gptLastFailedPercent || failedTask._percent || 0);
       failedTask._error = String(error?.message || failedTask._error || "自动生产已暂停");
       failedTask._status = "paused";
     }
-    if (isActualGptLimitMessage(error?.message)) recordActualGptLimit(error.message, activeGptAccountId, inferGptQuotaLimitKind(failedTask, error?.message));
+    if (!quotaPausedTask && isActualGptLimitMessage(error?.message)) {
+      recordActualGptLimit(error.message, activeGptAccountId, inferGptQuotaLimitKind(failedTask, error?.message));
+    }
     persistGptQueue();
     updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1} 套已暂停：${error.message}`);
     if (String(error.message || "").includes("用户暂停") || resuming) {
@@ -7842,6 +7912,7 @@ loadDashboard()
     }, 20_000);
     window.setInterval(checkScheduledGptProduction, 30_000);
     checkScheduledGptProduction();
+    restoreGptQuotaProbeTimers();
     window.setInterval(() => refreshExpandedGptMaterialTrees().catch(() => {}), 15_000);
     window.setInterval(() => {
       window.gptWorkbench?.releaseIdle?.(gptAutoSettings.idleUnloadMinutes || 30).catch(() => {});
