@@ -23,6 +23,13 @@ test("GPT production exposes prompt and random current-session modes", () => {
   assert.match(gptSidebar, /复用当前会话母版计划/);
 });
 
+test("GPT production history exposes cumulative work, time and average plan summary", () => {
+  assert.match(html, /id="gptProductionHistorySummary"/);
+  assert.match(app, /function renderGptProductionSummary/);
+  assert.match(app, /平均出计划/);
+  assert.match(css, /\.gpt-production-history-summary/);
+});
+
 test("GPT production exposes prompt and random current-session modes", () => {
   assert.match(html, /value="automatic">单窗口自动（有提示词）/);
   assert.match(html, /value="random">单窗口自动-随机/);

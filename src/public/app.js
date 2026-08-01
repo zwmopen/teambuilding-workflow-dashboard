@@ -4573,9 +4573,25 @@ function formatProductionDuration(value = 0) {
   return `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, "0")}秒`;
 }
 
+function renderGptProductionSummary() {
+  const host = $("#gptProductionHistorySummary");
+  if (!host) return;
+  const completed = gptProductionHistory.filter((item) => item.status === "completed");
+  const totalMs = completed.reduce((sum, item) => sum + Math.max(0, Number(item.durationMs || 0)), 0);
+  const planRows = completed.filter((item) => Number(item.planDurationMs || 0) > 0);
+  const averagePlanMs = planRows.length
+    ? planRows.reduce((sum, item) => sum + Number(item.planDurationMs || 0), 0) / planRows.length
+    : 0;
+  host.innerHTML = `
+    <div><strong>${completed.length}</strong><span>总作品数</span></div>
+    <div><strong>${formatProductionDuration(totalMs)}</strong><span>总耗时</span></div>
+    <div><strong>${planRows.length ? formatProductionDuration(averagePlanMs) : "暂无"}</strong><span>平均出计划</span></div>`;
+}
+
 function renderGptProductionHistory() {
   const host = $("#gptProductionHistoryList");
   if (!host) return;
+  renderGptProductionSummary();
   const rows = [...gptProductionHistory].sort((left, right) => {
     const rightTime = Date.parse(String(right.finishedAt || right.updatedAt || right.startedAt || "")) || 0;
     const leftTime = Date.parse(String(left.finishedAt || left.updatedAt || left.startedAt || "")) || 0;
