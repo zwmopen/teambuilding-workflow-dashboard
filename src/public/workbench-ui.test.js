@@ -14,9 +14,9 @@ const gptSidebar = fs.readFileSync(path.join(__dirname, "..", "integrations", "g
 const gptBackground = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "background.js"), "utf8");
 const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
-test("GPT production exposes prompt and random current-session modes", () => {
-  assert.match(html, /value="automatic">单窗口自动（有提示词）/);
-  assert.match(html, /value="random">单窗口自动-随机/);
+test("GPT production exposes prompt and current-session manual-selection modes", () => {
+  assert.match(html, /value="automatic">单窗口（手选自动做·有提示词）/);
+  assert.match(html, /value="random">单窗口（手选自动做）/);
   assert.match(app, /gptAutoSettings\.mode === "random"/);
   assert.match(app, /const prompt = randomMode \? ""/);
   assert.match(gptSidebar, /noPromptMode/);
@@ -77,8 +77,8 @@ test("GPT production history hides the native GPT view before opening its DOM pa
 });
 
 test("GPT production exposes prompt and random current-session modes", () => {
-  assert.match(html, /value="automatic">单窗口自动（有提示词）/);
-  assert.match(html, /value="random">单窗口自动-随机/);
+  assert.match(html, /value="automatic">单窗口（手选自动做·有提示词）/);
+  assert.match(html, /value="random">单窗口（手选自动做）/);
   assert.match(app, /gptAutoSettings\.mode === "random"/);
   assert.match(app, /const prompt = randomMode \? ""/);
 });
@@ -128,6 +128,27 @@ test("GPT 自动生产 uses isolated accounts, browser controls, real serial com
   assert.match(desktopMain, /GPT_PARTITION_PREFIX = "persist:teambuilding-gpt-production"/);
   assert.match(desktopMain, /partition: `\$\{GPT_PARTITION_PREFIX\}-\$\{id\}`/);
   assert.match(desktopMain, /desktop:gpt-navigate/);
+});
+
+test("GPT automatic queue enforces one post folder per serial upload", () => {
+  assert.match(app, /function attachmentsForSingleMaterial\(/);
+  assert.match(app, /normalized\.startsWith\(prefix\)/);
+  assert.match(app, /task\.attachments = attachmentsForSingleMaterial/);
+  assert.match(app, /const attachments = attachmentsForSingleMaterial\(entry\.item\)/);
+  assert.match(app, /await window\.gptWorkbench\.sendTask\(task\)/);
+  assert.match(gptSidebar, /function assertSinglePostAttachmentBoundary\(/);
+  assert.match(gptSidebar, /const existingComposerAttachments = attachmentPreviewCount\(\)/);
+});
+
+test("composer attachment conflicts pause the batch without advancing to another post", () => {
+  assert.match(app, /COMPOSER_ATTACHMENTS_PENDING/);
+  assert.match(app, /COMPOSER_DRAFT_PENDING/);
+  assert.match(app, /queue-integrity failure/);
+  assert.match(app, /gptAutoPaused = true/);
+  assert.match(app, /清理输入框后从当前帖子继续/);
+  assert.match(app, /function currentGptQueueIntegrityBlock\(/);
+  assert.match(app, /const integrityBlock = currentGptQueueIntegrityBlock\(\)/);
+  assert.match(app, /delete failedTask\._errorCode/);
 });
 
 test("GPT 自动生产 downloads and packages only the current verified batch", () => {
@@ -350,7 +371,7 @@ test("GPT production keeps a recoverable queue and supports multiple permanent b
   assert.match(app, /function restoreGptQueue\(/);
   assert.match(app, /sendMultiWindowGptTasks/);
   assert.match(app, /parallelWorkers/);
-  assert.match(html, /value="automatic">单窗口自动/);
+  assert.match(html, /value="automatic">单窗口（手选自动做·有提示词）/);
   assert.match(html, /value="multi">多窗口自动/);
   assert.match(html, /value="manual">手动模式/);
   assert.match(html, /添加浏览器/);

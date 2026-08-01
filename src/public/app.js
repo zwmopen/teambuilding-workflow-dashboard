@@ -130,6 +130,14 @@ function setContinuousGptProductionArmed(armed) {
   else localStorage.removeItem(GPT_CONTINUOUS_RUN_STORAGE_KEY);
 }
 
+function currentGptQueueIntegrityBlock() {
+  const task = gptTestQueue[gptTestQueueIndex];
+  if (!task || task._status === "completed") return null;
+  const code = String(task._errorCode || "");
+  if (!["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "COMPOSER_ATTACHMENT_CONFLICT"].includes(code)) return null;
+  return task;
+}
+
 function restoreGptQueue() {
   try {
     const saved = JSON.parse(localStorage.getItem(GPT_QUEUE_STORAGE_KEY) || "null");
@@ -1610,12 +1618,38 @@ function selectedGptTestTemplates() {
   return (dashboard?.templates?.templates || []).filter((template) => gptTestSelectedTemplates.has(template.id));
 }
 
+function normalizeGptAttachmentPath(value = "") {
+  return String(value || "").trim().replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
+
+function attachmentsForSingleMaterial(material = {}) {
+  const materialPath = normalizeGptAttachmentPath(material.path);
+  if (!materialPath) throw new Error("素材任务缺少帖子文件夹路径，已阻止上传");
+  const prefix = `${materialPath}\\`;
+  const attachments = [...new Set((material.attachments || []).filter(Boolean))].slice(0, 30);
+  const outside = attachments.filter((filePath) => {
+    const normalized = normalizeGptAttachmentPath(filePath);
+    return normalized !== materialPath && !normalized.startsWith(prefix);
+  });
+  if (outside.length) {
+    throw new Error(`素材“${material.name || "未命名"}”混入了 ${outside.length} 个其他帖子文件，已阻止整批上传`);
+  }
+  return attachments;
+}
+
 function hydrateGptTaskFromMaterialTree(task) {
   if (!task || task.taskType !== "material") return task;
   const currentAttachments = Array.isArray(task.attachments)
     ? task.attachments.filter(Boolean)
     : [];
-  if (currentAttachments.length) return task;
+  if (currentAttachments.length && String(task.materialPath || "").trim()) {
+    task.attachments = attachmentsForSingleMaterial({
+      path: task.materialPath,
+      name: task.name,
+      attachments: currentAttachments
+    });
+    return task;
+  }
   const materialPath = String(task.materialPath || "").trim();
   const candidates = [
     ...gptTestMaterialEntries.values(),
@@ -1626,7 +1660,7 @@ function hydrateGptTaskFromMaterialTree(task) {
     || candidates.find((entry) => String(entry?.item?.name || "") === String(task.name || "").split(" × ").pop());
   if (!match?.item) return task;
   task.materialPath ||= match.item.path;
-  task.attachments = [...new Set((match.item.attachments || []).filter(Boolean))].slice(0, 30);
+  task.attachments = attachmentsForSingleMaterial(match.item);
   task.expectedImages ||= Number(match.item.imageCount || 0);
   return task;
 }
@@ -1737,6 +1771,12 @@ function getGptContinuousWorkWindow(now = new Date()) {
 function scheduleContinuousGptProduction(delayMs = 2500) {
   if (gptContinuousLaunchTimer) return;
   if (!isContinuousGptProductionArmed() || gptAutoRunning || gptAutoPaused) return;
+  const integrityBlock = currentGptQueueIntegrityBlock();
+  if (integrityBlock) {
+    gptQueuePaused = true;
+    showWorkbenchAssistantBubble(`全天自动已安全暂停：${integrityBlock.name || "当前帖子"} 的输入框附件需要先清理，不会继续塞入下一帖。`, { duration: 0, tone: "warning" });
+    return;
+  }
 
   const workWindow = getGptContinuousWorkWindow();
   if (!workWindow.allowed) {
@@ -1789,8 +1829,7 @@ function buildGptTemplateInitTask(template) {
 }
 
 function buildGptTestTask(entry, template = null) {
-  const materialFiles = (entry.item.attachments || []).filter(Boolean);
-  const attachments = [...new Set(materialFiles)].slice(0, 30);
+  const attachments = attachmentsForSingleMaterial(entry.item);
   const extra = String($("#gptTestExtraPrompt")?.value || "").trim();
   // The random/current-session mode is prompt-free only when no physical
   // template was selected. A selected template still needs its normal
@@ -2650,6 +2689,8 @@ async function sendNextGptTestTask(options = {}) {
         gptLastFailedStage = String(result?.stage || gptLastFailedStage || "");
         gptLastFailedPercent = Number(result?.percent || gptLastFailedPercent || 0);
         const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
+        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING"].includes(String(result?.errorCode || ""))
+          || /未发送附件|未发送文字|重复粘贴提示词|不属于当前帖子文件夹|混合上传|缺少帖子文件夹路径/.test(taskError.message);
         task._stage = gptLastFailedStage;
         task._percent = gptLastFailedPercent;
         task._error = taskError.message;
@@ -2659,6 +2700,17 @@ async function sendNextGptTestTask(options = {}) {
         appendGptProductionHistory(task, actualLimit ? "paused" : "failed", result, task._error);
         persistGptQueue();
         failedThisRun += 1;
+        if (boundaryConflict) {
+          // This is a queue-integrity failure, not a bad material. Retain the
+          // current index so the exact post can be retried after the composer
+          // has been made safe. Never advance and stack another post.
+          task._status = "paused";
+          task._errorCode = String(result?.errorCode || "COMPOSER_ATTACHMENT_CONFLICT");
+          gptQueuePaused = true;
+          gptAutoPaused = true;
+          persistGptQueue();
+          throw new Error(`${taskError.message}；已暂停整批，清理输入框后从当前帖子继续`);
+        }
         if (actualLimit) {
           // A low-output result is not worth continuing. Keep its history,
           // skip it, and probe the next fresh material after the cycle window.
@@ -2761,6 +2813,7 @@ function retryCurrentGptTask() {
   failedTask.retryOf = previousRequestId;
   failedTask.retryFromStage = gptLastFailedStage;
   failedTask.retryFromPercent = gptLastFailedPercent;
+  delete failedTask._errorCode;
   gptLastFailedTask = null;
   updateGptTestQueueStatus(`正在从安全检查点重试：${gptLastFailedStage || "当前任务"}`);
   sendNextGptTestTask();
