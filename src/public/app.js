@@ -2454,12 +2454,12 @@ async function sendNextGptTestTask(options = {}) {
         task._stage = gptLastFailedStage;
         task._percent = gptLastFailedPercent;
         task._error = taskError.message;
-        task._status = "failed";
-        appendGptProductionHistory(task, "failed", result, task._error);
-        persistGptQueue();
-        failedThisRun += 1;
         const lowOutputLimit = isLowOutputGptLimitMessage(taskError.message);
         const actualLimit = lowOutputLimit || isActualGptLimitMessage(taskError.message);
+        task._status = actualLimit ? "paused" : "failed";
+        appendGptProductionHistory(task, actualLimit ? "paused" : "failed", result, task._error);
+        persistGptQueue();
+        failedThisRun += 1;
         if (actualLimit) {
           // Keep the failed task at the current index so resume/retry can
           // reattach to the same checkpoint after the next quota probe.
