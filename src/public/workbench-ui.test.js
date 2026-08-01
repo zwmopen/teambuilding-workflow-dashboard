@@ -127,6 +127,12 @@ test("GPT automatic production exposes safe retry, quota and real archive contro
   assert.match(server, /function archiveMaterialAfterProduction/);
 });
 
+test("quota reminders do not hard-block a deliberate manual continuation", () => {
+  assert.match(app, /allowManualOverride/);
+  assert.match(app, /网页真实限流时才会停止/);
+  assert.match(app, /allowQuotaOverride/);
+});
+
 test("GPT material tree never presents an unloaded parent folder as a fake zero", () => {
   assert.match(app, /category\.countKnown === false \? "…" : Number\(category\.count/);
   assert.match(app, /const categoryItems = category\.items \|\| \[\]/);

@@ -1673,7 +1673,7 @@ async function refreshGptQuota(accountId = activeGptAccountId) {
   }
 }
 
-async function ensureGptTaskQuota(task, quotaAccountId = activeGptAccountId) {
+async function ensureGptTaskQuota(task, quotaAccountId = activeGptAccountId, options = {}) {
   if (gptAutoSettings.quotaReminderEnabled === false || task.taskType !== "material") return;
   const result = await api(`/api/gpt-production/quota?account=${encodeURIComponent(quotaAccountId)}`).catch(() => null);
   const quota = result?.quota || result;
@@ -1684,6 +1684,13 @@ async function ensureGptTaskQuota(task, quotaAccountId = activeGptAccountId) {
     && generatedImages <= Number(quota.remainingGenerations || 0)) return;
   const restoreAt = quota.nextExpiryAt ? new Date(quota.nextExpiryAt).toLocaleString("zh-CN", { hour12: false }) : "额度窗口恢复后";
   scheduleGptQuotaReminder(quota.nextExpiryAt, quotaAccountId);
+  if (options.allowManualOverride) {
+    showWorkbenchAssistantBubble(
+      `本地额度只是估算提醒：当前预计还可上传 ${quota.remainingUploads} 张、生成 ${quota.remainingGenerations} 张。已按你的手动指令继续，网页真实限流时才会停止。`,
+      { duration: 7200, persistent: true }
+    );
+    return { quota, overridden: true };
+  }
   throw new Error(`当前账号本地估算额度不足：还可上传 ${quota.remainingUploads} 张、生成 ${quota.remainingGenerations} 张；预计 ${restoreAt} 可继续`);
 }
 
@@ -2198,7 +2205,7 @@ async function sendMultiWindowGptTasks() {
   }
 }
 
-async function sendNextGptTestTask() {
+async function sendNextGptTestTask(options = {}) {
   if (!window.gptWorkbench?.available || gptAutoRunning) return;
   if (gptAutoSettings.mode === "multi") return sendMultiWindowGptTasks();
   if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
@@ -2239,7 +2246,9 @@ async function sendNextGptTestTask() {
       task.accountId = runAccountId;
       task.autoRun = !manualMode;
       task.autoOptions = { ...gptAutoSettings };
-      if (!manualMode) await ensureGptTaskQuota(task);
+      if (!manualMode) await ensureGptTaskQuota(task, activeGptAccountId, {
+        allowManualOverride: Boolean(options.allowQuotaOverride)
+      });
       if (task.navigation === "new-chat") {
         await navigateEmbeddedGpt("new-chat");
         await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -7154,11 +7163,20 @@ function bindEvents() {
     gptTestQueueIndex = 0;
     updateGptTestQueueStatus();
   });
-  $("#gptTestSendBtn")?.addEventListener("click", () => sendNextGptTestTask());
+  $("#gptTestSendBtn")?.addEventListener("click", () => {
+    const pausedTaskError = String(gptLastFailedTask?._error || "");
+    const allowQuotaOverride = gptQueuePaused && /额度|限额|quota|rate limit|usage limit/i.test(pausedTaskError);
+    if (allowQuotaOverride) {
+      showWorkbenchAssistantBubble("已收到手动继续指令：本地额度提醒不再拦截本轮，网页真实返回限流时才停止。", { duration: 5200 });
+    }
+    sendNextGptTestTask({ allowQuotaOverride });
+  });
   $("#gptManualNextBtn")?.addEventListener("click", completeCurrentManualGptTask);
   $("#gptPauseQueueBtn")?.addEventListener("click", () => {
     if (!gptAutoRunning && gptQueuePaused) {
-      sendNextGptTestTask();
+      const pausedTaskError = String(gptLastFailedTask?._error || "");
+      const allowQuotaOverride = /额度|限额|quota|rate limit|usage limit/i.test(pausedTaskError);
+      sendNextGptTestTask({ allowQuotaOverride });
       return;
     }
     if (!gptAutoRunning) return;
