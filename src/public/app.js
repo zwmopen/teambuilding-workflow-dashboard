@@ -2470,8 +2470,9 @@ async function sendNextGptTestTask(options = {}) {
             : taskError.message;
           recordActualGptLimit(task._error, activeGptAccountId, lowOutputLimit ? "generation" : inferGptQuotaLimitKind(task, taskError.message));
           persistGptQueue();
+          const detectedLowOutputCount = Number(taskError.message.match(/只检测到\s*(\d+)/)?.[1] || result?.detectedImages || 0);
           throw new Error(lowOutputLimit
-            ? `本轮只生成 ${Math.max(0, Number(result?.detectedImages || 0))} 张，低于安全线；已暂停本批，等待下一轮额度探测`
+            ? `本轮只生成 ${Math.max(0, detectedLowOutputCount)} 张，低于安全线；已暂停本批，等待下一轮额度探测`
             : taskError.message);
         }
         gptTestQueueIndex += 1;
