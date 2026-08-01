@@ -30,6 +30,11 @@ test("GPT production history exposes cumulative work, time and average plan summ
   assert.match(css, /\.gpt-production-history-summary/);
 });
 
+test("GPT production history hides the native GPT view before opening its DOM panel", () => {
+  assert.match(app, /if \(gptActive\) await window\.gptWorkbench\?\.hide\?\.\(\)\.catch/);
+  assert.match(app, /panel\.hidden = false/);
+});
+
 test("GPT production exposes prompt and random current-session modes", () => {
   assert.match(html, /value="automatic">单窗口自动（有提示词）/);
   assert.match(html, /value="random">单窗口自动-随机/);

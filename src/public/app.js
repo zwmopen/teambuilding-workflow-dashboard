@@ -4656,14 +4656,18 @@ async function syncGptProductionHistory() {
 async function openGptProductionHistory(open = true) {
   const panel = $("#gptProductionHistoryPanel");
   if (!panel) return;
+  const gptActive = $("#gptProductionTestView")?.classList.contains("active");
   if (open) {
+    // A native WebContentsView is composited above the renderer regardless of
+    // CSS z-index. Hide it before revealing the DOM panel, otherwise the
+    // history sheet can appear to jump above/below GPT depending on timing.
+    if (gptActive) await window.gptWorkbench?.hide?.().catch(() => {});
     await syncGptProductionHistory();
     renderGptProductionHistory();
-  }
-  panel.hidden = !open;
-  if ($("#gptProductionTestView")?.classList.contains("active")) {
-    if (open) window.gptWorkbench?.hide?.().catch(() => {});
-    else restoreEmbeddedGptView();
+    panel.hidden = false;
+  } else {
+    panel.hidden = true;
+    if (gptActive) restoreEmbeddedGptView();
   }
 }
 
