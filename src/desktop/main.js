@@ -568,6 +568,7 @@ async function sendTaskToEmbeddedGpt(task = {}) {
     retryOf: String(task.retryOf || ""),
     retryFromStage: String(task.retryFromStage || ""),
     retryFromPercent: Math.max(0, Math.min(100, Number(task.retryFromPercent || 0))),
+    forceUpload: Boolean(task.forceUpload),
     expectedImages: Math.max(0, Number(task.expectedImages || task.expectedImageCount || 0))
   };
   const script = `new Promise((resolve) => {

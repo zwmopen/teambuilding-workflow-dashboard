@@ -1742,7 +1742,8 @@
       const paths = (entry.attachments || []).slice(0, 30);
       let files = [];
       let workflowResult = null;
-      const resumeExistingWorkflow = Boolean(task.workflow?.planSubmitted || entry.retryFromStage);
+      const resumeExistingWorkflow = !entry.forceUpload
+        && Boolean(task.workflow?.planSubmitted || entry.retryFromStage);
       if (!resumeExistingWorkflow && !paths.length) throw new Error("这个文件夹里没有可上传的图片或文案");
       if (resumeExistingWorkflow) {
         reportWorkbenchProgress(
@@ -2343,12 +2344,13 @@
       : [];
     const prompt = String(message.prompt || "").trim().slice(0, 30000);
     const retryFromStage = String(message.retryFromStage || "").trim();
+    const forceUpload = Boolean(message.forceUpload);
     const taskOptions = message.autoOptions && typeof message.autoOptions === "object" ? message.autoOptions : {};
     const noPromptMode = taskOptions.mode === "random";
     localStorage.setItem("tb-workbench-prompt-library-enabled", taskOptions.promptLibraryEnabled === false ? "0" : "1");
     localStorage.setItem("tb-workbench-message-downloads-enabled", taskOptions.messageDownloadsEnabled === false ? "0" : "1");
     window.dispatchEvent(new CustomEvent("tb-workbench-tools-visibility"));
-    const resumeOnly = Boolean(retryFromStage);
+    const resumeOnly = Boolean(retryFromStage) && !forceUpload;
     if (!requestId || (!resumeOnly && (!attachments.length || (!prompt && !noPromptMode)))) {
       window.postMessage({
         source: "tb-gpt-production-extension",
@@ -2368,6 +2370,8 @@
       retryTask.entry.autoOptions = taskOptions;
       retryTask.entry.retryFromStage = String(message.retryFromStage || "");
       retryTask.entry.retryFromPercent = Number(message.retryFromPercent || 0);
+      retryTask.entry.forceUpload = forceUpload;
+      if (forceUpload) retryTask.workflow = {};
       retryTask.status = "queued";
       retryTask.error = "";
       retryTask.controller = new AbortController();
@@ -2392,7 +2396,8 @@
       autoOptions: taskOptions,
       expectedImages: Math.max(0, Number(message.expectedImages || 0)),
       retryFromStage,
-      retryFromPercent: Number(message.retryFromPercent || 0)
+      retryFromPercent: Number(message.retryFromPercent || 0),
+      forceUpload
     });
   }
 

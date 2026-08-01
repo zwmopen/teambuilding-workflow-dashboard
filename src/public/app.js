@@ -1558,6 +1558,39 @@ function selectedGptTestTemplates() {
   return (dashboard?.templates?.templates || []).filter((template) => gptTestSelectedTemplates.has(template.id));
 }
 
+function hydrateGptTaskFromMaterialTree(task) {
+  if (!task || task.taskType !== "material") return task;
+  const currentAttachments = Array.isArray(task.attachments)
+    ? task.attachments.filter(Boolean)
+    : [];
+  if (currentAttachments.length) return task;
+  const materialPath = String(task.materialPath || "").trim();
+  const candidates = [
+    ...gptTestMaterialEntries.values(),
+    ...(dashboard?.materials?.categories || []).flatMap((category) =>
+      (category.items || []).map((item) => ({ item, category })))
+  ];
+  const match = candidates.find((entry) => String(entry?.item?.path || "") === materialPath)
+    || candidates.find((entry) => String(entry?.item?.name || "") === String(task.name || "").split(" × ").pop());
+  if (!match?.item) return task;
+  task.materialPath ||= match.item.path;
+  task.attachments = [...new Set((match.item.attachments || []).filter(Boolean))].slice(0, 30);
+  task.expectedImages ||= Number(match.item.imageCount || 0);
+  return task;
+}
+
+function shouldReattachGptTaskOnResume(task) {
+  if (!task || task.taskType !== "material") return false;
+  // A task that never reached the bridge must upload again. This marker is
+  // persisted with the queue so quota pauses cannot masquerade as web-stage
+  // checkpoints after a reload.
+  if (task._submittedToGpt === false) return true;
+  if (task._submittedToGpt === true) return false;
+  const stage = String(task._stage || task.retryFromStage || task._error || "");
+  return !stage || /排队|额度|限额|任务暂停|页面就绪|准备|上传|附件/i.test(stage)
+    && !/计划|图片|文案|打包|归档/i.test(stage);
+}
+
 function isHiddenMaterialPath(materialPath) {
   return String(materialPath || "").split(/[\\/]+/).some((segment) => segment.startsWith("."));
 }
@@ -2232,22 +2265,32 @@ async function sendNextGptTestTask(options = {}) {
     while (gptTestQueueIndex < gptTestQueue.length) {
       if (gptAutoPaused) throw new Error("已由用户暂停；可以继续剩余队列");
       const accountLimit = Math.max(1, Number(gptAutoSettings.accountTaskLimit || 8));
-      if (!manualMode && completedThisRun >= accountLimit) {
+      if (!manualMode && gptAutoSettings.mode === "multi" && completedThisRun >= accountLimit) {
         throw new Error(`已完成本轮 ${accountLimit} 套上限；点击“继续自动生产”后从第 ${gptTestQueueIndex + 1} 套续跑`);
       }
       const task = gptTestQueue[gptTestQueueIndex];
+      hydrateGptTaskFromMaterialTree(task);
       task._startedAt ||= new Date().toISOString();
       gptLastFailedStage = "";
       gptLastFailedPercent = 0;
-      if (resuming && task._stage && task._status !== "completed") {
+      const reattachOnResume = resuming && shouldReattachGptTaskOnResume(task);
+      if (reattachOnResume) {
+        task.retryFromStage = "";
+        task.retryFromPercent = 0;
+        task.forceUpload = true;
+      } else if (resuming && task._stage && task._status !== "completed") {
         task.retryFromStage = task._stage;
         task.retryFromPercent = Number(task._percent || 0);
+        task.forceUpload = false;
       }
       task.accountId = runAccountId;
       task.autoRun = !manualMode;
       task.autoOptions = { ...gptAutoSettings };
       if (!manualMode) await ensureGptTaskQuota(task, activeGptAccountId, {
-        allowManualOverride: Boolean(options.allowQuotaOverride)
+        // Single-window production is intentionally user-driven: the local
+        // quota ledger is a warning only. A real web limit still pauses in
+        // the extension, while multi-window keeps its conservative gate.
+        allowManualOverride: gptAutoSettings.mode !== "multi" || Boolean(options.allowQuotaOverride)
       });
       if (task.navigation === "new-chat") {
         await navigateEmbeddedGpt("new-chat");
@@ -2274,6 +2317,8 @@ async function sendNextGptTestTask(options = {}) {
       const pollingTask = poll();
       let result;
       try {
+        task._submittedToGpt = true;
+        persistGptQueue();
         result = await window.gptWorkbench.sendTask(task);
       } finally {
         polling = false;

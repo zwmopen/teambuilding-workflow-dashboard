@@ -133,6 +133,16 @@ test("quota reminders do not hard-block a deliberate manual continuation", () =>
   assert.match(app, /allowQuotaOverride/);
 });
 
+test("single-window continuation keeps quota warnings informational and reattaches tasks paused before the bridge", () => {
+  assert.match(app, /gptAutoSettings\.mode !== "multi" \|\| Boolean\(options\.allowQuotaOverride\)/);
+  assert.match(app, /task\._submittedToGpt = true/);
+  assert.match(app, /shouldReattachGptTaskOnResume/);
+  assert.match(app, /task\.forceUpload = true/);
+  assert.match(desktopMain, /forceUpload: Boolean\(task\.forceUpload\)/);
+  assert.match(gptSidebar, /const forceUpload = Boolean\(message\.forceUpload\)/);
+  assert.match(gptSidebar, /!entry\.forceUpload/);
+});
+
 test("GPT material tree never presents an unloaded parent folder as a fake zero", () => {
   assert.match(app, /category\.countKnown === false \? "…" : Number\(category\.count/);
   assert.match(app, /const categoryItems = category\.items \|\| \[\]/);
