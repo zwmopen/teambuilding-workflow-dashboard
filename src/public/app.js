@@ -189,6 +189,12 @@ async function hydrateGptBrowserProfiles() {
 }
 
 function loadGptAutoSettings() {
+  const defaultDownloadRoot = "D:\\Download";
+  const defaultProductRoot = "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目\\成品库（GPT+本地脚本制作）";
+  const normalizeProductionPath = (value, fallback) => {
+    const path = String(value || "").trim();
+    return /(?:^|[\\/])(?:_测试验收|验收)(?:[\\/]|$)/i.test(path) ? fallback : (path || fallback);
+  };
   const defaults = {
     mode: "automatic",
     autoConfirm: true,
@@ -210,8 +216,8 @@ function loadGptAutoSettings() {
     copyPrompt: "给我一份小红书文案",
     minimumImageCount: 4,
     idleUnloadMinutes: 30,
-    downloadRoot: "D:\\Download",
-    productRoot: "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目\\成品库（GPT+本地脚本制作）",
+    downloadRoot: defaultDownloadRoot,
+    productRoot: defaultProductRoot,
     promptLibraryEnabled: true,
     messageDownloadsEnabled: true,
     scheduledEnabled: false,
@@ -219,13 +225,16 @@ function loadGptAutoSettings() {
     scheduledJitterMinutes: 10
   };
   try {
-    return {
+    const loaded = {
       ...defaults,
       ...JSON.parse(localStorage.getItem(GPT_AUTO_SETTINGS_STORAGE_KEY) || "{}"),
       // 0.14.2: a failed material is recorded and skipped. It must never hold
       // the remaining production queue hostage.
       pauseOnFailure: false
     };
+    loaded.downloadRoot = normalizeProductionPath(loaded.downloadRoot, defaultDownloadRoot);
+    loaded.productRoot = normalizeProductionPath(loaded.productRoot, defaultProductRoot);
+    return loaded;
   } catch {
     return defaults;
   }

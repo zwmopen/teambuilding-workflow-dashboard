@@ -1127,8 +1127,12 @@ function runExtensionWorkPackage(body = {}) {
   }
   const requestedDownloadRoot = String(body.downloadRoot || "").trim();
   const requestedProductRoot = String(body.productRoot || "").trim();
+  const normalProductRoot = path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）");
+  const isAcceptancePath = (value) => /(?:^|[\\/])(?:_测试验收|验收)(?:[\\/]|$)/i.test(value);
+  const effectiveRequestedDownloadRoot = isAcceptancePath(requestedDownloadRoot) ? DOWNLOAD_ROOT : requestedDownloadRoot;
+  const effectiveRequestedProductRoot = isAcceptancePath(requestedProductRoot) ? normalProductRoot : requestedProductRoot;
   const effectiveDownloadRoot = requestedDownloadRoot
-    ? path.resolve(requestedDownloadRoot)
+    ? path.resolve(effectiveRequestedDownloadRoot)
     : path.resolve(DOWNLOAD_ROOT);
   const configPath = path.join(DOWNLOAD_ROOT, "workpkg_config.json");
   const originalConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath) : null;
@@ -1139,18 +1143,18 @@ function runExtensionWorkPackage(body = {}) {
     if (originalConfig) fs.writeFileSync(configPath, originalConfig);
     else fs.rmSync(configPath, { force: true });
   };
-  if (requestedDownloadRoot || requestedProductRoot) {
+  if (effectiveRequestedDownloadRoot || effectiveRequestedProductRoot) {
     const config = readJson(configPath, {});
-    if (requestedDownloadRoot) {
-      if (!path.isAbsolute(requestedDownloadRoot)) throw new Error("下载暂存目录必须是完整路径");
-      fs.mkdirSync(requestedDownloadRoot, { recursive: true });
-      config.image_inbox_path = path.resolve(requestedDownloadRoot);
+    if (effectiveRequestedDownloadRoot) {
+      if (!path.isAbsolute(effectiveRequestedDownloadRoot)) throw new Error("下载暂存目录必须是完整路径");
+      fs.mkdirSync(effectiveRequestedDownloadRoot, { recursive: true });
+      config.image_inbox_path = path.resolve(effectiveRequestedDownloadRoot);
     }
-    if (requestedProductRoot) {
-      if (!path.isAbsolute(requestedProductRoot)) throw new Error("成品库目录必须是完整路径");
-      fs.mkdirSync(requestedProductRoot, { recursive: true });
-      config.library_path = path.resolve(requestedProductRoot);
-      config.portfolio_output_path = path.resolve(requestedProductRoot);
+    if (effectiveRequestedProductRoot) {
+      if (!path.isAbsolute(effectiveRequestedProductRoot)) throw new Error("成品库目录必须是完整路径");
+      fs.mkdirSync(effectiveRequestedProductRoot, { recursive: true });
+      config.library_path = path.resolve(effectiveRequestedProductRoot);
+      config.portfolio_output_path = path.resolve(effectiveRequestedProductRoot);
     }
     writeJson(configPath, config);
   }

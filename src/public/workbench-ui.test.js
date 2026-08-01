@@ -410,6 +410,12 @@ test("GPT production exposes real paths, minimum image checks, tool toggles and 
   assert.match(server, /requestedProductRoot/);
 });
 
+test("normal production never routes package output into acceptance folders", () => {
+  assert.match(server, /isAcceptancePath/);
+  assert.match(server, /normalProductRoot/);
+  assert.match(app, /normalizeProductionPath/);
+});
+
 test("GPT packaging writes its task manifest beside the actual downloaded images", () => {
   assert.match(server, /const effectiveDownloadRoot = requestedDownloadRoot/);
   assert.match(server, /taskFile = path\.join\(effectiveDownloadRoot, `chatgpt-workpkg-task-/);
