@@ -92,9 +92,93 @@ let assistantMuteTimer = null;
 const GPT_ACCOUNTS_STORAGE_KEY = "teambuilding-gpt-accounts";
 const GPT_AUTO_SETTINGS_STORAGE_KEY = "teambuilding-gpt-auto-settings";
 const GPT_DEFAULT_MODE_MIGRATION_KEY = "teambuilding-gpt-default-mode-endless-v1";
+const GPT_MODE_PROFILES_STORAGE_KEY = "teambuilding-gpt-mode-profiles-v1";
 const GPT_QUEUE_STORAGE_KEY = "teambuilding-gpt-queue-v1";
+const GPT_MULTI_RUN_STORAGE_KEY = "teambuilding-gpt-multi-run-v1";
 const GPT_CONTINUOUS_RUN_STORAGE_KEY = "teambuilding-gpt-continuous-run-v1";
 const GPT_HISTORY_STORAGE_KEY = "teambuilding-gpt-production-history-v1";
+
+// The production selector intentionally exposes only the three workflows the
+// operator actually uses.  Older builds stored several aliases; normalize
+// them at the boundary so an upgrade cannot silently start a different queue.
+const GPT_MODE_DEFINITIONS = Object.freeze({
+  manual: { label: "手动模式", defaultName: "手动模式", continuous: false, multi: false },
+  single: { label: "单账号单模板·永不停歇", defaultName: "单账号单模板·永不停歇", continuous: true, multi: false },
+  multi: { label: "多账号单模板·永不停歇", defaultName: "多账号单模板·永不停歇", continuous: true, multi: true }
+});
+function normalizeGptProductionMode(value) {
+  const mode = String(value || "").trim();
+  if (mode === "manual") return "manual";
+  if (mode === "multi") return "multi";
+  if (["all-day-multi", "multi-account-template-endless", "multi-account"].includes(mode)) return "multi";
+  if (["all-day", "single-template-endless", "single-account-template-endless", "automatic", "random", "scheduled"].includes(mode)) return "single";
+  return "manual";
+}
+function loadGptModeProfiles() {
+  const defaults = {
+    manual: { name: GPT_MODE_DEFINITIONS.manual.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案" },
+    single: { name: GPT_MODE_DEFINITIONS.single.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案" },
+    multi: { name: GPT_MODE_DEFINITIONS.multi.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案" }
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem(GPT_MODE_PROFILES_STORAGE_KEY) || "{}");
+    return Object.fromEntries(Object.keys(defaults).map((key) => [key, { ...defaults[key], ...(saved?.[key] || {}) }]));
+  } catch { return defaults; }
+}
+let gptModeProfiles = loadGptModeProfiles();
+function activeGptModeKey(value = gptAutoSettings?.mode) {
+  return normalizeGptProductionMode(value);
+}
+function saveGptModeProfiles() {
+  localStorage.setItem(GPT_MODE_PROFILES_STORAGE_KEY, JSON.stringify(gptModeProfiles));
+}
+function applyGptModeProfile(mode = gptAutoSettings?.mode) {
+  const key = activeGptModeKey(mode);
+  const profile = gptModeProfiles[key] || gptModeProfiles.manual;
+  gptAutoSettings.mode = key;
+  gptAutoSettings.confirmText = String(profile.confirmText || "1").trim() || "1";
+  gptAutoSettings.copyPrompt = String(profile.copyPrompt || "给我一份小红书文案").trim() || "给我一份小红书文案";
+  gptAutoSettings.useCurrentSession = profile.useCurrentSession !== false;
+  return profile;
+}
+function renderGptModeProfile() {
+  const key = activeGptModeKey();
+  const profile = gptModeProfiles[key] || gptModeProfiles.manual;
+  if ($("#gptModeProfileName")) $("#gptModeProfileName").value = profile.name || GPT_MODE_DEFINITIONS[key].defaultName;
+  if ($("#gptModeStartBehavior")) $("#gptModeStartBehavior").value = profile.useCurrentSession === false ? "inject" : "current";
+  if ($("#gptModeConfirmText")) $("#gptModeConfirmText").value = profile.confirmText || "1";
+  if ($("#gptModeCopyPrompt")) $("#gptModeCopyPrompt").value = profile.copyPrompt || "给我一份小红书文案";
+  if ($("#gptModeProfileLabel")) $("#gptModeProfileLabel").textContent = `${GPT_MODE_DEFINITIONS[key].label} · 右键可修改、重命名或删除配置`;
+}
+function saveGptModeProfileFromUi() {
+  const key = activeGptModeKey();
+  const current = gptModeProfiles[key] || {};
+  gptModeProfiles[key] = {
+    ...current,
+    name: String($("#gptModeProfileName")?.value || GPT_MODE_DEFINITIONS[key].defaultName).trim() || GPT_MODE_DEFINITIONS[key].defaultName,
+    useCurrentSession: $("#gptModeStartBehavior")?.value !== "inject",
+    confirmText: String($("#gptModeConfirmText")?.value || "1").trim() || "1",
+    copyPrompt: String($("#gptModeCopyPrompt")?.value || "给我一份小红书文案").trim() || "给我一份小红书文案"
+  };
+  saveGptModeProfiles();
+  applyGptModeProfile(key);
+  gptAutoSettings.mode = key;
+  saveGptAutoSettings();
+  renderGptAutoSettings();
+  renderGptModeProfile();
+  updateGptTestQueueStatus("当前生产模式设置已保存；新任务会使用这套流程");
+  toast("当前模式设置已保存");
+}
+// Fallback guard for a browser profile that has no trusted conversation yet.
+// The user supplied the full V3.6 prompt as the permanent master rule; this
+// compact runtime copy keeps the critical invariants in every new template
+// session without changing already-trained conversation windows.
+const GPT_V36_MASTER_PROMPT = `你现在是“轮播母版迁移器 V3.6”。
+首组母版图片永久决定视觉结构；后续图片、TXT、文案和项目只提供内容，不得变成新模板。不要自由设计，不要继承历史失败图。
+母版页数不是输出上限：有效素材有几张就输出几张独立 3:4 图片，P1 为封面，后续为独立内页，不合并成总图；先输出逐页迁移计划并等待用户回复“1/继续/确认”后才出图。
+锁定封面骨架、内页拼图比例、字体/字号/描边/阴影、标题位置、色块、配色、无白边拼接和页面节奏。所有拼图分区必须全部离开原位；人物、静物、食物和道具必须去重；真实场景关系保留，不虚构建筑、价格、地点或项目，不制造旅行社广告感。
+业务默认使用“江浙沪企业团建”“10人起接”；只有素材或用户明确给出价格时才写价格；不得编造价格或高风险营销词。图上文字少而准，优先地点、项目、场景、路线和人数词。
+输出后逐页检查：数量与计划一致、图片不是源素材复制、没有白边和明显拼缝、人物/道具确实变化、没有 AI 广告感，并生成对应小红书文案。`;
 let gptProductionHistory = (() => {
   try {
     const rows = JSON.parse(localStorage.getItem(GPT_HISTORY_STORAGE_KEY) || "[]");
@@ -104,6 +188,57 @@ let gptProductionHistory = (() => {
 let gptAccounts = loadGptAccounts();
 let activeGptAccountId = gptAccounts[0]?.id || "account-1";
 let gptAutoSettings = loadGptAutoSettings();
+let gptMultiRunState = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(GPT_MULTI_RUN_STORAGE_KEY) || "null");
+    return saved && typeof saved === "object" ? saved : null;
+  } catch { return null; }
+})();
+
+function configuredGptAccountIds() {
+  const configured = Array.isArray(gptAutoSettings.multiAccountIds)
+    ? gptAutoSettings.multiAccountIds.map((id) => String(id || "")).filter(Boolean)
+    : [];
+  return new Set(configured);
+}
+
+function availableMultiWindowAccounts() {
+  const configured = configuredGptAccountIds();
+  return gptAccounts.filter((account) => !account.hidden && (!configured.size || configured.has(account.id)));
+}
+
+function gptAccountNeedsMasterPrompt(account = {}) {
+  const url = String(account.lastUrl || "").trim();
+  // A root ChatGPT URL is a fresh/unknown session. A conversation URL is
+  // treated as trained only when it is a real /c/<id> conversation, so an
+  // added browser cannot silently receive material without its template.
+  return !/\/c\/[a-z0-9-]+/i.test(url);
+}
+
+function promptForNewGptSession(prompt = "", account = {}) {
+  if (!gptAccountNeedsMasterPrompt(account)) return prompt;
+  return `${GPT_V36_MASTER_PROMPT}\n\n${prompt}`.trim();
+}
+
+function persistGptMultiRun(patch = {}) {
+  gptMultiRunState = {
+    ...(gptMultiRunState || {}),
+    ...patch,
+    updatedAt: new Date().toISOString()
+  };
+  try { localStorage.setItem(GPT_MULTI_RUN_STORAGE_KEY, JSON.stringify(gptMultiRunState)); } catch { /* private mode */ }
+  return gptMultiRunState;
+}
+
+function clearGptMultiRunIfFinished() {
+  if (!gptMultiRunState || gptMultiRunState.status === "running") return;
+  // Keep the last run summary for the production-history UI, but remove a
+  // stale pending queue so a restart never silently replays it.
+  if (gptMultiRunState.status === "completed" && !gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status))) {
+    try { localStorage.removeItem(GPT_MULTI_RUN_STORAGE_KEY); } catch { /* private mode */ }
+    gptMultiRunState = null;
+  }
+}
 
 function persistGptQueue() {
   if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
@@ -117,6 +252,15 @@ function persistGptQueue() {
     paused: gptQueuePaused || gptAutoPaused,
     tasks: gptTestQueue.map((task) => ({
       ...task,
+      autoOptions: task.autoOptions && Array.isArray(task.autoOptions.accounts)
+        ? {
+            ...task.autoOptions,
+            accounts: task.autoOptions.accounts.map((account, index) => ({
+              ...account,
+              name: /^浏览器\s*\d+$/i.test(String(account?.name || "")) ? `账号窗口 ${index + 1}` : account?.name
+            }))
+          }
+        : task.autoOptions,
       _status: task._status || "queued",
       _stage: task._stage || "",
       _percent: Number(task._percent || 0)
@@ -125,7 +269,7 @@ function persistGptQueue() {
 }
 
 function isContinuousGptProductionArmed() {
-  return ["all-day", "all-day-multi"].includes(gptAutoSettings.mode)
+  return ["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))
     && localStorage.getItem(GPT_CONTINUOUS_RUN_STORAGE_KEY) === "true";
 }
 
@@ -138,7 +282,7 @@ function currentGptQueueIntegrityBlock() {
   const task = gptTestQueue[gptTestQueueIndex];
   if (!task || task._status === "completed") return null;
   const code = String(task._errorCode || "");
-  if (!["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "COMPOSER_ATTACHMENT_CONFLICT"].includes(code)) return null;
+  if (!["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "COMPOSER_ATTACHMENT_CONFLICT", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "IMAGE_COUNT_UNCERTAIN", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(code)) return null;
   return task;
 }
 
@@ -171,13 +315,34 @@ function restoreGptQueue() {
       saved.paused = true;
       localStorage.setItem(GPT_QUEUE_STORAGE_KEY, JSON.stringify(saved));
     }
-    gptTestQueue = saved.tasks;
+    gptTestQueue = saved.tasks.map((task) => ({
+      ...task,
+      autoOptions: task.autoOptions && Array.isArray(task.autoOptions.accounts)
+        ? {
+            ...task.autoOptions,
+            accounts: task.autoOptions.accounts.map((account, index) => ({
+              ...account,
+              name: /^浏览器\s*\d+$/i.test(String(account?.name || "")) ? `账号窗口 ${index + 1}` : account?.name
+            }))
+          }
+        : task.autoOptions
+    }));
     gptTestQueueIndex = Math.max(0, Math.min(saved.tasks.length, Number(saved.index || 0)));
     gptTestQueue.forEach((task) => {
       if (task._status === "running") task._status = "paused";
     });
     gptQueuePaused = gptTestQueueIndex < gptTestQueue.length;
     if (gptQueuePaused) {
+      // Rehydrate the retry affordance as well as the queue itself.  After a
+      // restart the old code restored the paused task but left
+      // gptLastFailedTask null, so the visible “重试当前任务” button had no
+      // effect until another failure happened in this renderer session.
+      const currentTask = gptTestQueue[gptTestQueueIndex];
+      if (currentTask && currentTask._status !== "completed" && currentTask._status !== "skipped") {
+        gptLastFailedTask = currentTask;
+        gptLastFailedStage = String(currentTask._stage || "");
+        gptLastFailedPercent = Number(currentTask._percent || 0);
+      }
       showWorkbenchAssistantBubble(`发现上次未完成队列：从第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 套继续。`, { duration: 0 });
     }
   } catch {
@@ -193,14 +358,17 @@ function loadGptAccounts() {
       : [];
     if (accounts.length) return accounts.map((item, index) => ({
       id: String(item.id),
-      name: String(item.name || `浏览器 ${index + 1}`).slice(0, 24),
+      name: (/^浏览器\s*\d+$/i.test(String(item.name || "")) ? `账号窗口 ${index + 1}` : String(item.name || `账号窗口 ${index + 1}`)).slice(0, 24),
       quotaGroup: String(item.quotaGroup || item.id),
-      hidden: Boolean(item.hidden)
+      hidden: Boolean(item.hidden),
+      lastUrl: String(item.lastUrl || ""),
+      lastOpenedAt: String(item.lastOpenedAt || ""),
+      createdAt: String(item.createdAt || "")
     }));
   } catch {
     // Fall back to the first isolated account.
   }
-  return [{ id: "account-1", name: "浏览器 1", quotaGroup: "account-1", hidden: false }];
+  return [{ id: "account-1", name: "账号窗口 1", quotaGroup: "account-1", hidden: false }];
 }
 
 function saveGptAccounts() {
@@ -216,16 +384,50 @@ async function hydrateGptBrowserProfiles() {
       if (known.has(local.id)) continue;
       state = await window.gptWorkbench.saveProfile({
         ...local,
-        name: local.name || `浏览器 ${state.profiles.length + 1}`,
+        name: local.name || `账号窗口 ${state.profiles.length + 1}`,
         active: false
       });
       known.add(local.id);
     }
+    // Migrate the persisted native profile labels as well as the local UI
+    // copy.  Earlier builds stored “浏览器 N”; leaving that value in the
+    // Electron profile file made the next restart regress the account
+    // language even though the current tab already showed “账号窗口 N”.
+    const nativeProfiles = state.profiles || [];
+    for (let index = 0; index < nativeProfiles.length; index += 1) {
+      const profile = nativeProfiles[index];
+      if (!/^浏览器\s*\d+$/i.test(String(profile.name || ""))) continue;
+      state = await window.gptWorkbench.saveProfile({
+        ...profile,
+        name: `账号窗口 ${index + 1}`,
+        active: profile.id === state.activeId
+      });
+    }
+    const persistedAccountSettings = dashboard?.workspaceSettings?.pageSettings?.gptAuto?.accounts;
+    if (Array.isArray(persistedAccountSettings)) {
+      let settingsChanged = false;
+      const normalizedSettings = persistedAccountSettings.map((account, index) => {
+        if (!account || !/^浏览器\s*\d+$/i.test(String(account.name || ""))) return account;
+        settingsChanged = true;
+        return { ...account, name: `账号窗口 ${index + 1}` };
+      });
+      if (settingsChanged && dashboard?.workspaceSettings?.pageSettings?.gptAuto) {
+        dashboard.workspaceSettings.pageSettings.gptAuto.accounts = normalizedSettings;
+        api("/api/page-settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ gptAuto: { accounts: normalizedSettings } })
+        }).catch(() => {});
+      }
+    }
     gptAccounts = (state.profiles || []).map((profile, index) => ({
       id: String(profile.id),
-      name: String(profile.name || `浏览器 ${index + 1}`),
+      name: (/^浏览器\s*\d+$/i.test(String(profile.name || "")) ? `账号窗口 ${index + 1}` : String(profile.name || `账号窗口 ${index + 1}`)),
       quotaGroup: String(profile.quotaGroup || profile.id),
-      hidden: Boolean(profile.hidden)
+      hidden: Boolean(profile.hidden),
+      lastUrl: String(profile.lastUrl || ""),
+      lastOpenedAt: String(profile.lastOpenedAt || ""),
+      createdAt: String(profile.createdAt || "")
     }));
     activeGptAccountId = gptAccounts.some((profile) => profile.id === state.activeId && !profile.hidden)
       ? state.activeId
@@ -234,7 +436,7 @@ async function hydrateGptBrowserProfiles() {
     renderGptAccountTabs();
     renderGptBrowserManager();
   } catch (error) {
-    console.warn("浏览器档案读取失败，暂用本地标签", error);
+    console.warn("账号窗口档案读取失败，暂用本地标签", error);
   }
 }
 
@@ -246,7 +448,7 @@ function loadGptAutoSettings() {
     return /(?:^|[\\/])(?:_测试验收|验收)(?:[\\/]|$)/i.test(path) ? fallback : (path || fallback);
   };
   const defaults = {
-    mode: "all-day",
+    mode: "single",
     autoConfirm: true,
     autoCopy: true,
     autoPackage: true,
@@ -259,6 +461,10 @@ function loadGptAutoSettings() {
     accountTaskLimit: 8,
     parallelWorkers: 3,
     maximumWorkers: 5,
+    // Empty means all visible browser profiles. Set this to a list to run a
+    // deliberate two-account/three-account production without touching a
+    // blank or untrained profile.
+    multiAccountIds: [],
     uploadLimit: 80,
     generationLimit: 50,
     windowHours: 3,
@@ -288,6 +494,13 @@ function loadGptAutoSettings() {
       // the remaining production queue hostage.
       pauseOnFailure: false
     };
+    if (Array.isArray(loaded.accounts)) {
+      loaded.accounts = loaded.accounts.map((account, index) => ({
+        ...account,
+        name: /^浏览器\s*\d+$/i.test(String(account?.name || "")) ? `账号窗口 ${index + 1}` : account?.name
+      }));
+    }
+    loaded.mode = normalizeGptProductionMode(loaded.mode);
     loaded.downloadRoot = normalizeProductionPath(loaded.downloadRoot, defaultDownloadRoot);
     loaded.productRoot = normalizeProductionPath(loaded.productRoot, defaultProductRoot);
     return loaded;
@@ -298,7 +511,9 @@ function loadGptAutoSettings() {
 
 function renderGptAutoSettings() {
   const values = gptAutoSettings;
-  const mode = ["manual", "multi", "random", "all-day", "all-day-multi", "scheduled"].includes(values.mode) ? values.mode : "automatic";
+  const mode = normalizeGptProductionMode(values.mode);
+  values.mode = mode;
+  applyGptModeProfile(mode);
   if ($("#gptProductionMode")) $("#gptProductionMode").value = mode;
   if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = mode;
   if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
@@ -331,6 +546,7 @@ function renderGptAutoSettings() {
   if ($("#gptProductRoot")) $("#gptProductRoot").value = values.productRoot;
   if ($("#gptPromptLibraryEnabled")) $("#gptPromptLibraryEnabled").checked = values.promptLibraryEnabled !== false;
   if ($("#gptMessageDownloadsEnabled")) $("#gptMessageDownloadsEnabled").checked = values.messageDownloadsEnabled !== false;
+  renderGptModeProfile();
   renderGptBrowserManager();
 }
 
@@ -338,8 +554,9 @@ function saveGptAutoSettings() {
   const minDelay = Math.max(5, Number($("#gptAutoMinDelay")?.value || 25));
   const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
   const selectedMode = activePageSettings === "gptAuto" ? $("#gptProductionModeSetting")?.value : $("#gptProductionMode")?.value;
+  const normalizedMode = normalizeGptProductionMode(selectedMode || gptAutoSettings.mode);
   gptAutoSettings = {
-    mode: ["manual", "multi", "random", "all-day", "all-day-multi", "scheduled"].includes(selectedMode) ? selectedMode : "automatic",
+    mode: normalizedMode,
     autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
     autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
     autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
@@ -352,6 +569,7 @@ function saveGptAutoSettings() {
     accountTaskLimit: Math.max(1, Number($("#gptAutoAccountLimit")?.value || 8)),
     parallelWorkers: Math.max(1, Math.min(5, Number($("#gptParallelWorkers")?.value || 3))),
     maximumWorkers: 5,
+    multiAccountIds: Array.isArray(gptAutoSettings.multiAccountIds) ? gptAutoSettings.multiAccountIds : [],
     uploadLimit: Math.max(1, Number($("#gptUploadLimit")?.value || 80)),
     generationLimit: Math.max(1, Number($("#gptGenerationLimit")?.value || 50)),
     windowHours: Math.max(1, Number($("#gptQuotaWindowHours")?.value || 3)),
@@ -373,6 +591,13 @@ function saveGptAutoSettings() {
     continuousWorkStart: String($("#gptContinuousWorkStart")?.value || "07:00"),
     continuousWorkEnd: String($("#gptContinuousWorkEnd")?.value || "02:00")
   };
+  gptModeProfiles[normalizedMode] = {
+    ...(gptModeProfiles[normalizedMode] || {}),
+    confirmText: gptAutoSettings.confirmText,
+    copyPrompt: gptAutoSettings.copyPrompt
+  };
+  saveGptModeProfiles();
+  gptAutoSettings.mode = normalizedMode;
   localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
   window.gptWorkbench?.setLaunchAtLogin?.(gptAutoSettings.launchAtLogin !== false).catch(() => {});
   renderGptAutoSettings();
@@ -608,12 +833,15 @@ function showContextMenu(x, y) {
   const isFolderBinding = contextMenuTarget.kind === "folder-binding";
   const isEditableFolder = contextMenuTarget.kind === "gpt-material-folder" || contextMenuTarget.kind === "gpt-template-folder";
   const isBrowserProfile = contextMenuTarget.kind === "gpt-browser-profile";
-  if ($("#contextOpenFolder")) $("#contextOpenFolder").hidden = isBrowserProfile;
-  if ($("#contextCopyPath")) $("#contextCopyPath").hidden = isBrowserProfile;
+  const isProductionMode = contextMenuTarget.kind === "gpt-production-mode";
+  if ($("#contextOpenFolder")) $("#contextOpenFolder").hidden = isBrowserProfile || isProductionMode;
+  if ($("#contextCopyPath")) $("#contextCopyPath").hidden = isBrowserProfile || isProductionMode;
   if ($("#contextSetFolder")) $("#contextSetFolder").hidden = !isFolderBinding;
   if ($("#contextRename")) $("#contextRename").hidden = isFolderBinding;
   if ($("#contextTrashFolder")) $("#contextTrashFolder").hidden = !isEditableFolder;
-  if ($("#contextCopyTemplateCommand")) $("#contextCopyTemplateCommand").hidden = isFolderBinding || isBrowserProfile;
+  if ($("#contextModeSettings")) $("#contextModeSettings").hidden = !isProductionMode;
+  if ($("#contextDeleteMode")) $("#contextDeleteMode").hidden = !isProductionMode;
+  if ($("#contextCopyTemplateCommand")) $("#contextCopyTemplateCommand").hidden = isFolderBinding || isBrowserProfile || isProductionMode;
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
   menu.classList.add("show");
@@ -713,21 +941,36 @@ async function loadDashboard(force = false, libraryPath = "") {
   dashboard = await api(`/api/dashboard${query ? `?${query}` : ""}`);
   const persistedGptAuto = dashboard?.workspaceSettings?.pageSettings?.gptAuto;
   if (persistedGptAuto && typeof persistedGptAuto === "object") {
+    const persistedAccounts = Array.isArray(persistedGptAuto.accounts) ? persistedGptAuto.accounts : [];
+    const normalizedAccounts = persistedAccounts.map((account, index) => (
+      account && /^浏览器\s*\d+$/i.test(String(account.name || ""))
+        ? { ...account, name: `账号窗口 ${index + 1}` }
+        : account
+    ));
     const activeAccountSettings = (persistedGptAuto.accounts || []).find((account) => account.id === activeGptAccountId)
       || persistedGptAuto.accounts?.[0] || {};
     gptAutoSettings = {
       ...gptAutoSettings,
       ...persistedGptAuto,
+      accounts: normalizedAccounts,
       uploadLimit: activeAccountSettings.uploadLimit ?? gptAutoSettings.uploadLimit,
       generationLimit: activeAccountSettings.generationLimit ?? gptAutoSettings.generationLimit,
       windowHours: activeAccountSettings.windowHours ?? gptAutoSettings.windowHours
     };
+    gptAutoSettings.mode = normalizeGptProductionMode(gptAutoSettings.mode);
     localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
+    if (normalizedAccounts.some((account, index) => account?.name !== persistedAccounts[index]?.name)) {
+      api("/api/page-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gptAuto: { accounts: normalizedAccounts } })
+      }).catch(() => {});
+    }
   }
   if (localStorage.getItem(GPT_DEFAULT_MODE_MIGRATION_KEY) !== "done") {
     gptAutoSettings = {
       ...gptAutoSettings,
-      mode: "all-day",
+      mode: "single",
       launchAtLogin: true,
       continuousAutoStart: true,
       continuousWorkHoursEnabled: true,
@@ -1636,7 +1879,7 @@ function renderGptTestTemplates() {
         <button class="workbench-folder-item gpt-test-template-row${expanded ? " active" : ""}" type="button" data-gpt-test-template="${escapeHtml(template.id)}">
           <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(template.name)}${template.kind === "online" ? "" : `（${template.imageCount || 0}）`}</strong></span>
         </button>
-        <button class="gpt-post-send-button" type="button" data-gpt-upload-template="${escapeHtml(template.id)}" title="${template.kind === "online" ? "在当前浏览器打开这个在线模板" : "只把这个模板上传到当前 GPT 输入框，不自动发送"}"${gptAutoRunning ? " disabled" : ""}>上传</button>
+        <button class="gpt-post-send-button" type="button" data-gpt-upload-template="${escapeHtml(template.id)}" title="${template.kind === "online" ? "在当前账号窗口打开这个在线模板" : "只把这个模板上传到当前 GPT 输入框，不自动发送"}"${gptAutoRunning ? " disabled" : ""}>上传</button>
       </div>
       ${expanded ? `<div class="workbench-template-images workbench-inline-previews">${onlineDetail}${previews}${texts}</div>` : ""}
     </section>`;
@@ -1784,7 +2027,18 @@ async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8
   const entries = (dashboard?.materials?.categories || [])
     .filter((category) => !isHiddenMaterialPath(category.path))
     .flatMap((category) => (category.items || [])
-      .filter((item) => !isHiddenMaterialPath(item.path))
+      .filter((item) => {
+        if (isHiddenMaterialPath(item.path)) return false;
+        // A post is a real production unit only when the scanner found both
+        // images and a TXT reference. Never enqueue an empty parent folder or
+        // an in-progress directory merely because it has a name.
+        const imageCount = Number(item.imageCount || 0);
+        const textCount = Number(item.textCount || 0);
+        const attachments = Array.isArray(item.attachments) ? item.attachments : [];
+        const hasImage = imageCount > 0 || attachments.some((entry) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(String(entry || "")));
+        const hasText = textCount > 0 || attachments.some((entry) => /\.txt$/i.test(String(entry || "")));
+        return hasImage && hasText;
+      })
       .map((item) => ({ item, category })))
     .sort((left, right) => {
       const usage = Number(left.item.usageCount || 0) - Number(right.item.usageCount || 0);
@@ -1809,7 +2063,7 @@ async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8
 }
 
 async function prepareAllDayGptQueue() {
-  if (!["all-day", "all-day-multi"].includes(gptAutoSettings.mode) || gptAutoRunning) return false;
+  if (!["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)) || gptAutoRunning) return false;
   return prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "全天自动");
 }
 
@@ -1867,8 +2121,8 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
     return;
   }
 
-  const candidateAccounts = (gptAutoSettings.mode === "all-day-multi"
-    ? gptAccounts.filter((item) => !item.hidden)
+  const candidateAccounts = (normalizeGptProductionMode(gptAutoSettings.mode) === "multi"
+    ? availableMultiWindowAccounts()
     : gptAccounts.filter((item) => item.id === activeGptAccountId));
   const cycleStates = candidateAccounts.map((account) => ({
     account,
@@ -1888,7 +2142,10 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
   gptContinuousLaunchTimer = setTimeout(async () => {
     gptContinuousLaunchTimer = null;
     if (!isContinuousGptProductionArmed() || gptAutoRunning || gptAutoPaused) return;
-    let hasPendingQueue = gptTestQueueIndex < gptTestQueue.length;
+    // The queue index is only a display cursor. A multi-window run advances
+    // workers independently, so pending status—not the cursor—decides whether
+    // another batch is needed after a restart or quota pause.
+    let hasPendingQueue = gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
     if (!hasPendingQueue) {
       hasPendingQueue = Boolean(await prepareAllDayGptQueue());
     }
@@ -1897,7 +2154,7 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
       scheduleContinuousGptProduction(10 * 60_000);
       return;
     }
-    gptQueuePaused = gptTestQueueIndex < gptTestQueue.length;
+    gptQueuePaused = gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
     persistGptQueue();
     showWorkbenchAssistantBubble("全天自动正在继续下一批素材。", { duration: 0 });
     await sendNextGptTestTask({ continuousResume: true, allowedAccountIds: readyAccounts.map((entry) => entry.account.id) });
@@ -1947,7 +2204,7 @@ async function uploadTemplateToCurrentGpt(template) {
   if (template.kind === "online") {
     if (!window.gptWorkbench?.navigate) throw new Error("当前不是桌面开发端，无法打开在线模板");
     await window.gptWorkbench.navigate("url", activeGptAccountId, template.url);
-    showWorkbenchAssistantBubble(`已在当前浏览器打开在线模板“${template.name}”。`, { duration: 4200 });
+    showWorkbenchAssistantBubble(`已在当前账号窗口打开在线模板“${template.name}”。`, { duration: 4200 });
     return;
   }
   const task = buildGptTemplateInitTask(template);
@@ -1958,16 +2215,16 @@ async function uploadTemplateToCurrentGpt(template) {
 function buildGptTestTask(entry, template = null) {
   const attachments = attachmentsForSingleMaterial(entry.item);
   const extra = String($("#gptTestExtraPrompt")?.value || "").trim();
-  // The random/current-session mode is prompt-free only when no physical
-  // template was selected. A selected template still needs its normal
-  // initialization/migration prompt in the new conversation.
-  const randomMode = gptAutoSettings.mode === "random" && !template;
-  const prompt = randomMode ? "" : [
+  // A mode configured to reuse the current session deliberately sends only
+  // the material attachment.  The explicit “inject” choice carries the
+  // compact V3.6 rules even when no physical template folder is selected.
+  const useCurrentSession = gptAutoSettings.useCurrentSession !== false && !template;
+  const prompt = useCurrentSession ? "" : [
     template?.kind === "online"
       ? `继续使用当前链接会话中已经沉淀好的「${template.name}」母版。`
       : template
         ? `继续使用当前会话刚初始化的「${template.name}」母版。`
-        : "继续使用当前 GPT 会话里已经沉淀好的母版环境。",
+        : GPT_V36_MASTER_PROMPT,
     "本次附件全部是待迁移素材和 TXT 参考内容，不是新模板。",
     `当前素材文件夹：${entry.item.name}`,
     "请读取全部附件，不要省略 TXT。先严格按既定格式输出逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。",
@@ -2167,7 +2424,7 @@ async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
   const state = readGptCycleState(key);
   if (Number(state.nextProbeAt || 0) !== Number(expectedProbeAt || 0)) return;
   if (gptAutoSettings.mode === "manual") return;
-  if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode)) {
+  if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) {
     if (!isContinuousGptProductionArmed()) return;
     const workWindow = getGptContinuousWorkWindow();
     if (!workWindow.allowed) {
@@ -2184,7 +2441,7 @@ async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
   }
 
   let hasPendingQueue = gptTestQueueIndex < gptTestQueue.length;
-  if (!hasPendingQueue && (["all-day", "all-day-multi", "scheduled"].includes(gptAutoSettings.mode))) {
+  if (!hasPendingQueue && (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)))) {
     hasPendingQueue = Boolean(await prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "额度恢复自动探测"));
   }
   if (!hasPendingQueue) {
@@ -2196,7 +2453,10 @@ async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
   gptAutoPaused = false;
   persistGptQueue();
   showWorkbenchAssistantBubble("已到下一次额度探测时间，正在用下一条素材自动试跑；若仍只生成 1–3 张，会再次停止。", { duration: 0, tone: "info" });
-  await sendNextGptTestTask({ quotaProbe: true });
+  await sendNextGptTestTask({
+    quotaProbe: true,
+    allowedAccountIds: normalizeGptProductionMode(gptAutoSettings.mode) === "multi" ? [String(accountId)] : undefined
+  });
 }
 
 function scheduleGptQuotaReminder(nextExpiryAt, accountId) {
@@ -2232,9 +2492,10 @@ async function checkScheduledGptProduction() {
   if (!gptAutoSettings.scheduledEnabled || gptAutoRunning || gptScheduledLaunchTimer) return;
   const now = new Date();
   const dayKey = now.toISOString().slice(0, 10);
-  const plans = gptAutoSettings.mode === "scheduled"
-    ? parseGptSchedulePlan(gptAutoSettings.schedulePlan || `${gptAutoSettings.scheduledTime || "09:30"},${gptAutoSettings.accountTaskLimit || 8}`)
-    : [{ id: "default", time: gptAutoSettings.scheduledTime || "09:30", count: gptAutoSettings.accountTaskLimit || 8 }];
+  const plans = parseGptSchedulePlan(
+    gptAutoSettings.schedulePlan
+      || `${gptAutoSettings.scheduledTime || "09:30"},${gptAutoSettings.accountTaskLimit || 8}`
+  );
   for (const plan of plans) {
     const launchKey = `${dayKey}:${plan.id}`;
     if (gptScheduledLaunchKeys.has(launchKey)) continue;
@@ -2243,10 +2504,10 @@ async function checkScheduledGptProduction() {
     const target = new Date(now);
     target.setHours(hour, minute, 0, 0);
     if (now < target || now.getTime() - target.getTime() > 65_000) continue;
-    if ((["all-day", "all-day-multi", "scheduled"].includes(gptAutoSettings.mode)) && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
+    if ((["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
       gptScheduledLaunchKeys.add(launchKey);
       gptScheduledDayKey = dayKey;
-      const prepared = await prepareAutoGptQueue(plan.count, gptAutoSettings.mode === "scheduled" ? "定时启动" : "全天自动");
+      const prepared = await prepareAutoGptQueue(plan.count, "永不停歇");
       if (!prepared) {
         showWorkbenchAssistantBubble("已到全天自动时间，但素材库没有可用素材；点号隐藏文件夹已跳过。", { duration: 0 });
         continue;
@@ -2280,19 +2541,7 @@ function updateGptTestQueueStatus(message = "") {
   if (!node || !button) return;
   const selectedCount = gptTestSelectedMaterials.size;
   const canResumeQueue = gptQueuePaused && gptTestQueue.length > 0 && gptTestQueueIndex < gptTestQueue.length;
-  const mode = gptAutoSettings.mode === "manual"
-    ? "手动"
-    : gptAutoSettings.mode === "multi"
-      ? "多窗口"
-      : gptAutoSettings.mode === "random"
-        ? "单窗口自动-随机"
-        : gptAutoSettings.mode === "all-day"
-          ? "单窗口全天自动"
-          : gptAutoSettings.mode === "all-day-multi"
-            ? "多账号全天自动"
-          : gptAutoSettings.mode === "scheduled"
-            ? "定时启动"
-          : "单窗口自动（有提示词）";
+  const mode = GPT_MODE_DEFINITIONS[activeGptModeKey()]?.label || "手动模式";
   if (message) node.textContent = message;
   else if (canResumeQueue) node.textContent = `已恢复未完成队列，还有 ${gptTestQueue.length - gptTestQueueIndex} 个步骤待处理`;
   else if (!selectedCount) node.textContent = "请至少选择一个素材文件夹；模板可以不选";
@@ -2311,7 +2560,7 @@ function updateGptTestQueueStatus(message = "") {
   if (pauseButton) {
     pauseButton.hidden = !gptAutoRunning && !gptQueuePaused;
     pauseButton.disabled = false;
-    pauseButton.textContent = gptAutoRunning ? (gptAutoPaused ? "暂停中…" : "暂停") : "继续";
+    pauseButton.textContent = gptAutoPaused || (!gptAutoRunning && gptQueuePaused) ? "继续" : "暂停";
   }
   $("#gptSkipTaskBtn")?.toggleAttribute("disabled", gptAutoRunning || !gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length);
   $("#gptManualNextBtn")?.toggleAttribute("hidden", gptAutoSettings.mode !== "manual" || !gptCurrentManualTask);
@@ -2353,7 +2602,7 @@ function renderGptAccountTabs() {
 async function renameGptAccount(accountId) {
   const account = gptAccounts.find((item) => item.id === accountId);
   if (!account) return;
-  const nextName = window.prompt("输入这个浏览器窗口的新名称", account.name);
+  const nextName = window.prompt("输入这个账号窗口的新名称", account.name);
   if (nextName === null) return;
   const cleanName = String(nextName || "").trim().slice(0, 24);
   if (!cleanName || cleanName === account.name) return;
@@ -2365,7 +2614,7 @@ async function renameGptAccount(accountId) {
   saveGptAccounts();
   renderGptAccountTabs();
   renderGptBrowserManager();
-  showWorkbenchAssistantBubble(`浏览器窗口已重命名为“${cleanName}”。`);
+  showWorkbenchAssistantBubble(`账号窗口已重命名为“${cleanName}”。`);
 }
 
 async function reorderGptAccounts(sourceId, targetId) {
@@ -2382,7 +2631,7 @@ async function reorderGptAccounts(sourceId, targetId) {
   saveGptAccounts();
   renderGptAccountTabs();
   renderGptBrowserManager();
-  showWorkbenchAssistantBubble("浏览器标签顺序已保存。", { transient: true, duration: 2600 });
+  showWorkbenchAssistantBubble("账号窗口顺序已保存。", { transient: true, duration: 2600 });
 }
 
 function renderGptBrowserManager() {
@@ -2390,7 +2639,7 @@ function renderGptBrowserManager() {
   if (!host) return;
   host.innerHTML = gptAccounts.map((account) => `
     <section class="gpt-browser-manager-row" data-browser-profile="${escapeHtml(account.id)}">
-      <input type="text" value="${escapeHtml(account.name)}" data-browser-name="${escapeHtml(account.id)}" aria-label="浏览器名称" />
+      <input type="text" value="${escapeHtml(account.name)}" data-browser-name="${escapeHtml(account.id)}" aria-label="账号窗口名称" />
       <input type="text" value="${escapeHtml(account.quotaGroup || account.id)}" data-browser-quota-group="${escapeHtml(account.id)}" aria-label="额度组" />
       <button type="button" data-browser-toggle="${escapeHtml(account.id)}">${account.hidden ? "重新打开" : "隐藏标签"}</button>
       <button type="button" data-browser-recovery="${escapeHtml(account.id)}">创建恢复点</button>
@@ -2402,11 +2651,18 @@ function renderGptBrowserManager() {
 
 async function switchGptAccount(accountId) {
   const account = gptAccounts.find((item) => item.id === accountId);
-  if (!account || account.id === activeGptAccountId) return;
+  if (!account) return;
+  // The renderer can restore an active tab from local settings while the
+  // Electron side still has another BrowserView (or no view) attached after
+  // a restart.  Do not return early when the tab is already marked active:
+  // re-showing it is what actually wakes/attaches that account's persistent
+  // GPT session.  This also makes a newly added account window immediately
+  // usable instead of leaving the previous account's page visible.
+  const accountChanged = account.id !== activeGptAccountId;
   activeGptAccountId = account.id;
   window.gptWorkbench?.saveProfile?.({ ...account, active: true, lastOpenedAt: new Date().toISOString() }).catch(() => {});
   const accountSettings = dashboard?.workspaceSettings?.pageSettings?.gptAuto?.accounts?.find((item) => item.id === account.id);
-  if (accountSettings) {
+  if (accountChanged && accountSettings) {
     gptAutoSettings = {
       ...gptAutoSettings,
       uploadLimit: accountSettings.uploadLimit,
@@ -2421,7 +2677,7 @@ async function switchGptAccount(accountId) {
   await showEmbeddedGptView();
   refreshGptQuota();
   if (gptAutoRunning) {
-    showWorkbenchAssistantBubble(`已切换查看 ${account.name}；正在运行的任务仍留在开始时的浏览器，不会向当前窗口自动注入。`, { duration: 0 });
+    showWorkbenchAssistantBubble(`已切换查看 ${account.name}；正在运行的任务仍留在开始时的账号窗口，不会向当前窗口自动注入。`, { duration: 0 });
   }
 }
 
@@ -2437,7 +2693,7 @@ async function addGptAccount() {
   const used = new Set(gptAccounts.map((item) => item.id));
   let sequence = 1;
   while (used.has(`account-${sequence}`)) sequence += 1;
-  const account = { id: `account-${sequence}`, name: `浏览器 ${sequence}`, quotaGroup: `account-${sequence}`, hidden: false };
+  const account = { id: `account-${sequence}`, name: `账号窗口 ${sequence}`, quotaGroup: `account-${sequence}`, hidden: false };
   gptAccounts.push(account);
   activeGptAccountId = account.id;
   if (window.gptWorkbench?.saveProfile) {
@@ -2457,7 +2713,7 @@ async function removeGptAccount(accountId) {
     return;
   }
   if (gptAccounts.length <= 1) return;
-  if (!window.confirm("移除后顶部不再显示，但不会删除 GPT 登录数据。确定移除这个浏览器记录吗？")) return;
+  if (!window.confirm("移除后顶部不再显示，但不会删除 GPT 登录数据。确定移除这个账号窗口记录吗？")) return;
   if (!window.confirm("再次确认：只移除记录，登录分区仍保留。")) return;
   if (window.gptWorkbench?.removeProfile) {
     const state = await window.gptWorkbench.removeProfile(accountId);
@@ -2486,7 +2742,7 @@ async function deleteGptAccountLogin(accountId) {
   await window.gptWorkbench.deleteProfileLogin(accountId);
   gptLastShowSignature = "";
   if (accountId === activeGptAccountId) await showEmbeddedGptView();
-  showSystemNotice("登录数据已清除", `${account.name} 的本机登录状态已删除，浏览器档案仍保留。`, { tone: "success" });
+  showSystemNotice("登录数据已清除", `${account.name} 的本机登录状态已删除，账号窗口档案仍保留。`, { tone: "success" });
 }
 
 async function navigateEmbeddedGpt(action, targetUrl = "", accountId = activeGptAccountId) {
@@ -2501,7 +2757,7 @@ async function navigateEmbeddedGpt(action, targetUrl = "", accountId = activeGpt
     $("#gptBrowserBackBtn").disabled = !result.canGoBack;
     $("#gptBrowserForwardBtn").disabled = !result.canGoForward;
     if (/\/auth\/(?:login|signup)/i.test(result.url || "")) {
-      showWorkbenchAssistantBubble("当前 GPT 浏览器需要登录，登录完成后可继续生产。", { duration: 0 });
+      showWorkbenchAssistantBubble("当前 GPT 账号窗口需要登录，登录完成后可继续生产。", { duration: 0 });
     }
     window.setTimeout(() => showEmbeddedGptView(), 380);
   } catch (error) {
@@ -2639,8 +2895,8 @@ async function refreshExpandedGptMaterialTrees() {
 }
 
 function gptTaskGroupsForMultiWindow() {
-  if (gptQueuePaused && gptTestQueue.some((task) => task._status !== "completed")) {
-    const pending = gptTestQueue.filter((task) => task._status !== "completed");
+  if (gptQueuePaused && gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status))) {
+    const pending = gptTestQueue.filter((task) => !["completed", "skipped"].includes(task._status));
     const groups = [];
     for (const task of pending) {
       if (task.taskType === "template-init") groups.push([task]);
@@ -2671,6 +2927,10 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   task.autoOptions = { ...gptAutoSettings, quotaAccountId: task.quotaAccountId };
   task._status = "running";
   task._startedAt ||= new Date().toISOString();
+  // Persist this before entering the bridge. A restart may safely resume from
+  // the web stage only after this marker is true; it must never upload a
+  // second copy of a post because the renderer disappeared mid-request.
+  task._submittedToGpt = false;
   persistGptQueue();
   recordGptQuotaConsumption(task, task.quotaAccountId, "upload");
   if (task.taskType === "material") await ensureGptTaskQuota(task, task.quotaAccountId);
@@ -2680,6 +2940,17 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   } else if (task.navigation === "new-chat") {
     await window.gptWorkbench.navigate("new-chat", account.id);
     await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+  // A newly-created account or a new local-template chat must receive the
+  // permanent V3.6 guard before any material prompt. Existing conversation
+  // windows keep their trained context and are not flooded with the prompt.
+  if (task.taskType === "template-init" || gptAccountNeedsMasterPrompt(account)) {
+    task.prompt = task.taskType === "template-init"
+      ? `${GPT_V36_MASTER_PROMPT}\n\n${task.prompt}`
+      : promptForNewGptSession(task.prompt, account);
+    if (task.taskType === "material" && !task.templateId) {
+      task.prompt += "\n\n当前账号窗口没有可确认的历史母版，也没有实体模板附件；请先提示用户提供模板，不要直接自由设计或出图。";
+    }
   }
   let polling = true;
   const poll = (async () => {
@@ -2699,19 +2970,28 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   })();
   let result;
   try {
+    task._submittedToGpt = true;
+    persistGptQueue();
     result = await window.gptWorkbench.sendTask(task);
   } finally {
     polling = false;
     await poll;
   }
   if (!result?.ok) {
-    task._status = "failed";
+    task._errorCode = String(result?.errorCode || "");
     task._error = result?.detail || result?.error || "自动生产没有完整结束";
-    if (isActualGptLimitMessage(task._error)) recordActualGptLimit(task._error, task.quotaAccountId, inferGptQuotaLimitKind(task, task._error));
-    tracker.failed += 1;
-    appendGptProductionHistory(task, "failed", result, task._error);
+    const lowOutput = isLowOutputGptLimitMessage(task._error);
+    const actualLimit = lowOutput || isActualGptLimitMessage(task._error);
+    task._status = actualLimit ? (lowOutput ? "skipped" : "paused") : "failed";
+    task._quotaLimit = actualLimit;
+    if (actualLimit) recordActualGptLimit(task._error, task.quotaAccountId, lowOutput ? "generation" : inferGptQuotaLimitKind(task, task._error));
+    tracker.failed += actualLimit ? 0 : 1;
+    appendGptProductionHistory(task, actualLimit ? "paused" : "failed", result, task._error);
     persistGptQueue();
-    throw new Error(`${account.name}：${task._error}`);
+    const failure = new Error(`${account.name}：${task._error}`);
+    failure.gptLimit = actualLimit;
+    failure.lowOutput = lowOutput;
+    throw failure;
   }
   task._status = "completed";
   task._percent = 100;
@@ -2726,7 +3006,8 @@ async function sendMultiWindowGptTasks(options = {}) {
   const groups = gptTaskGroupsForMultiWindow();
   if (!groups.length) return;
   const allowedAccountIds = new Set(options.allowedAccountIds || []);
-  const visibleAccounts = gptAccounts.filter((account) => !account.hidden && (!allowedAccountIds.size || allowedAccountIds.has(account.id)));
+  const configuredAccounts = availableMultiWindowAccounts();
+  const visibleAccounts = configuredAccounts.filter((account) => !allowedAccountIds.size || allowedAccountIds.has(account.id));
   const workerCount = Math.max(1, Math.min(
     Number(gptAutoSettings.parallelWorkers || 3),
     Number(gptAutoSettings.maximumWorkers || 5),
@@ -2734,8 +3015,8 @@ async function sendMultiWindowGptTasks(options = {}) {
   ));
   const workers = visibleAccounts.slice(0, workerCount);
   const allTasks = groups.flat();
-  const existingCompleted = gptQueuePaused ? gptTestQueue.filter((task) => task._status === "completed").length : 0;
-  const tracker = { completed: existingCompleted, failed: 0, total: existingCompleted + allTasks.length };
+  const existingCompleted = gptQueuePaused ? gptTestQueue.filter((task) => ["completed", "skipped"].includes(task._status)).length : 0;
+  const tracker = { completed: existingCompleted, failed: 0, total: Math.max(1, gptQueuePaused ? gptTestQueue.length : allTasks.length) };
   const pendingGroups = groups.map((group, index) => ({ group, index }));
   if (!gptQueuePaused) {
     gptTestQueue = allTasks;
@@ -2744,10 +3025,32 @@ async function sendMultiWindowGptTasks(options = {}) {
   gptAutoRunning = true;
   gptAutoPaused = false;
   gptQueuePaused = false;
+  const runId = String(gptMultiRunState?.runId || `gpt-multi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const workerState = Object.fromEntries(workers.map((account) => [account.id, {
+    accountId: account.id,
+    accountName: account.name,
+    status: "running",
+    currentTask: "",
+    completed: 0,
+    failed: 0,
+    nextProbeAt: null,
+    lastError: ""
+  }]));
+  persistGptMultiRun({
+    version: 1,
+    runId,
+    mode: gptAutoSettings.mode,
+    startedAt: gptMultiRunState?.startedAt || new Date().toISOString(),
+    status: "running",
+    accountIds: workers.map((account) => account.id),
+    workerState,
+    pending: gptTestQueue.filter((task) => !["completed", "skipped"].includes(task._status)).map((task) => task.requestId)
+  });
   window.gptWorkbench?.setProductionActive?.(true).catch(() => {});
   persistGptQueue();
-  updateGptTestQueueStatus(`多窗口自动已启动 · ${workers.length} 个浏览器 · ${gptProductionWorkCount()} 个作品`);
+  updateGptTestQueueStatus(`多账号单模板·永不停歇已启动 · ${workers.length} 个账号窗口 · ${gptProductionWorkCount()} 个作品`);
   const runWorker = async (account) => {
+    const state = workerState[account.id];
     while (!gptAutoPaused) {
       let claimIndex = pendingGroups.findIndex(({ group }) => {
         const preferredAccountId = String(group.find((task) => task.preferredAccountId)?.preferredAccountId || "");
@@ -2756,39 +3059,113 @@ async function sendMultiWindowGptTasks(options = {}) {
       if (claimIndex < 0) {
         claimIndex = pendingGroups.findIndex(({ group }) => !group.some((task) => task.preferredAccountId));
       }
-      if (claimIndex < 0) return;
+      if (claimIndex < 0) {
+        state.status = "idle";
+        state.currentTask = "";
+        persistGptMultiRun({ workerState });
+        return;
+      }
       const [{ group }] = pendingGroups.splice(claimIndex, 1);
-      for (const task of group) {
-        if (gptAutoPaused) return;
+      for (let taskIndex = 0; taskIndex < group.length; taskIndex += 1) {
+        const task = group[taskIndex];
+        if (gptAutoPaused) {
+          pendingGroups.unshift({ group: group.slice(taskIndex), index: Date.now() });
+          state.status = "paused";
+          persistGptMultiRun({ workerState });
+          return;
+        }
+        state.status = "running";
+        state.currentTask = task.name || task.requestId;
+        persistGptMultiRun({ workerState });
         try {
           await runGptTaskOnBrowser(task, account, tracker);
-          const nextPending = gptTestQueue.findIndex((item) => item._status !== "completed");
+          state.completed += 1;
+          state.currentTask = "";
+          const nextPending = gptTestQueue.findIndex((item) => !["completed", "skipped"].includes(item._status));
           gptTestQueueIndex = nextPending < 0 ? gptTestQueue.length : nextPending;
+          persistGptMultiRun({
+            workerState,
+            pending: gptTestQueue.filter((item) => !["completed", "skipped"].includes(item._status)).map((item) => item.requestId)
+          });
           persistGptQueue();
         } catch (error) {
           gptLastFailedTask = task;
           gptLastFailedStage = task._stage || "";
           gptLastFailedPercent = task._percent || 0;
+          state.lastError = String(task._error || error.message || "未知错误");
+          state.currentTask = "";
+          if (error?.gptLimit || isActualGptLimitMessage(String(task._error || error.message || ""))) {
+            const quotaState = readGptCycleState(task.quotaAccountId || account.quotaGroup || account.id);
+            state.status = "waiting-quota";
+            state.nextProbeAt = Number(quotaState.nextProbeAt || 0) || null;
+            if (taskIndex + 1 < group.length) {
+              // Keep the template/material remainder in the queue. The
+              // account is paused, but the other account may still claim it.
+              pendingGroups.unshift({ group: group.slice(taskIndex + 1), index: Date.now() });
+            }
+            showWorkbenchAssistantBubble(`${account.name} 已触发真实限额/低产出信号，暂停该账号；其他账号继续，一帖不会混入下一帖。`, { duration: 0, tone: "warning" });
+            persistGptMultiRun({ workerState, pending: pendingGroups.flatMap(({ group: next }) => next).map((item) => item.requestId) });
+            return;
+          }
+          state.status = "failed";
+          state.failed += 1;
+          const boundaryConflict = [
+            "COMPOSER_ATTACHMENTS_PENDING",
+            "COMPOSER_DRAFT_PENDING",
+            "COMPOSER_DRAFT_NOT_SET",
+            "MIXED_POST_ATTACHMENTS",
+            "MATERIAL_ROOT_MISSING",
+            "COMPOSER_ATTACHMENT_CONFLICT",
+            "WINDOW_STAGE_PENDING",
+            "WEB_RESPONSE_IN_FLIGHT",
+            "IMAGE_COUNT_UNCERTAIN",
+            "GENERATION_LIMIT_SIGNAL",
+            "SCRIPT_GENERATED_OUTPUT",
+            "COPY_REQUIRED"
+          ].includes(String(task._errorCode || ""))
+            || /未发送附件|未发送文字|重复粘贴提示词|没有接收到本轮提示词|输入框没有接收到|不属于当前帖子文件夹|混合上传|缺少帖子文件夹路径|上一帖仍在生成|已阻止下一帖注入|文案 TXT|代码解释器|脚本文件输出/.test(String(task._error || error.message || ""));
+          if (boundaryConflict) {
+            // A composer boundary belongs to this account window, not to the
+            // whole batch. Park this worker and leave every remaining post
+            // queued for the next safe retry; never burn through the queue
+            // against a stale unsent draft.
+            state.status = "paused";
+            if (taskIndex + 1 < group.length) {
+              pendingGroups.unshift({ group: group.slice(taskIndex + 1), index: Date.now() });
+            }
+            showWorkbenchAssistantBubble(`${account.name} 的 GPT 输入框有未发送内容，已暂停该账号窗口；其他账号继续。清理后可从当前帖重试。`, { duration: 0, tone: "warning" });
+            persistGptMultiRun({ workerState, pending: pendingGroups.flatMap(({ group: next }) => next).map((item) => item.requestId) });
+            return;
+          }
           showWorkbenchAssistantBubble(`${task.name}生产失败并已记录；正在继续下一个素材。`, { duration: 0 });
-          if (isActualGptLimitMessage(String(task._error || error.message || ""))) return;
+          // A non-limit failure skips only this post. Any remaining tasks in a
+          // template group are returned to the queue instead of disappearing.
+          if (taskIndex + 1 < group.length) pendingGroups.unshift({ group: group.slice(taskIndex + 1), index: Date.now() });
         }
       }
     }
+    state.status = "paused";
+    persistGptMultiRun({ workerState });
   };
   try {
     await Promise.all(workers.map(runWorker));
-    if (pendingGroups.length) {
-      const unmatched = pendingGroups.flatMap(({ group }) => group).filter((task) => task._status !== "completed");
-      unmatched.forEach((task) => {
-        task._status = "waiting-account";
-        task._error = `在线模板绑定的浏览器 ${task.preferredAccountId || "未指定"} 当前不可用`;
-      });
-      tracker.failed += unmatched.length;
-      persistGptQueue();
-    }
+    const pending = pendingGroups.flatMap(({ group }) => group).filter((task) => !["completed", "skipped"].includes(task._status));
+    gptQueuePaused = pending.length > 0;
+    gptTestQueueIndex = gptTestQueue.findIndex((task) => !["completed", "skipped"].includes(task._status));
+    if (gptTestQueueIndex < 0) gptTestQueueIndex = gptTestQueue.length;
     updateGptTestQueueStatus(gptAutoPaused
-      ? `多窗口队列已暂停 · 完成 ${tracker.completed} · 失败 ${tracker.failed}`
-      : `多窗口队列完成 · 成功 ${tracker.completed} · 失败 ${tracker.failed}`);
+      ? `多账号单模板·永不停歇队列已暂停 · 完成 ${tracker.completed} · 失败 ${tracker.failed}`
+      : pending.length
+        ? `多账号单模板·永不停歇部分完成 · 成功 ${tracker.completed} · 等待 ${pending.length} 套`
+        : `多账号单模板·永不停歇队列完成 · 成功 ${tracker.completed} · 失败 ${tracker.failed}`);
+    persistGptMultiRun({
+      status: gptAutoPaused ? "paused" : pending.length ? "waiting-quota" : "completed",
+      workerState,
+      completed: tracker.completed,
+      failed: tracker.failed,
+      pending: pending.map((task) => task.requestId),
+      finishedAt: pending.length ? null : new Date().toISOString()
+    });
   } finally {
     gptAutoRunning = false;
     window.gptWorkbench?.setProductionActive?.(false).catch(() => {});
@@ -2796,13 +3173,14 @@ async function sendMultiWindowGptTasks(options = {}) {
     updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
     refreshGptQuota();
     if (isContinuousGptProductionArmed() && !gptAutoPaused) scheduleContinuousGptProduction();
+    clearGptMultiRunIfFinished();
   }
 }
 
 async function sendNextGptTestTask(options = {}) {
   if (!window.gptWorkbench?.available || gptAutoRunning) return;
-  if (["multi", "all-day-multi"].includes(gptAutoSettings.mode)) return sendMultiWindowGptTasks(options);
-  if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode) && options.userInitiated) {
+  if (normalizeGptProductionMode(gptAutoSettings.mode) === "multi") return sendMultiWindowGptTasks(options);
+  if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)) && options.userInitiated) {
     setContinuousGptProductionArmed(true);
   }
   if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
@@ -2822,7 +3200,14 @@ async function sendNextGptTestTask(options = {}) {
   persistGptQueue();
   button.disabled = true;
   const manualMode = gptAutoSettings.mode === "manual";
-  updateGptTestQueueStatus(`${manualMode ? "手动模式" : "单窗口自动"} · ${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号"} · ${gptProductionWorkCount()} 个作品`);
+    const runModeLabel = manualMode
+      ? "手动模式"
+      : gptAutoSettings.mode === "single"
+        ? "单账号单模板·永不停歇"
+        : gptAutoSettings.mode === "multi"
+          ? "多账号单模板·永不停歇"
+          : "手动模式";
+    updateGptTestQueueStatus(`${runModeLabel} · ${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号窗口"} · ${gptProductionWorkCount()} 个作品`);
   let completedThisRun = 0;
   let failedThisRun = 0;
   let quotaPausedTask = null;
@@ -2830,7 +3215,7 @@ async function sendNextGptTestTask(options = {}) {
     while (gptTestQueueIndex < gptTestQueue.length) {
       if (gptAutoPaused) throw new Error("已由用户暂停；可以继续剩余队列");
       const accountLimit = Math.max(1, Number(gptAutoSettings.accountTaskLimit || 8));
-      if (!manualMode && gptAutoSettings.mode === "multi" && completedThisRun >= accountLimit) {
+      if (!manualMode && normalizeGptProductionMode(gptAutoSettings.mode) === "multi" && completedThisRun >= accountLimit) {
         throw new Error(`已完成本轮 ${accountLimit} 套上限；点击“继续自动生产”后从第 ${gptTestQueueIndex + 1} 套续跑`);
       }
       const task = gptTestQueue[gptTestQueueIndex];
@@ -2898,8 +3283,8 @@ async function sendNextGptTestTask(options = {}) {
         gptLastFailedStage = String(result?.stage || gptLastFailedStage || "");
         gptLastFailedPercent = Number(result?.percent || gptLastFailedPercent || 0);
         const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
-        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "IMAGE_COUNT_UNCERTAIN"].includes(String(result?.errorCode || ""))
-          || /未发送附件|未发送文字|重复粘贴提示词|不属于当前帖子文件夹|混合上传|缺少帖子文件夹路径/.test(taskError.message);
+        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "IMAGE_COUNT_UNCERTAIN", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(String(result?.errorCode || ""))
+          || /未发送附件|未发送文字|重复粘贴提示词|没有接收到本轮提示词|输入框没有接收到|不属于当前帖子文件夹|混合上传|缺少帖子文件夹路径|上一帖仍在生成|已阻止下一帖注入|文案 TXT|代码解释器|脚本文件输出/.test(taskError.message);
         task._stage = gptLastFailedStage;
         task._percent = gptLastFailedPercent;
         task._error = taskError.message;
@@ -3018,10 +3403,22 @@ function retryCurrentGptTask() {
   if (gptAutoRunning || !gptLastFailedTask) return;
   const failedTask = gptLastFailedTask;
   const previousRequestId = failedTask.requestId;
+  const failureText = `${gptLastFailedStage || ""} ${failedTask._error || failedTask.error || ""}`;
+  const requiresFreshUpload = /没有检测到新消息|发送按钮已出现|未发送附件|输入框仍有|没有接收到本轮提示词|输入框没有接收到|残留|composer|COMPOSER|附件上传|WEB_RESPONSE_IN_FLIGHT/i.test(failureText);
   failedTask.requestId = `gpt-retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   failedTask.retryOf = previousRequestId;
   failedTask.retryFromStage = gptLastFailedStage;
   failedTask.retryFromPercent = gptLastFailedPercent;
+  if (requiresFreshUpload) {
+    // A failed send/attachment boundary is not safely resumable. Reattach the
+    // one-post payload from a clean composer instead of submitting an empty or
+    // residual draft and pretending that the GPT turn advanced.
+    failedTask.forceUpload = true;
+    failedTask._submittedToGpt = false;
+    failedTask.retryFromStage = "页面就绪";
+    failedTask.retryFromPercent = 3;
+    delete failedTask.workflow;
+  }
   delete failedTask._errorCode;
   gptLastFailedTask = null;
   updateGptTestQueueStatus(`正在从安全检查点重试：${gptLastFailedStage || "当前任务"}`);
@@ -5269,6 +5666,8 @@ function appendGptProductionHistory(task, status, result = {}, error = "") {
   gptProductionHistory.unshift({
     id: String(task?.requestId || Date.now()),
     requestId: String(task?.requestId || ""),
+    accountId: String(task?.accountId || task?.quotaAccountId || ""),
+    accountName: String(gptAccounts.find((account) => account.id === (task?.accountId || task?.quotaAccountId))?.name || "当前账号窗口"),
     name: String(task?.name || "未命名作品"),
     status: String(status || "unknown"),
     stage: String(task?._stage || ""),
@@ -5282,6 +5681,8 @@ function appendGptProductionHistory(task, status, result = {}, error = "") {
     packageDurationMs: sumStageDuration(/下载图片|打包作品|归档素材/),
     stageHistory,
     packagePath: String(result?.packagePath || result?.result?.packageResult?.packagePath || result?.packageResult?.packagePath || ""),
+    downloadRoot: String(result?.downloadRoot || result?.result?.downloadRoot || ""),
+    copyTextLength: Number(result?.copyTextLength || result?.result?.copyTextLength || 0),
     conversationUrl: String(result?.conversationUrl || result?.result?.conversationUrl || ""),
     error: String(error || "")
   });
@@ -5323,9 +5724,9 @@ function renderGptProductionHistory() {
   host.innerHTML = rows.length ? rows.map((item) => `
     <article class="gpt-production-history-item" data-production-path="${escapeHtml(item.packagePath || item.productPath || "")}">
       <strong>${escapeHtml(item.name)}</strong>
-      <p>${escapeHtml(item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : "已暂停")} · ${escapeHtml(item.stage || "未记录阶段")} · 总耗时 ${formatProductionDuration(item.durationMs)}</p>
+      <p>${escapeHtml(item.accountName || "当前账号窗口")} · ${escapeHtml(item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : "已暂停")} · ${escapeHtml(item.stage || "未记录阶段")} · 总耗时 ${formatProductionDuration(item.durationMs)}</p>
       ${(item.planDurationMs || item.imageDurationMs || item.copyDurationMs) ? `<div class="gpt-production-history-timings"><span>计划 ${formatProductionDuration(item.planDurationMs)}</span><span>出图 ${formatProductionDuration(item.imageDurationMs)}</span><span>文案 ${formatProductionDuration(item.copyDurationMs)}</span></div>` : ""}
-      ${(item.packagePath || item.productPath) ? `<button class="gpt-production-open-path" type="button" data-open-production-path="${escapeHtml(item.packagePath || item.productPath)}">打开成品文件夹</button><p>成品：${escapeHtml(item.packagePath || item.productPath)}</p>` : ""}
+      ${(item.packagePath || item.productPath || item.downloadRoot) ? `<button class="gpt-production-open-path" type="button" data-open-production-path="${escapeHtml(item.packagePath || item.productPath || item.downloadRoot)}">${item.packagePath || item.productPath ? (item.packageValid === false ? "打开成品文件夹（待核对）" : "打开成品文件夹") : "打开图片暂存目录"}</button><p>${item.packagePath || item.productPath ? "成品" : "暂存"}：${escapeHtml(item.packagePath || item.productPath || item.downloadRoot)}</p>${item.packagePath && item.packageValid === false ? `<p class="muted">完整性：图片 ${Number(item.packageImageCount || 0)} 张，文案 TXT ${Number(item.packageTextCount || 0)} 个；未通过完整打包校验。</p>` : ""}` : ""}
       ${item.error ? `<p>原因：${escapeHtml(item.error)}</p>` : ""}
       <p>${escapeHtml(new Date(item.finishedAt || item.updatedAt || Date.now()).toLocaleString("zh-CN", { hour12: false }))}</p>
     </article>`).join("") : '<div class="empty-state"><strong>暂无生产记录</strong><p>自动闭环完成、暂停或失败后会保留在这里。</p></div>';
@@ -5349,18 +5750,32 @@ async function syncGptProductionHistory() {
       existing.percent = Math.max(Number(existing.percent || 0), Number(checkpoint.percent || 0));
       existing.packagePath ||= checkpoint.packagePath || "";
       existing.productPath ||= checkpoint.packagePath || "";
+      existing.downloadRoot ||= checkpoint.downloadRoot || "";
+      existing.copyTextLength = Math.max(Number(existing.copyTextLength || 0), Number(checkpoint.copyTextLength || 0));
+      existing.packageValid = checkpoint.packagePath ? checkpoint.packageValid !== false : false;
+      existing.packageImageCount = Number(checkpoint.packageImageCount || 0);
+      existing.packageTextCount = Number(checkpoint.packageTextCount || 0);
       existing.updatedAt = checkpoint.updatedAt || existing.updatedAt || existing.finishedAt || new Date().toISOString();
-      if (checkpoint.packagePath) existing.status = "completed";
+      if (checkpoint.packagePath && checkpoint.packageValid !== false) existing.status = "completed";
+      else if (existing.status === "completed") existing.status = "paused";
       continue;
     }
     const added = {
       requestId: checkpoint.requestId,
       name: packageName || checkpoint.requestId,
-      status: checkpoint.packagePath ? "completed" : Number(checkpoint.percent || 0) >= 100 ? "completed" : "paused",
+      // A checkpoint reaching 100% is not a completed work package by itself.
+      // The authoritative completion signal is a real packagePath returned by
+      // the packager after the TXT and image count checks pass.
+      status: checkpoint.packagePath && checkpoint.packageValid !== false ? "completed" : "paused",
       stage: checkpoint.stage || "检查点",
       durationMs: 0,
       packagePath: checkpoint.packagePath || "",
       productPath: checkpoint.packagePath || "",
+      downloadRoot: checkpoint.downloadRoot || "",
+      copyTextLength: Number(checkpoint.copyTextLength || 0),
+      packageValid: checkpoint.packagePath ? checkpoint.packageValid !== false : false,
+      packageImageCount: Number(checkpoint.packageImageCount || 0),
+      packageTextCount: Number(checkpoint.packageTextCount || 0),
       finishedAt: checkpoint.updatedAt || new Date().toISOString(),
       updatedAt: checkpoint.updatedAt || new Date().toISOString()
     };
@@ -7877,7 +8292,7 @@ function bindEvents() {
     updateGptTestQueueStatus();
   });
   $("#gptTestSendBtn")?.addEventListener("click", async () => {
-    if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode)) {
+    if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) {
       setContinuousGptProductionArmed(true);
       if (gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
         await prepareAllDayGptQueue();
@@ -7892,13 +8307,44 @@ function bindEvents() {
   });
   $("#gptProductionMode")?.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    openPageSettings("gptAuto");
-    showWorkbenchAssistantBubble("已打开当前生产模式设置，可修改永不停歇工作时段和自动恢复规则。", { duration: 3600 });
+    const mode = normalizeGptProductionMode($("#gptProductionMode")?.value);
+    contextMenuTarget = {
+      kind: "gpt-production-mode",
+      mode,
+      label: gptModeProfiles[mode]?.name || GPT_MODE_DEFINITIONS[mode].defaultName,
+      path: ""
+    };
+    showContextMenu(event.clientX, event.clientY);
   });
+  const handleGptModeChange = (event) => {
+    if (gptAutoRunning) {
+      renderGptAutoSettings();
+      showWorkbenchAssistantBubble("当前作品正在运行，不能切换账号生产模式；暂停或完成后再切换。", { duration: 4200 });
+      return;
+    }
+    const key = normalizeGptProductionMode(event.target?.value);
+    gptAutoSettings.mode = key;
+    applyGptModeProfile(key);
+    if ($("#gptProductionMode")) $("#gptProductionMode").value = key;
+    if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = key;
+    renderGptAutoSettings();
+    showWorkbenchAssistantBubble(`已切换到“${gptModeProfiles[key]?.name || GPT_MODE_DEFINITIONS[key].defaultName}”。新任务会绑定当前账号窗口。`, { duration: 3600 });
+  };
+  $("#gptProductionMode")?.addEventListener("change", handleGptModeChange);
+  $("#gptProductionModeSetting")?.addEventListener("change", handleGptModeChange);
+  $("#gptSaveModeProfileBtn")?.addEventListener("click", saveGptModeProfileFromUi);
   $("#gptManualNextBtn")?.addEventListener("click", completeCurrentManualGptTask);
   $("#gptPauseQueueBtn")?.addEventListener("click", () => {
+    if (gptAutoRunning && gptAutoPaused) {
+      // The current stage is already winding down.  A second click only
+      // releases the pause flag; it never injects a new post into the page.
+      gptAutoPaused = false;
+      updateGptTestQueueStatus("已继续当前工作流；仍会先完成当前帖子再进入下一帖");
+      showWorkbenchAssistantBubble("已继续当前工作流，当前帖子完成后才会处理下一帖。", { duration: 3600 });
+      return;
+    }
     if (!gptAutoRunning && gptQueuePaused) {
-      if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode)) setContinuousGptProductionArmed(true);
+      if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) setContinuousGptProductionArmed(true);
       const pausedTaskError = String(gptLastFailedTask?._error || "");
       const allowQuotaOverride = /额度|限额|quota|rate limit|usage limit/i.test(pausedTaskError);
       sendNextGptTestTask({ allowQuotaOverride, userInitiated: true });
@@ -7910,8 +8356,8 @@ function bindEvents() {
     gptContinuousLaunchTimer = null;
     gptAutoPaused = true;
     persistGptQueue();
-    updateGptTestQueueStatus("将在当前阶段安全结束后暂停");
-    showWorkbenchAssistantBubble("已收到暂停指令，当前阶段结束后会停在安全检查点。", { duration: 4200 });
+    updateGptTestQueueStatus("已暂停；当前阶段结束后停在安全检查点");
+    showWorkbenchAssistantBubble("已暂停当前工作流；不会注入下一帖，按钮现在可点“继续”。", { duration: 4200 });
   });
   $("#gptRetryTaskBtn")?.addEventListener("click", retryCurrentGptTask);
   $("#gptSkipTaskBtn")?.addEventListener("click", () => {
@@ -7975,12 +8421,12 @@ function bindEvents() {
         return;
       }
       saveGptAutoSettings();
-      if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode) && gptAutoSettings.continuousAutoStart !== false) {
+      if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)) && gptAutoSettings.continuousAutoStart !== false) {
         setContinuousGptProductionArmed(true);
         clearTimeout(gptContinuousLaunchTimer);
         gptContinuousLaunchTimer = null;
         scheduleContinuousGptProduction();
-      } else if (!["all-day", "all-day-multi"].includes(gptAutoSettings.mode)) {
+      } else if (!["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) {
         setContinuousGptProductionArmed(false);
         clearTimeout(gptContinuousLaunchTimer);
         gptContinuousLaunchTimer = null;
@@ -8004,7 +8450,7 @@ function bindEvents() {
     contextMenuTarget = {
       kind: "gpt-browser-profile",
       accountId: tab.dataset.gptAccount,
-      label: account?.name || "浏览器窗口",
+      label: account?.name || "账号窗口",
       path: ""
     };
     showContextMenu(event.clientX, event.clientY);
@@ -8030,7 +8476,7 @@ function bindEvents() {
     const sourceId = draggedGptAccountId || event.dataTransfer.getData("text/plain");
     draggedGptAccountId = "";
     reorderGptAccounts(sourceId, tab.dataset.gptAccount).catch((error) => {
-      showSystemNotice("浏览器排序没有保存", error.message, { tone: "danger" });
+      showSystemNotice("账号窗口排序没有保存", error.message, { tone: "danger" });
     });
   });
   $("#gptAccountTabs")?.addEventListener("dragend", (event) => {
@@ -8320,7 +8766,49 @@ function bindEvents() {
       await renameGptAccount(target.accountId);
       return;
     }
+    if (target?.kind === "gpt-production-mode") {
+      const key = activeGptModeKey(target.mode);
+      const current = gptModeProfiles[key]?.name || GPT_MODE_DEFINITIONS[key].defaultName;
+      const next = window.prompt("重命名当前生产模式", current);
+      if (next === null) return;
+      const clean = String(next).trim();
+      if (!clean) return showSystemNotice("模式名称没有保存", "名称不能为空。", { tone: "warning" });
+      gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), name: clean.slice(0, 40) };
+      saveGptModeProfiles();
+      renderGptModeProfile();
+      showWorkbenchAssistantBubble(`当前模式已重命名为“${clean.slice(0, 40)}”。`, { duration: 3600 });
+      return;
+    }
     await renamePath(target?.path, target?.label);
+  });
+  $("#contextModeSettings")?.addEventListener("click", () => {
+    const target = contextMenuTarget;
+    hideContextMenu();
+    if (target?.kind !== "gpt-production-mode") return;
+    const key = activeGptModeKey(target.mode);
+    if ($("#gptProductionMode")) $("#gptProductionMode").value = key;
+    if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = key;
+    applyGptModeProfile(key);
+    renderGptAutoSettings();
+    openPageSettings("gptAuto");
+    showWorkbenchAssistantBubble(`已打开“${gptModeProfiles[key]?.name || GPT_MODE_DEFINITIONS[key].defaultName}”的专属设置。每个模式的确认词、文案请求词和起始环节互不影响。`, { duration: 5200 });
+  });
+  $("#contextDeleteMode")?.addEventListener("click", () => {
+    const target = contextMenuTarget;
+    hideContextMenu();
+    if (target?.kind !== "gpt-production-mode") return;
+    const key = activeGptModeKey(target.mode);
+    if (!window.confirm(`删除“${gptModeProfiles[key]?.name || GPT_MODE_DEFINITIONS[key].defaultName}”的自定义设置？系统内置模式不会被删除。`)) return;
+    gptModeProfiles[key] = {
+      name: GPT_MODE_DEFINITIONS[key].defaultName,
+      useCurrentSession: true,
+      confirmText: "1",
+      copyPrompt: "给我一份小红书文案"
+    };
+    saveGptModeProfiles();
+    applyGptModeProfile(key);
+    renderGptAutoSettings();
+    showWorkbenchAssistantBubble("当前模式的自定义设置已删除，已恢复默认流程。", { duration: 3600 });
   });
   $("#contextCopyTemplateCommand").addEventListener("click", () => {
     copyText(buildTemplateCommand(contextMenuTarget), "转模板指令已复制");
@@ -8428,7 +8916,7 @@ loadDashboard()
     window.setInterval(checkScheduledGptProduction, 30_000);
     checkScheduledGptProduction();
     restoreGptQuotaProbeTimers();
-    if (["all-day", "all-day-multi"].includes(gptAutoSettings.mode) && gptAutoSettings.continuousAutoStart !== false) {
+    if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)) && gptAutoSettings.continuousAutoStart !== false) {
       setContinuousGptProductionArmed(true);
       scheduleContinuousGptProduction(1800);
     }

@@ -1157,6 +1157,67 @@ function findCompletedWorkPackageByBatchId(productRoot, batchId, options = {}) {
   return newest?.path || "";
 }
 
+function saveExtensionCopyText(body = {}) {
+  const copyText = String(body.copyText || "").trim();
+  if (!copyText) throw new Error("本轮文案为空，未创建 TXT");
+  const batchId = String(body.batchId || "").trim();
+  if (!/^\d{8}-\d{6}-[a-z0-9]{4}$/i.test(batchId)) {
+    throw new Error("本轮文案批次号无效，未创建 TXT");
+  }
+  const requestedRoot = String(body.downloadRoot || "").trim();
+  const targetRoot = requestedRoot ? path.resolve(requestedRoot) : path.resolve(DOWNLOAD_ROOT);
+  if (!isPathInside(path.resolve(DOWNLOAD_ROOT), targetRoot)) {
+    throw new Error("文案暂存目录必须位于工作台下载目录内");
+  }
+  const stagingDir = path.join(targetRoot, ".gpt-copy-staging");
+  fs.mkdirSync(stagingDir, { recursive: true });
+  const target = path.join(stagingDir, `${batchId}.txt`);
+  fs.writeFileSync(target, copyText, { encoding: "utf8" });
+  return {
+    ok: true,
+    batchId,
+    filename: target,
+    bytes: Buffer.byteLength(copyText, "utf8"),
+    copyTextLength: copyText.length
+  };
+}
+
+function removeExtensionCopyText(root, batchId) {
+  const safeBatchId = String(batchId || "").trim();
+  if (!/^\d{8}-\d{6}-[a-z0-9]{4}$/i.test(safeBatchId)) return;
+  const targetRoot = path.resolve(String(root || DOWNLOAD_ROOT));
+  if (!isPathInside(path.resolve(DOWNLOAD_ROOT), targetRoot)) return;
+  try {
+    fs.rmSync(path.join(targetRoot, ".gpt-copy-staging", `${safeBatchId}.txt`), { force: true });
+  } catch {
+  }
+}
+
+function inspectGptWorkPackage(packagePath, expectedImageCount = 0) {
+  const rawPath = String(packagePath || "").trim();
+  if (!rawPath) return { valid: false, imageCount: 0, textCount: 0 };
+  const target = path.resolve(rawPath);
+  if (!exists(target)) return { valid: false, imageCount: 0, textCount: 0 };
+  let stat;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    return { valid: false, imageCount: 0, textCount: 0 };
+  }
+  if (!stat.isDirectory()) return { valid: false, imageCount: 0, textCount: 0 };
+  const imageExts = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+  const textExts = new Set([".txt"]);
+  const entries = safeList(target);
+  const imageCount = entries.filter((entry) => entry.isFile() && imageExts.has(path.extname(entry.name).toLowerCase())).length;
+  const textCount = entries.filter((entry) => entry.isFile() && textExts.has(path.extname(entry.name).toLowerCase())).length;
+  const expected = Math.max(0, Number(expectedImageCount || 0));
+  return {
+    valid: imageCount > 0 && textCount > 0 && (expected === 0 || imageCount >= expected),
+    imageCount,
+    textCount
+  };
+}
+
 function runExtensionWorkPackage(body = {}) {
   const script = path.join(DOWNLOAD_ROOT, "make_work_package.ps1");
   if (!exists(script)) {
@@ -1284,6 +1345,7 @@ function runExtensionWorkPackage(body = {}) {
         return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : null;
       }).filter(Boolean));
       if (body.preview !== true && /^DUPLICATE$/m.test(output)) {
+        removeExtensionCopyText(effectiveDownloadRoot, batchId);
         resolve({
           ok: true,
           duplicate: true,
@@ -1331,6 +1393,7 @@ function runExtensionWorkPackage(body = {}) {
           reject(new Error("成品文件夹没有 TXT 文案，已停止后续队列"));
           return;
         }
+        removeExtensionCopyText(effectiveDownloadRoot, batchId);
       }
       resolve({
         ok: true,
@@ -4921,6 +4984,15 @@ async function route(req, res) {
     return sendExtensionJson(req, res, await runExtensionWorkPackage(body));
   }
 
+  if (pathname === "/api/extension/save-copy-text" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 256_000) || "{}");
+    try {
+      return sendExtensionJson(req, res, saveExtensionCopyText(body));
+    } catch (error) {
+      return sendExtensionJson(req, res, { error: error.message }, 400);
+    }
+  }
+
   if (pathname === "/api/extension/save-generated-image" && req.method === "POST") {
     const body = JSON.parse(await getBody(req, 42_000_000) || "{}");
     const filename = String(body.filename || "").trim();
@@ -4975,16 +5047,25 @@ async function route(req, res) {
     const saved = readJson(GPT_PRODUCTION_CHECKPOINT_FILE, { version: 1, items: {} });
     const items = Object.values(saved.items || {}).sort((left, right) =>
       String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
-    ).slice(0, 200).map((item) => ({
-      requestId: item.requestId,
-      stage: item.stage,
-      percent: item.percent,
-      plannedImageCount: item.plannedImageCount,
-      downloadedImageCount: Array.isArray(item.downloadedFiles) ? item.downloadedFiles.length : 0,
-      packagePath: item.packagePath,
-      conversationUrl: item.conversationUrl,
-      updatedAt: item.updatedAt
-    }));
+    ).slice(0, 200).map((item) => {
+      const packagePath = String(item.packagePath || "").trim();
+      const packageInspection = inspectGptWorkPackage(packagePath, Number(item.plannedImageCount || 0));
+      return {
+        requestId: item.requestId,
+        stage: packagePath && !packageInspection.valid ? "成品缺 TXT 或图片，已暂停" : item.stage,
+        percent: item.percent,
+        plannedImageCount: item.plannedImageCount,
+        downloadedImageCount: Array.isArray(item.downloadedFiles) ? item.downloadedFiles.length : 0,
+        downloadRoot: item.downloadRoot,
+        copyTextLength: String(item.copyText || "").trim().length,
+        packagePath,
+        packageValid: packagePath ? packageInspection.valid : false,
+        packageImageCount: packageInspection.imageCount,
+        packageTextCount: packageInspection.textCount,
+        conversationUrl: item.conversationUrl,
+        updatedAt: item.updatedAt
+      };
+    });
     return sendExtensionJson(req, res, { ok: true, items });
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "teambuilding-workflow-dashboard",
-  "version": "0.14.7",
+  "version": "0.14.10",
   "private": true,
   "description": "江湖有旅人内容生产、分发与流量转化本地工作台",
   "main": "desktop/main.js",
@@ -30,7 +30,7 @@
       "package.json"
     ],
     "directories": {
-      "output": "../releases/0.14.2"
+      "output": "../releases/0.14.10"
     },
     "win": {
       "icon": "desktop/团建工作台.ico",

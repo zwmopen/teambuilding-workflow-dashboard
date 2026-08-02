@@ -143,7 +143,7 @@ function defaultBrowserProfiles() {
     activeId: "account-1",
     profiles: [{
       id: "account-1",
-      name: "浏览器 1",
+      name: "账号窗口 1",
       quotaGroup: "account-1",
       hidden: false,
       lastUrl: GPT_URL,
@@ -159,7 +159,7 @@ function readBrowserProfiles() {
     const profiles = Array.isArray(parsed.profiles)
       ? parsed.profiles.filter((profile) => profile && safeGptAccountId(profile.id)).map((profile, index) => ({
         id: safeGptAccountId(profile.id),
-        name: String(profile.name || `浏览器 ${index + 1}`).slice(0, 24),
+        name: (/^浏览器\s*\d+$/i.test(String(profile.name || "")) ? `账号窗口 ${index + 1}` : String(profile.name || `账号窗口 ${index + 1}`)).slice(0, 24),
         quotaGroup: safeGptAccountId(profile.quotaGroup || profile.id),
         hidden: Boolean(profile.hidden),
         lastUrl: safeGptUrl(profile.lastUrl),
@@ -628,7 +628,7 @@ ipcMain.handle("desktop:gpt-profile-save", async (_event, input = {}) => {
   const existing = state.profiles.find((profile) => profile.id === id);
   const profile = {
     id,
-    name: String(input.name || existing?.name || `浏览器 ${state.profiles.length + 1}`).trim().slice(0, 24),
+    name: String(input.name || existing?.name || `账号窗口 ${state.profiles.length + 1}`).trim().slice(0, 24),
     quotaGroup: safeGptAccountId(input.quotaGroup || existing?.quotaGroup || id),
     hidden: Boolean(input.hidden ?? existing?.hidden),
     lastUrl: safeGptUrl(input.lastUrl || existing?.lastUrl),
@@ -637,7 +637,7 @@ ipcMain.handle("desktop:gpt-profile-save", async (_event, input = {}) => {
   };
   if (existing) Object.assign(existing, profile);
   else if (state.profiles.length < 8) state.profiles.push(profile);
-  else throw new Error("最多保留 8 个浏览器档案");
+  else throw new Error("最多保留 8 个账号窗口档案");
   state.activeId = input.active === false ? state.activeId : id;
   writeBrowserProfiles(state);
   return state;
@@ -661,7 +661,7 @@ ipcMain.handle("desktop:gpt-profile-hide", async (_event, input = {}) => {
   const state = readBrowserProfiles();
   const id = safeGptAccountId(input.id);
   const profile = state.profiles.find((item) => item.id === id);
-  if (!profile) throw new Error("没有找到浏览器档案");
+  if (!profile) throw new Error("没有找到账号窗口档案");
   profile.hidden = Boolean(input.hidden);
   if (state.activeId === id && profile.hidden) {
     state.activeId = state.profiles.find((item) => !item.hidden)?.id || id;
@@ -674,7 +674,7 @@ ipcMain.handle("desktop:gpt-profile-hide", async (_event, input = {}) => {
 ipcMain.handle("desktop:gpt-profile-remove", async (_event, accountId = "") => {
   const state = readBrowserProfiles();
   const id = safeGptAccountId(accountId);
-  if (state.profiles.length <= 1) throw new Error("至少保留一个浏览器档案");
+  if (state.profiles.length <= 1) throw new Error("至少保留一个账号窗口档案");
   state.profiles = state.profiles.filter((profile) => profile.id !== id);
   if (state.activeId === id) state.activeId = state.profiles.find((profile) => !profile.hidden)?.id || state.profiles[0].id;
   writeBrowserProfiles(state);

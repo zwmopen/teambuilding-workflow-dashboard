@@ -14,21 +14,23 @@ const gptSidebar = fs.readFileSync(path.join(__dirname, "..", "integrations", "g
 const gptBackground = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "background.js"), "utf8");
 const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
-test("GPT production exposes prompt and current-session manual-selection modes", () => {
-  assert.match(html, /value="automatic">单窗口（手选自动做·有提示词）/);
-  assert.match(html, /value="random">单窗口（手选自动做）/);
-  assert.match(app, /gptAutoSettings\.mode === "random"/);
-  assert.match(app, /const prompt = randomMode \? ""/);
+test("GPT production exposes manual, single-account and multi-account mode profiles", () => {
+  assert.match(html, /value="manual">手动模式/);
+  assert.match(html, /value="single">单账号单模板·永不停歇/);
+  assert.match(html, /value="multi">多账号单模板·永不停歇/);
+  assert.match(app, /GPT_MODE_DEFINITIONS/);
+  assert.match(app, /useCurrentSession/);
+  assert.match(app, /gptModeProfiles/);
   assert.match(gptSidebar, /noPromptMode/);
-  assert.match(gptSidebar, /复用当前会话母版计划/);
+  assert.match(gptSidebar, /conversationStateSnapshot/);
 });
 
-test("GPT production exposes the all-day scheduled mode and low-usage material selection", () => {
-  assert.match(html, /value="all-day">单窗口自动（永不停歇）/);
+test("GPT production exposes the endless mode and low-usage material selection", () => {
+  assert.match(html, /value="single">单账号单模板·永不停歇/);
   assert.match(app, /async function prepareAllDayGptQueue/);
   assert.match(app, /isHiddenMaterialPath/);
   assert.match(app, /Number\(left\.item\.usageCount/);
-  assert.match(app, /gptAutoSettings\.mode === "all-day"/);
+  assert.match(app, /normalizeGptProductionMode\(gptAutoSettings\.mode\)/);
   assert.match(server, /!entry\.name\.startsWith\("\."\)/);
   assert.match(server, /includeHidden = options\.includeHidden === true/);
   assert.match(server, /scanPostFolders\(categoryRoot, \{ includeHidden: true \}\)/);
@@ -55,7 +57,7 @@ test("GPT all-day production persists across restarts and obeys cross-midnight w
 
 test("GPT production exposes explicit material refresh and multi-slot scheduled mode", () => {
   assert.match(html, /id="gptTestMaterialRefreshBtn"/);
-  assert.match(html, /value="scheduled">定时启动/);
+  assert.match(html, /id="gptScheduledEnabled"/);
   assert.match(html, /id="gptSchedulePlan"/);
   assert.match(html, /gptMinimumImageCount[^>]*value="4"/);
   assert.match(html, /1–3 张时视为额度触顶/);
@@ -76,11 +78,12 @@ test("GPT production history hides the native GPT view before opening its DOM pa
   assert.match(app, /panel\.hidden = false/);
 });
 
-test("GPT production exposes prompt and random current-session modes", () => {
-  assert.match(html, /value="automatic">单窗口（手选自动做·有提示词）/);
-  assert.match(html, /value="random">单窗口（手选自动做）/);
-  assert.match(app, /gptAutoSettings\.mode === "random"/);
-  assert.match(app, /const prompt = randomMode \? ""/);
+test("GPT production exposes editable current-session and injected-prompt profiles", () => {
+  assert.match(html, /id="gptModeStartBehavior"/);
+  assert.match(html, /value="current">继续使用当前 GPT 会话/);
+  assert.match(html, /value="inject">注入模板提示词后再生产/);
+  assert.match(app, /const useCurrentSession = gptAutoSettings\.useCurrentSession !== false/);
+  assert.match(app, /const prompt = useCurrentSession \? ""/);
 });
 
 test("GPT 内置测试把本地素材和模板与持久原生网页合成一个生产界面", () => {
@@ -92,7 +95,7 @@ test("GPT 内置测试把本地素材和模板与持久原生网页合成一个�
   assert.match(app, /gptTestSelectedMaterials/);
   assert.match(app, /gptTestSelectedTemplates/);
   assert.match(app, /buildGptTemplateInitTask/);
-  assert.match(app, /当前 GPT 会话里已经沉淀好的母版环境/);
+  assert.match(app, /GPT_V36_MASTER_PROMPT/);
   assert.match(app, /templates\.flatMap/);
   assert.match(app, /window\.gptWorkbench\.sendTask/);
   assert.doesNotMatch(html, /做一套|做一批/);
@@ -192,6 +195,14 @@ test("single-window continuation keeps quota warnings informational and reattach
   assert.match(desktopMain, /forceUpload: Boolean\(task\.forceUpload\)/);
   assert.match(gptSidebar, /const forceUpload = Boolean\(message\.forceUpload\)/);
   assert.match(gptSidebar, /!entry\.forceUpload/);
+});
+
+test("retrying a failed send or composer boundary forces a clean one-post upload", () => {
+  assert.match(app, /const failureText = `\$\{gptLastFailedStage \|\| ""\} \$\{failedTask\._error \|\| failedTask\.error \|\| ""\}`/);
+  assert.match(app, /requiresFreshUpload = \/没有检测到新消息\|发送按钮已出现\|未发送附件/);
+  assert.match(app, /failedTask\.forceUpload = true/);
+  assert.match(app, /failedTask\._submittedToGpt = false/);
+  assert.match(app, /delete failedTask\.workflow/);
 });
 
 test("local quota estimates never block uploads and real web limits are recorded separately", () => {
@@ -373,21 +384,26 @@ test("GPT production locks selection while running and exposes a real pause/cont
   assert.match(app, /if \(blockGptSelectionDuringRun\(\)\) return;/);
   assert.match(app, /let gptQueuePaused = false/);
   assert.match(app, /继续自动生产/);
-  assert.match(app, /pauseButton\.textContent = gptAutoRunning/);
+  assert.match(app, /pauseButton\.textContent = gptAutoPaused/);
   assert.match(app, /gptQueuePaused = true/);
 });
 
-test("GPT production keeps a recoverable queue and supports multiple permanent browser workers", () => {
+test("GPT production keeps a recoverable queue and supports multiple permanent account-window workers", () => {
   assert.match(app, /GPT_QUEUE_STORAGE_KEY/);
   assert.match(app, /function persistGptQueue\(/);
   assert.match(app, /function restoreGptQueue\(/);
   assert.match(app, /sendMultiWindowGptTasks/);
   assert.match(app, /parallelWorkers/);
-  assert.match(html, /value="automatic">单窗口（手选自动做·有提示词）/);
-  assert.match(html, /value="multi">多窗口自动/);
+  assert.match(html, /value="single">单账号单模板·永不停歇/);
+  assert.match(html, /value="multi">多账号单模板·永不停歇/);
   assert.match(html, /value="manual">手动模式/);
-  assert.match(html, /添加浏览器/);
+  assert.match(html, /添加账号窗口/);
   assert.match(html, /id="gptBrowserManager"/);
+  assert.match(app, /当前账号窗口打开在线模板/);
+  assert.match(app, /name: `账号窗口 \${index \+ 1}`/);
+  assert.match(app, /单账号单模板·永不停歇/);
+  assert.match(app, /多账号单模板·永不停歇已启动/);
+  assert.match(html, /账号窗口/);
   assert.match(desktopMain, /gpt-browser-profiles\.json/);
   assert.match(desktopMain, /desktop:gpt-profile-save/);
 });
@@ -478,12 +494,20 @@ test("GPT automatic production keeps a durable user-visible production history",
   assert.match(html, /id="gptProductionHistoryPanel"/);
   assert.match(app, /GPT_HISTORY_STORAGE_KEY/);
   assert.match(app, /appendGptProductionHistory/);
+  assert.match(app, /accountName: String\(gptAccounts\.find/);
+  assert.match(app, /escapeHtml\(item\.accountName \|\| "当前账号窗口"\)/);
   assert.match(app, /openGptProductionHistory/);
   assert.match(app, /\/api\/gpt-production\/history/);
   assert.match(app, /planDurationMs/);
   assert.match(app, /imageDurationMs/);
   assert.match(app, /data-open-production-path/);
+  assert.match(app, /打开成品文件夹/);
+  assert.match(app, /打开图片暂存目录/);
+  assert.match(app, /function openPath/);
   assert.match(server, /pathname === "\/api\/gpt-production\/history"/);
+  assert.match(server, /downloadRoot/);
+  assert.match(server, /copyTextLength/);
+  assert.match(server, /packagePath/);
 });
 
 test("GPT browser profiles remember the last safe conversation URL", () => {
@@ -530,6 +554,12 @@ test("normal production never routes package output into acceptance folders", ()
 test("GPT packaging writes its task manifest beside the actual downloaded images", () => {
   assert.match(server, /const effectiveDownloadRoot = requestedDownloadRoot/);
   assert.match(server, /taskFile = path\.join\(effectiveDownloadRoot, `chatgpt-workpkg-task-/);
+  assert.match(server, /pathname === "\/api\/extension\/save-copy-text"/);
+  assert.match(server, /\.gpt-copy-staging/);
+  assert.match(server, /removeExtensionCopyText/);
+  assert.match(server, /function inspectGptWorkPackage\(/);
+  assert.match(server, /packageValid: packagePath \? packageInspection\.valid : false/);
+  assert.match(app, /打开成品文件夹（待核对）/);
 });
 
 test("GPT material parent checkbox keeps valid independent accessibility attributes", () => {
@@ -626,12 +656,39 @@ test("material and template rows expose the same manual upload action without st
   assert.match(css, /\.gpt-test-template-list \.workbench-folder-row\s*\{\s*grid-template-columns:\s*22px minmax\(0, 1fr\) auto;/);
 });
 
-test("multi-account all-day mode keeps one serial task per browser and isolates quota stops", () => {
-  assert.match(html, /value="all-day-multi">多账号自动（永不停歇）/);
+test("new account windows receive the V3.6 master prompt while trained conversations stay compact", () => {
+  assert.match(app, /const GPT_V36_MASTER_PROMPT/);
+  assert.match(app, /function gptAccountNeedsMasterPrompt/);
+  assert.match(app, /task\.taskType === "template-init"/);
+  assert.match(app, /没有可确认的历史母版/);
+  assert.match(app, /lastUrl: String\(profile\.lastUrl \|\| ""\)/);
+});
+
+test("multi-account endless mode keeps one serial task per browser and isolates quota stops", () => {
+  assert.match(html, /value="multi">多账号单模板·永不停歇/);
   assert.match(app, /pendingGroups\.splice\(claimIndex, 1\)/);
   assert.match(app, /await runGptTaskOnBrowser\(task, account, tracker\)/);
   assert.match(app, /isActualGptLimitMessage[\s\S]*?return;/);
   assert.match(app, /allowedAccountIds/);
+});
+
+test("multi-account production persists workers, filters accounts and leaves quota-pending posts queued", () => {
+  assert.match(app, /GPT_MULTI_RUN_STORAGE_KEY/);
+  assert.match(app, /function persistGptMultiRun\(/);
+  assert.match(app, /function availableMultiWindowAccounts\(/);
+  assert.match(app, /multiAccountIds/);
+  assert.match(app, /status\s*=\s*"waiting-quota"/);
+  assert.match(app, /pendingGroups\.unshift\(\{ group: group\.slice\(taskIndex \+ 1\)/);
+  assert.match(app, /gptQueuePaused = pending\.length > 0/);
+  assert.match(app, /!\["completed", "skipped"\]\.includes\(task\._status\)/);
+});
+
+test("endless material selection only queues complete non-hidden post folders in usage order", () => {
+  assert.match(app, /const imageCount = Number\(item\.imageCount \|\| 0\)/);
+  assert.match(app, /const textCount = Number\(item\.textCount \|\| 0\)/);
+  assert.match(app, /return hasImage && hasText/);
+  assert.match(app, /isHiddenMaterialPath\(item\.path\)/);
+  assert.match(app, /Number\(left\.item\.usageCount \|\| 0\)/);
 });
 
 test("desktop manual download actions cross the isolated extension world through a DOM bridge", () => {
