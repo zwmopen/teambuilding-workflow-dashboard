@@ -25,11 +25,16 @@ test("GPT production exposes manual, single-account and multi-account mode profi
   assert.match(gptSidebar, /conversationStateSnapshot/);
 });
 
+test("the literal single-account mode survives normalization and settings save", () => {
+  assert.match(app, /if \(mode === "single"\) return "single"/);
+  assert.match(app, /const normalizedMode = normalizeGptProductionMode\(selectedMode \|\| gptAutoSettings\.mode\)/);
+});
+
 test("GPT production exposes the endless mode and low-usage material selection", () => {
   assert.match(html, /value="single">单账号单模板·永不停歇/);
   assert.match(app, /async function prepareAllDayGptQueue/);
   assert.match(app, /isHiddenMaterialPath/);
-  assert.match(app, /Number\(left\.item\.usageCount/);
+  assert.match(app, /gptMaterialUsageCount\(left\.item, left\.category\)/);
   assert.match(app, /normalizeGptProductionMode\(gptAutoSettings\.mode\)/);
   assert.match(server, /!entry\.name\.startsWith\("\."\)/);
   assert.match(server, /includeHidden = options\.includeHidden === true/);
@@ -152,6 +157,18 @@ test("composer attachment conflicts pause the batch without advancing to another
   assert.match(app, /function currentGptQueueIntegrityBlock\(/);
   assert.match(app, /const integrityBlock = currentGptQueueIntegrityBlock\(\)/);
   assert.match(app, /delete failedTask\._errorCode/);
+});
+
+test("single-account production refuses authentication pages before claiming or uploading a post", () => {
+  assert.match(desktopMain, /authenticationRequired/);
+  assert.match(desktopMain, /productionReady/);
+  assert.match(desktopMain, /TeambuildingGptConversationStateSnapshot/);
+  assert.match(app, /const preflight = await window\.gptWorkbench\.status\(runAccountId\)/);
+  assert.match(app, /if \(!preflight\?\.productionReady\)/);
+  assert.match(app, /本次没有上传任何素材/);
+  const preflightIndex = app.indexOf("const preflight = await window.gptWorkbench.status(runAccountId)");
+  const runningIndex = app.indexOf("gptAutoRunning = true;", preflightIndex);
+  assert.ok(preflightIndex >= 0 && runningIndex > preflightIndex, "preflight must run before the queue is marked running");
 });
 
 test("GPT 自动生产 downloads and packages only the current verified batch", () => {
@@ -559,6 +576,9 @@ test("GPT packaging writes its task manifest beside the actual downloaded images
   assert.match(server, /removeExtensionCopyText/);
   assert.match(server, /function inspectGptWorkPackage\(/);
   assert.match(server, /packageValid: packagePath \? packageInspection\.valid : false/);
+  assert.match(server, /recordMatchesDisk = packageRecord\?\.status === "completed"/);
+  assert.match(server, /recordedActual === recordedExpected/);
+  assert.match(server, /validatedByPackageRecord: recordMatchesDisk/);
   assert.match(app, /打开成品文件夹（待核对）/);
 });
 
@@ -688,7 +708,27 @@ test("endless material selection only queues complete non-hidden post folders in
   assert.match(app, /const textCount = Number\(item\.textCount \|\| 0\)/);
   assert.match(app, /return hasImage && hasText/);
   assert.match(app, /isHiddenMaterialPath\(item\.path\)/);
-  assert.match(app, /Number\(left\.item\.usageCount \|\| 0\)/);
+  assert.match(app, /gptMaterialUsageCount\(left\.item, left\.category\) - gptMaterialUsageCount\(right\.item, right\.category\)/);
+});
+
+test("endless selection treats physical 已使用/已上传 folders as usage evidence even with a stale zero ledger", () => {
+  assert.match(app, /function gptMaterialUsageCount\(item = \{\}, category = \{\}\)/);
+  assert.match(app, /gptMaterialUsageCount\(left\.item, left\.category\) - gptMaterialUsageCount\(right\.item, right\.category\)/);
+});
+
+test("endless scheduler freezes a deliberate selected batch before automatic refill", () => {
+  assert.match(app, /if \(!hasPendingQueue && gptTestSelectedMaterials\.size\)/);
+  assert.match(app, /gptTestQueue = buildGptProductionQueue\(\)/);
+  const selectedBatch = app.indexOf("if (!hasPendingQueue && gptTestSelectedMaterials.size)");
+  const autoRefill = app.indexOf("prepareAllDayGptQueue()", selectedBatch);
+  assert.ok(selectedBatch >= 0 && autoRefill > selectedBatch, "selected batch must win before endless refill");
+});
+
+test("retrying a stale previous-post boundary forces a clean upload of the selected post", () => {
+  assert.match(app, /上一帖\|composer\|COMPOSER/);
+  assert.match(app, /WINDOW_STAGE_PENDING/);
+  assert.match(app, /failedTask\.forceUpload = true/);
+  assert.match(app, /failedTask\._submittedToGpt = false/);
 });
 
 test("desktop manual download actions cross the isolated extension world through a DOM bridge", () => {

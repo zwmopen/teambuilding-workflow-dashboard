@@ -758,13 +758,35 @@ ipcMain.handle("desktop:gpt-status", async (_event, accountId = activeGptAccount
   const id = safeGptAccountId(accountId);
   const account = gptAccounts.get(id);
   const contents = account?.view && !account.view.webContents.isDestroyed() ? account.view.webContents : null;
-  const liveState = contents ? await contents.executeJavaScript(`({
-    readyState: document.readyState,
-    extensionReady: document.documentElement.dataset.tbGptProductionExtension === "ready" || Boolean(document.getElementById("tb-gpt-production-extension-marker")),
-    extensionVersion: document.documentElement.dataset.tbGptProductionExtensionVersion || document.getElementById("tb-gpt-production-extension-marker")?.content || "",
-    extensionSource: document.documentElement.dataset.tbGptProductionExtensionSource || "",
-    composerReady: Boolean(document.querySelector('#prompt-textarea, textarea[data-id="root"], [contenteditable="true"]'))
-  })`, true).catch(() => ({ readyState: "", extensionReady: false, extensionVersion: "", extensionSource: "", composerReady: false })) : null;
+  const liveState = contents ? await contents.executeJavaScript(`(() => {
+    const url = String(location.href || "");
+    const bodyText = String(document.body?.innerText || "").slice(0, 8000).toLowerCase();
+    const composerReady = Boolean(document.querySelector('#prompt-textarea, textarea[data-id="root"], [contenteditable="true"]'));
+    const authenticationSignal = ["one-time code", "one time code", "verification code", "verify your identity", "check your email", "sign in", "log in", "\u4e00\u6b21\u6027\u9a8c\u8bc1\u7801", "\u9a8c\u8bc1\u7801", "\u68c0\u67e5\u90ae\u7bb1", "\u767b\u5f55"]
+      .some((signal) => bodyText.includes(signal));
+    let parsedUrl = null;
+    try { parsedUrl = new URL(url); } catch (_) { parsedUrl = null; }
+    const pathname = String(parsedUrl?.pathname || "");
+    const authenticationUrl = parsedUrl?.hostname === "auth.openai.com"
+      || pathname.startsWith("/auth/login")
+      || pathname.startsWith("/auth/signup")
+      || pathname.startsWith("/api/auth/signin");
+    const chatConversation = parsedUrl?.hostname === "chatgpt.com"
+      && (pathname === "/" || pathname.startsWith("/c/"));
+    const conversationState = typeof globalThis.TeambuildingGptConversationStateSnapshot === "function"
+      ? globalThis.TeambuildingGptConversationStateSnapshot()
+      : null;
+    return {
+      readyState: document.readyState,
+      extensionReady: document.documentElement.dataset.tbGptProductionExtension === "ready" || Boolean(document.getElementById("tb-gpt-production-extension-marker")),
+      extensionVersion: document.documentElement.dataset.tbGptProductionExtensionVersion || document.getElementById("tb-gpt-production-extension-marker")?.content || "",
+      extensionSource: document.documentElement.dataset.tbGptProductionExtensionSource || "",
+      composerReady,
+      authenticationRequired: authenticationUrl || (!composerReady && authenticationSignal),
+      chatConversation,
+      conversationState
+    };
+  })()`, true).catch(() => ({ readyState: "", extensionReady: false, extensionVersion: "", extensionSource: "", composerReady: false, authenticationRequired: false, chatConversation: false, conversationState: null })) : null;
   if (account?.pageState && liveState) {
     account.pageState.domReady = ["interactive", "complete"].includes(liveState.readyState);
     account.pageState.extensionReady = Boolean(liveState.extensionReady);
@@ -774,9 +796,13 @@ ipcMain.handle("desktop:gpt-status", async (_event, accountId = activeGptAccount
     accountId: id,
     loaded: Boolean(contents),
     ready: Boolean(contents && account?.pageState?.domReady && liveState?.extensionReady),
+    productionReady: Boolean(contents && account?.pageState?.domReady && liveState?.extensionReady && liveState?.composerReady && liveState?.chatConversation && !liveState?.authenticationRequired),
     domReady: Boolean(account?.pageState?.domReady),
     extensionReady: Boolean(liveState?.extensionReady),
     composerReady: Boolean(liveState?.composerReady),
+    authenticationRequired: Boolean(liveState?.authenticationRequired),
+    chatConversation: Boolean(liveState?.chatConversation),
+    conversationState: liveState?.conversationState || null,
     pageState: account?.pageState || null,
     extensionLoaded: Boolean(account?.extensionInfo),
     extensionRuntimeReady: Boolean(account?.extensionRuntimeReady),

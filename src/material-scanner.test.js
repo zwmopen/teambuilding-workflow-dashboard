@@ -5,11 +5,19 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
+  inferMaterialUsageCountFromPath,
   materialCategoryCountMap,
   materialCategoryIndex,
   materialTreeSignature,
   scanPostFolders
 } = require("./server");
+
+test("physical usage archive folders provide a minimum usage count", () => {
+  assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\已使用一次\\post-a"), 1);
+  assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\已上传 2 次\\post-b"), 2);
+  assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\已制作三次GPT\\post-c"), 3);
+  assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\fresh\\post-d"), 0);
+});
 
 test("scanPostFolders recursively finds folders containing images and text", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "material-scan-"));

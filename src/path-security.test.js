@@ -59,6 +59,34 @@ test('work-package result path is recovered from the UTF-8 package record instea
   }
 });
 
+test('completed first-batch package uses its verified 10/10 record instead of the larger plan count', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-package-inspection-'));
+  try {
+    fs.writeFileSync(path.join(parent, '文案.txt'), '完整文案', 'utf8');
+    for (let index = 1; index <= 10; index += 1) {
+      fs.writeFileSync(path.join(parent, `${index}.png`), Buffer.from('89504e470d0a1a0a', 'hex'));
+    }
+    fs.writeFileSync(path.join(parent, 'GPT作品记录.json'), JSON.stringify({
+      status: 'completed',
+      expectedImageCount: 10,
+      actualImages: 10
+    }), 'utf8');
+    const completeBatch = server.inspectGptWorkPackage(parent, 12);
+    assert.equal(completeBatch.valid, true);
+    assert.equal(completeBatch.expectedImageCount, 10);
+    assert.equal(completeBatch.plannedImageCount, 12);
+    assert.equal(completeBatch.validatedByPackageRecord, true);
+
+    fs.rmSync(path.join(parent, '10.png'));
+    const incompleteBatch = server.inspectGptWorkPackage(parent, 12);
+    assert.equal(incompleteBatch.valid, false);
+    assert.equal(incompleteBatch.expectedImageCount, 12);
+    assert.equal(incompleteBatch.validatedByPackageRecord, false);
+  } finally {
+    cleanup(parent);
+  }
+});
+
 test('online GPT templates are stored atomically in the template-root text file', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-online-templates-'));
   const file = path.join(parent, '链接模板.txt');

@@ -109,6 +109,7 @@ const GPT_MODE_DEFINITIONS = Object.freeze({
 function normalizeGptProductionMode(value) {
   const mode = String(value || "").trim();
   if (mode === "manual") return "manual";
+  if (mode === "single") return "single";
   if (mode === "multi") return "multi";
   if (["all-day-multi", "multi-account-template-endless", "multi-account"].includes(mode)) return "multi";
   if (["all-day", "single-template-endless", "single-account-template-endless", "automatic", "random", "scheduled"].includes(mode)) return "single";
@@ -282,7 +283,7 @@ function currentGptQueueIntegrityBlock() {
   const task = gptTestQueue[gptTestQueueIndex];
   if (!task || task._status === "completed") return null;
   const code = String(task._errorCode || "");
-  if (!["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "COMPOSER_ATTACHMENT_CONFLICT", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "IMAGE_COUNT_UNCERTAIN", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(code)) return null;
+  if (!["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "IMAGE_COUNT_UNCERTAIN", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(code)) return null;
   return task;
 }
 
@@ -2041,7 +2042,7 @@ async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8
       })
       .map((item) => ({ item, category })))
     .sort((left, right) => {
-      const usage = Number(left.item.usageCount || 0) - Number(right.item.usageCount || 0);
+      const usage = gptMaterialUsageCount(left.item, left.category) - gptMaterialUsageCount(right.item, right.category);
       if (usage) return usage;
       const leftTime = Date.parse(left.item.updatedAt || left.item.modifiedAt || "") || 0;
       const rightTime = Date.parse(right.item.updatedAt || right.item.modifiedAt || "") || 0;
@@ -2146,6 +2147,14 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
     // workers independently, so pending status—not the cursor—decides whether
     // another batch is needed after a restart or quota pause.
     let hasPendingQueue = gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
+    if (!hasPendingQueue && gptTestSelectedMaterials.size) {
+      // A deliberate UI selection is the current batch contract. Endless
+      // mode may refill only after that exact snapshot is completed; it must
+      // never replace one selected post with an automatic eight-post batch.
+      gptTestQueue = buildGptProductionQueue();
+      gptTestQueueIndex = 0;
+      hasPendingQueue = gptTestQueue.length > 0;
+    }
     if (!hasPendingQueue) {
       hasPendingQueue = Boolean(await prepareAllDayGptQueue());
     }
@@ -2263,6 +2272,16 @@ function buildGptProductionQueue(entries = selectedGptTestEntries(), templates =
 
 function gptProductionWorkCount() {
   return gptTestSelectedMaterials.size * Math.max(1, gptTestSelectedTemplates.size);
+}
+
+function gptMaterialUsageCount(item = {}, category = {}) {
+  const source = `${category?.name || ""} ${category?.path || ""} ${item?.path || ""}`;
+  const numeric = source.match(/(?:已使用|已上传|已制作)\s*(\d+)\s*次/i);
+  const chinese = source.match(/(?:已使用|已上传|已制作)\s*(一次|两次|二次|三次)/i)?.[1] || "";
+  const physicalCount = numeric
+    ? Math.max(0, Number(numeric[1]) || 0)
+    : ({ "一次": 1, "两次": 2, "二次": 2, "三次": 3 }[chinese] || 0);
+  return Math.max(0, Number(item?.usageCount || 0), physicalCount);
 }
 
 function updateGptAssistantBubble(message = "") {
@@ -3116,6 +3135,8 @@ async function sendMultiWindowGptTasks(options = {}) {
             "MIXED_POST_ATTACHMENTS",
             "MATERIAL_ROOT_MISSING",
             "COMPOSER_ATTACHMENT_CONFLICT",
+            "LOCAL_BRIDGE_FETCH_FAILED",
+            "ATTACHMENT_UPLOAD_NOT_READY",
             "WINDOW_STAGE_PENDING",
             "WEB_RESPONSE_IN_FLIGHT",
             "IMAGE_COUNT_UNCERTAIN",
@@ -3191,6 +3212,20 @@ async function sendNextGptTestTask(options = {}) {
   if (!gptTestQueue.length) return;
   const resuming = gptQueuePaused && gptTestQueueIndex < gptTestQueue.length;
   const runAccountId = activeGptAccountId;
+  const runAccountName = gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号窗口";
+  const preflight = await window.gptWorkbench.status(runAccountId).catch(() => null);
+  if (!preflight?.productionReady) {
+    gptQueuePaused = true;
+    persistGptQueue();
+    const reason = preflight?.authenticationRequired
+      ? `${runAccountName}需要先完成登录或验证码；本次没有上传任何素材`
+      : !preflight?.composerReady
+        ? `${runAccountName}当前不是可输入的 GPT 对话；本次没有上传任何素材`
+        : `${runAccountName}的生产助手尚未就绪；本次没有上传任何素材`;
+    updateGptTestQueueStatus(reason);
+    showWorkbenchAssistantBubble(reason, { duration: 0, tone: "warning" });
+    return;
+  }
   const button = $("#gptTestSendBtn");
   const progressBar = $("#gptAutoProgressBar");
   gptAutoRunning = true;
@@ -3207,7 +3242,7 @@ async function sendNextGptTestTask(options = {}) {
         : gptAutoSettings.mode === "multi"
           ? "多账号单模板·永不停歇"
           : "手动模式";
-    updateGptTestQueueStatus(`${runModeLabel} · ${gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号窗口"} · ${gptProductionWorkCount()} 个作品`);
+    updateGptTestQueueStatus(`${runModeLabel} · ${runAccountName} · ${gptProductionWorkCount()} 个作品`);
   let completedThisRun = 0;
   let failedThisRun = 0;
   let quotaPausedTask = null;
@@ -3283,7 +3318,7 @@ async function sendNextGptTestTask(options = {}) {
         gptLastFailedStage = String(result?.stage || gptLastFailedStage || "");
         gptLastFailedPercent = Number(result?.percent || gptLastFailedPercent || 0);
         const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
-        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "IMAGE_COUNT_UNCERTAIN", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(String(result?.errorCode || ""))
+        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "IMAGE_COUNT_UNCERTAIN", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(String(result?.errorCode || ""))
           || /未发送附件|未发送文字|重复粘贴提示词|没有接收到本轮提示词|输入框没有接收到|不属于当前帖子文件夹|混合上传|缺少帖子文件夹路径|上一帖仍在生成|已阻止下一帖注入|文案 TXT|代码解释器|脚本文件输出/.test(taskError.message);
         task._stage = gptLastFailedStage;
         task._percent = gptLastFailedPercent;
@@ -3404,7 +3439,7 @@ function retryCurrentGptTask() {
   const failedTask = gptLastFailedTask;
   const previousRequestId = failedTask.requestId;
   const failureText = `${gptLastFailedStage || ""} ${failedTask._error || failedTask.error || ""}`;
-  const requiresFreshUpload = /没有检测到新消息|发送按钮已出现|未发送附件|输入框仍有|没有接收到本轮提示词|输入框没有接收到|残留|composer|COMPOSER|附件上传|WEB_RESPONSE_IN_FLIGHT/i.test(failureText);
+  const requiresFreshUpload = /没有检测到新消息|发送按钮已出现|未发送附件|输入框仍有|没有接收到本轮提示词|输入框没有接收到|残留|上一帖|composer|COMPOSER|附件上传|附件尚未全部就绪|ATTACHMENT_UPLOAD_NOT_READY|Failed to fetch|本地工作台连接失败|LOCAL_BRIDGE_FETCH_FAILED|WEB_RESPONSE_IN_FLIGHT|WINDOW_STAGE_PENDING/i.test(failureText);
   failedTask.requestId = `gpt-retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   failedTask.retryOf = previousRequestId;
   failedTask.retryFromStage = gptLastFailedStage;
@@ -5755,6 +5790,8 @@ async function syncGptProductionHistory() {
       existing.packageValid = checkpoint.packagePath ? checkpoint.packageValid !== false : false;
       existing.packageImageCount = Number(checkpoint.packageImageCount || 0);
       existing.packageTextCount = Number(checkpoint.packageTextCount || 0);
+      existing.packageExpectedImageCount = Number(checkpoint.packageExpectedImageCount || 0);
+      existing.packageValidatedByRecord = checkpoint.packageValidatedByRecord === true;
       existing.updatedAt = checkpoint.updatedAt || existing.updatedAt || existing.finishedAt || new Date().toISOString();
       if (checkpoint.packagePath && checkpoint.packageValid !== false) existing.status = "completed";
       else if (existing.status === "completed") existing.status = "paused";
@@ -5776,6 +5813,8 @@ async function syncGptProductionHistory() {
       packageValid: checkpoint.packagePath ? checkpoint.packageValid !== false : false,
       packageImageCount: Number(checkpoint.packageImageCount || 0),
       packageTextCount: Number(checkpoint.packageTextCount || 0),
+      packageExpectedImageCount: Number(checkpoint.packageExpectedImageCount || 0),
+      packageValidatedByRecord: checkpoint.packageValidatedByRecord === true,
       finishedAt: checkpoint.updatedAt || new Date().toISOString(),
       updatedAt: checkpoint.updatedAt || new Date().toISOString()
     };

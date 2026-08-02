@@ -585,6 +585,14 @@ function inferMaterialMainTag(categoryName, itemName, preview) {
   return "团建转化";
 }
 
+function inferMaterialUsageCountFromPath(entryPath = "", categoryName = "") {
+  const source = `${categoryName || ""} ${entryPath || ""}`;
+  const numeric = source.match(/(?:已使用|已上传|已制作)\s*(\d+)\s*次/i);
+  if (numeric) return Math.max(0, Number(numeric[1]) || 0);
+  const chinese = source.match(/(?:已使用|已上传|已制作)\s*(一次|两次|二次|三次)/i)?.[1] || "";
+  return { "一次": 1, "两次": 2, "二次": 2, "三次": 3 }[chinese] || 0;
+}
+
 function materialMetadataProfile(item, categoryName, options = {}) {
   const metadata = options.metadata || getMaterialMetadataLedger(options.ledgerFile);
   const hashResult = materialFolderHash(item.path, options);
@@ -596,7 +604,11 @@ function materialMetadataProfile(item, categoryName, options = {}) {
     mainTag: MATERIAL_MAIN_TAGS.includes(saved.mainTag) ? saved.mainTag : automaticMainTag,
     mainTagSource: MATERIAL_MAIN_TAGS.includes(saved.mainTag) ? "manual" : "automatic",
     tags: Array.from(new Set([...(automaticTags || []), ...(saved.tags || [])])),
-    usageCount: Math.max(0, Number(saved.usageCount || 0)),
+    usageCount: Math.max(
+      0,
+      Number(saved.usageCount || 0),
+      inferMaterialUsageCountFromPath(item.path, categoryName)
+    ),
     updatedAt: saved.updatedAt || "",
     hashCache: hashResult.cache,
     hashCacheChanged: hashResult.changed
@@ -1210,11 +1222,27 @@ function inspectGptWorkPackage(packagePath, expectedImageCount = 0) {
   const entries = safeList(target);
   const imageCount = entries.filter((entry) => entry.isFile() && imageExts.has(path.extname(entry.name).toLowerCase())).length;
   const textCount = entries.filter((entry) => entry.isFile() && textExts.has(path.extname(entry.name).toLowerCase())).length;
-  const expected = Math.max(0, Number(expectedImageCount || 0));
+  const plannedExpected = Math.max(0, Number(expectedImageCount || 0));
+  const packageRecord = readJson(path.join(target, "GPT作品记录.json"), null);
+  const recordedExpected = Math.max(0, Number(packageRecord?.expectedImageCount || 0));
+  const recordedActual = Math.max(0, Number(packageRecord?.actualImages || 0));
+  // ChatGPT can explicitly split a plan larger than ten pages into a first
+  // 10-page publishable batch. The packager records the exact batch contract;
+  // use it only when the completed record and the files on disk agree. This
+  // prevents history sync from turning a verified 10/10 package back into a
+  // false "12 pages missing 2" state while still rejecting partial folders.
+  const recordMatchesDisk = packageRecord?.status === "completed"
+    && recordedExpected > 0
+    && recordedActual === recordedExpected
+    && imageCount === recordedActual;
+  const expected = recordMatchesDisk ? recordedExpected : plannedExpected;
   return {
     valid: imageCount > 0 && textCount > 0 && (expected === 0 || imageCount >= expected),
     imageCount,
-    textCount
+    textCount,
+    expectedImageCount: expected,
+    plannedImageCount: plannedExpected,
+    validatedByPackageRecord: recordMatchesDisk
   };
 }
 
@@ -5062,6 +5090,8 @@ async function route(req, res) {
         packageValid: packagePath ? packageInspection.valid : false,
         packageImageCount: packageInspection.imageCount,
         packageTextCount: packageInspection.textCount,
+        packageExpectedImageCount: packageInspection.expectedImageCount,
+        packageValidatedByRecord: packageInspection.validatedByPackageRecord === true,
         conversationUrl: item.conversationUrl,
         updatedAt: item.updatedAt
       };
@@ -5949,6 +5979,8 @@ module.exports = {
   materialUsageDirectoryName,
   materialFolderHash,
   inferMaterialMainTag,
+  inferMaterialUsageCountFromPath,
+  inspectGptWorkPackage,
   getLegacyMaterialEvidence,
   matchLegacyMaterialEvidence,
   applyLegacyMaterialEvidence,
