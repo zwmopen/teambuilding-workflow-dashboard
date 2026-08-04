@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+const version = fs.readFileSync(path.join(__dirname, "..", "..", "VERSION"), "utf8").trim();
 const app = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const css = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const desktopMain = fs.readFileSync(path.join(__dirname, "..", "desktop", "main.js"), "utf8");
@@ -14,10 +15,21 @@ const gptSidebar = fs.readFileSync(path.join(__dirname, "..", "integrations", "g
 const gptBackground = fs.readFileSync(path.join(__dirname, "..", "integrations", "gpt-production-extension", "background.js"), "utf8");
 const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
 
+test("开发版静态资源缓存版本与 VERSION 同步", () => {
+  assert.ok(version, "VERSION must not be empty");
+  const versionPattern = version.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+  assert.match(html, new RegExp(`styles\\.css\\?v=${versionPattern}`));
+  assert.match(html, new RegExp(`distribution-ui\\.js\\?v=${versionPattern}`));
+  assert.match(html, new RegExp(`material-workspace\\.js\\?v=${versionPattern}`));
+  assert.match(html, new RegExp(`app\\.js\\?v=${versionPattern}`));
+});
+
 test("GPT production exposes manual, single-account and multi-account mode profiles", () => {
-  assert.match(html, /value="manual">手动模式/);
-  assert.match(html, /value="single">单账号单模板·永不停歇/);
-  assert.match(html, /value="multi">多账号单模板·永不停歇/);
+  assert.match(html, /value="manual">人工控制/);
+  assert.match(html, /value="single">/);
+  assert.match(html, /value="rotate">/);
+  assert.match(html, /value="scheduled">/);
+  assert.match(html, /value="patrol">/);
   assert.match(app, /GPT_MODE_DEFINITIONS/);
   assert.match(app, /useCurrentSession/);
   assert.match(app, /gptModeProfiles/);
@@ -25,13 +37,35 @@ test("GPT production exposes manual, single-account and multi-account mode profi
   assert.match(gptSidebar, /conversationStateSnapshot/);
 });
 
+test("embedded GPT browser exposes an account-partitioned address bar", () => {
+  assert.match(html, /id="gptBrowserAddressInput"/);
+  assert.match(html, /id="gptBrowserGoBtn"/);
+  assert.match(html, /id="gptBrowserGoBtn"[^>]*aria-label="访问当前网址"[^>]*>→<\/button>/);
+  assert.match(html, /aria-label="账号窗口切换"/);
+  assert.match(html, /aria-label="当前账号窗口网页"/);
+  assert.match(html, /默认 ChatGPT，可输入其他网址/);
+  assert.match(app, /submitGptBrowserAddress/);
+  assert.match(app, /syncGptBrowserAddress/);
+  assert.match(desktopPreload, /action: String\(action \|\| "reload"\)/);
+  assert.match(desktopMain, /function safeBrowserUrl/);
+  assert.match(desktopMain, /只允许访问 http:\/\/ 或 https:\/\/ 网页/);
+  assert.match(desktopMain, /await contents\.loadURL\(targetUrl\)/);
+  assert.match(desktopMain, /isChatGpt: \/\^https/);
+  assert.match(app, /浏览器网页已打开 · 返回 GPT 可继续生产/);
+  assert.match(desktopMain, /desktop:gpt-url-changed/);
+  assert.match(desktopPreload, /onUrlChanged\(callback\)/);
+  assert.match(app, /onUrlChanged\?\.\(\(input = \{\}\) =>/);
+  assert.match(app, /function resolveGptBrowserInput/);
+  assert.match(app, /https:\/\/www\.google\.com\/search\?q=\$\{encodeURIComponent\(raw\)\}/);
+});
+
 test("the literal single-account mode survives normalization and settings save", () => {
-  assert.match(app, /if \(mode === "single"\) return "single"/);
-  assert.match(app, /const normalizedMode = normalizeGptProductionMode\(selectedMode \|\| gptAutoSettings\.mode\)/);
+  assert.match(app, /mode === "single".*return "single"/s);
+  assert.match(app, /const normalizedMode = normalizeGptProductionMode\(gptAutoSettings\.mode\)/);
 });
 
 test("GPT production exposes the endless mode and low-usage material selection", () => {
-  assert.match(html, /value="single">单账号单模板·永不停歇/);
+  assert.match(html, /value="single">/);
   assert.match(app, /async function prepareAllDayGptQueue/);
   assert.match(app, /isHiddenMaterialPath/);
   assert.match(app, /gptMaterialUsageCount\(left\.item, left\.category\)/);
@@ -84,11 +118,19 @@ test("GPT production history hides the native GPT view before opening its DOM pa
 });
 
 test("GPT production exposes editable current-session and injected-prompt profiles", () => {
-  assert.match(html, /id="gptModeStartBehavior"/);
-  assert.match(html, /value="current">继续使用当前 GPT 会话/);
-  assert.match(html, /value="inject">注入模板提示词后再生产/);
-  assert.match(app, /const useCurrentSession = gptAutoSettings\.useCurrentSession !== false/);
-  assert.match(app, /const prompt = useCurrentSession \? ""/);
+  assert.match(app, /id="gptModeStartBehavior"/);
+  assert.match(app, /value="current"[^>]*>继续使用当前会话/);
+  assert.match(app, /value="inject"[^>]*>注入模板提示词/);
+  assert.match(app, /const useCurrentSession = \$\("#gptModeStartBehavior"\)\?\.value !== "inject"/);
+  assert.match(app, /useCurrentSession \? "" :/);
+  assert.match(html, /id="gptModeWorkflowEditor"/);
+  assert.match(html, /id="gptAddModeWorkflowStepBtn"/);
+  assert.match(app, /function defaultGptWorkflowSteps/);
+  assert.match(app, /function validateGptWorkflowSteps/);
+  assert.match(app, /必须在计划完成后/);
+  assert.match(app, /profileSteps/);
+  assert.match(app, /select\.id === "gptProductionMode" \|\| select\.id === "gptProductionModeSetting"/);
+  assert.match(app, /kind: "gpt-production-mode"/);
 });
 
 test("GPT 内置测试把本地素材和模板与持久原生网页合成一个生产界面", () => {
@@ -196,7 +238,21 @@ test("GPT automatic production exposes safe retry, quota and real archive contro
   assert.match(gptSidebar, /autoArchive/);
   assert.match(gptSidebar, /gpt-production\/archive-material/);
   assert.match(server, /function archiveMaterialAfterProduction/);
+  assert.match(server, /sourceMaterialArchivePath: finalPath/);
+  assert.match(server, /packageRecord\.sourceMaterialArchivePath = finalPath/);
 });
+
+  test("partial GPT attachments are treated as an upload-limit signal and the cat chat stays above the native page", () => {
+  assert.match(gptSidebar, /UPLOAD_LIMIT_SIGNAL/);
+  assert.match(gptSidebar, /GPT 上传未完整/);
+  assert.match(gptSidebar, /可能触达上传图片\/文件上限/);
+  assert.match(app, /UPLOAD_LIMIT_SIGNAL/);
+  assert.match(app, /assistantChatOpen/);
+  assert.match(app, /await window\.gptWorkbench\?\.hide/);
+    assert.match(css, /\.workbench-assistant-panel[\s\S]*z-index: var\(--tb-layer-assistant-panel\)/);
+    assert.match(css, /\.workbench-assistant-messages[\s\S]*max-height: min\(150px, 22vh\)/);
+    assert.match(css, /\.workbench-assistant-panel[\s\S]*max-height: min\(300px, 46vh\)/);
+  });
 
 test("quota reminders do not hard-block a deliberate manual continuation", () => {
   assert.match(app, /allowManualOverride/);
@@ -228,6 +284,12 @@ test("local quota estimates never block uploads and real web limits are recorded
   assert.match(app, /function isActualGptLimitMessage/);
   assert.match(app, /function recordActualGptLimit/);
   assert.match(app, /function inferGptQuotaLimitKind/);
+  assert.match(app, /function formatGptQuotaProbeTime/);
+  assert.match(app, /已触发额度\/低产出上限/);
+  assert.match(app, /自动重新探测/);
+  assert.match(app, /gptQuotaPauseStatus && gptQueuePaused/);
+  assert.match(app, /继续（等额度）/);
+  assert.match(app, /已触达额度或低产出上限/);
   assert.match(app, /上传本轮起点/);
   assert.match(app, /等待真实消耗后计算/);
   assert.doesNotMatch(app, /scheduleGptQuotaReminder\(quota\.nextExpiryAt/);
@@ -401,7 +463,9 @@ test("GPT production locks selection while running and exposes a real pause/cont
   assert.match(app, /if \(blockGptSelectionDuringRun\(\)\) return;/);
   assert.match(app, /let gptQueuePaused = false/);
   assert.match(app, /继续自动生产/);
-  assert.match(app, /pauseButton\.textContent = gptAutoPaused/);
+  assert.match(app, /pauseButton\.textContent = runtime\.pausedByUser/);
+  assert.match(html, /id="gptStopQueueBtn"/);
+  assert.match(app, /function reconcileGptWindow\(/);
   assert.match(app, /gptQueuePaused = true/);
 });
 
@@ -411,18 +475,33 @@ test("GPT production keeps a recoverable queue and supports multiple permanent a
   assert.match(app, /function restoreGptQueue\(/);
   assert.match(app, /sendMultiWindowGptTasks/);
   assert.match(app, /parallelWorkers/);
-  assert.match(html, /value="single">单账号单模板·永不停歇/);
-  assert.match(html, /value="multi">多账号单模板·永不停歇/);
-  assert.match(html, /value="manual">手动模式/);
+  assert.match(html, /value="single">/);
+  assert.match(html, /value="rotate">/);
+  assert.match(html, /value="manual">人工控制/);
   assert.match(html, /添加账号窗口/);
   assert.match(html, /id="gptBrowserManager"/);
   assert.match(app, /当前账号窗口打开在线模板/);
   assert.match(app, /name: `账号窗口 \${index \+ 1}`/);
-  assert.match(app, /单账号单模板·永不停歇/);
-  assert.match(app, /多账号单模板·永不停歇已启动/);
+  assert.match(app, /单账号全自动/);
+  assert.match(app, /单窗口多浏览器轮换模式已启动/);
   assert.match(html, /账号窗口/);
   assert.match(desktopMain, /gpt-browser-profiles\.json/);
   assert.match(desktopMain, /desktop:gpt-profile-save/);
+});
+
+test("GPT rotation mode serially switches account windows only after a real quota signal", () => {
+  assert.match(html, /value="automatic">/);
+  assert.match(html, /value="rotate">/);
+  assert.match(app, /function isRotatingGptMode\(/);
+  assert.match(app, /async function sendRotatingWindowGptTasks\(/);
+  assert.match(app, /function nextRotationAccount\(/);
+  assert.match(app, /resetGptTaskForRotation\(/);
+  assert.match(app, /触达真实限额，切换到/);
+  assert.match(app, /所有账号窗口都在等待额度恢复/);
+  assert.match(app, /一次只处理一帖/);
+  assert.match(app, /Rotation is quota-driven, not round-robin/);
+  assert.match(app, /blockedAccounts\.add\(account\.id\)[\s\S]{0,700}accountCursor = \(accountCursor \+ 1\) % accounts\.length/);
+  assert.doesNotMatch(app, /state\.completed \+= 1;[\s\S]{0,220}accountCursor = \(accountCursor \+ 1\) % accounts\.length/);
 });
 
 test("GPT queue recovery persists the final failed stage and replaces stale retry checkpoints", () => {
@@ -435,17 +514,39 @@ test("GPT queue recovery persists the final failed stage and replaces stale retr
   assert.match(server, /图片暂存目录必须位于工作台下载目录内/);
 });
 
-test("desktop close goes to tray without clearing GPT cache or login partitions", () => {
+test("desktop close goes to tray and temporary cache maintenance never clears login storage", () => {
   assert.match(desktopMain, /new Tray\(/);
   assert.match(desktopMain, /打开团建工作台/);
   assert.match(desktopMain, /彻底退出/);
   assert.match(desktopMain, /event\.preventDefault\(\)/);
   assert.match(desktopMain, /window\.hide\(\)/);
-  assert.doesNotMatch(desktopMain, /\.clearCache\(\)/);
+  assert.match(desktopMain, /partition: WORKBENCH_PARTITION,[\s\S]{0,260}backgroundThrottling: false/);
+  assert.match(desktopMain, /async function refreshGptAccountSession\(/);
+  assert.match(desktopMain, /await account\.session\.clearCache\(\)/);
+  assert.match(desktopMain, /desktop:gpt-maintenance/);
+  assert.match(desktopMain, /clearStorageData\(\)/);
+  assert.match(desktopPreload, /maintenance\(input = \{\}\)/);
   assert.match(desktopMain, /persist:teambuilding-gpt-production/);
   assert.match(desktopMain, /async function flushAllGptStorageData\(\)/);
   assert.match(desktopMain, /flushStorageData\(\)/);
   assert.match(desktopMain, /if \(!quitFlushCompleted\)/);
+});
+
+test("GPT production refreshes after a completed post and clears only temporary cache every configured three-hour window", () => {
+  assert.match(app, /GPT_TEMPORARY_CACHE_STORAGE_KEY/);
+  assert.match(app, /function scheduleGptTemporaryCacheMaintenance\(/);
+  assert.match(app, /async function refreshGptAfterProduction\(/);
+  assert.match(app, /async function runGptTemporaryCacheMaintenance\(/);
+  assert.match(app, /clearTemporaryCache: true/);
+  assert.match(app, /GPT_TEMPORARY_CACHE_INTERVAL_MS = 3 \* 60 \* 60 \* 1000/);
+  assert.match(app, /task\?\.taskType === "material" \|\|/);
+  assert.match(app, /gptTemporaryCacheIntervalMs/);
+  assert.match(app, /await refreshGptAfterProduction\(account\.id, "rotation-production-complete"\)/);
+  assert.match(app, /await refreshGptAfterProduction\(runAccountId, "production-complete"\)/);
+  assert.match(app, /production-limit-signal/);
+  assert.match(desktopMain, /reloadIgnoringCache/);
+  assert.match(desktopMain, /Never call clearStorageData here/);
+  assert.match(desktopPreload, /desktop:gpt-maintenance/);
 });
 
 test("restoring a minimized workbench reattaches the live GPT surface without reloading it", () => {
@@ -506,6 +607,15 @@ test("global assistant is a draggable cat with separate status log and chat laye
   assert.match(app, /assistantSuppressClickUntil/);
 });
 
+test("workbench keeps a single explicit renderer layer contract", () => {
+  assert.match(css, /--tb-layer-gpt:\s*10/);
+  assert.match(css, /--tb-layer-assistant-bubble:\s*1000/);
+  assert.match(css, /\.workbench-assistant-launcher\s*\{\s*z-index:\s*var\(--tb-layer-assistant-cat\)/);
+  assert.match(css, /\.context-menu[\s\S]*?z-index:\s*var\(--tb-layer-context-menu\)/);
+  assert.match(css, /\.system-dialog-backdrop[\s\S]*?z-index:\s*var\(--tb-layer-dialog\)/);
+  assert.match(desktopMain, /overlay\.setAlwaysOnTop\(true, "floating", 1\)/);
+});
+
 test("GPT automatic production keeps a durable user-visible production history", () => {
   assert.match(html, /id="gptProductionHistoryBtn"/);
   assert.match(html, /id="gptProductionHistoryPanel"/);
@@ -529,9 +639,25 @@ test("GPT automatic production keeps a durable user-visible production history",
 
 test("GPT browser profiles remember the last safe conversation URL", () => {
   assert.match(desktopMain, /lastUrl:\s*GPT_URL/);
+  assert.match(desktopMain, /lastBrowserUrl:\s*GPT_URL/);
+  assert.match(desktopMain, /const lastBrowserUrl = safeBrowserUrlOrDefault\(/);
+  assert.match(desktopMain, /lastBrowserUrl,/);
   assert.match(desktopMain, /function safeGptUrl/);
+  assert.match(desktopMain, /function safeBrowserUrl/);
+  assert.match(desktopMain, /function rememberBrowserUrl/);
   assert.match(desktopMain, /did-navigate-in-page/);
-  assert.match(desktopMain, /loadURL\(safeGptUrl\(savedProfile\?\.lastUrl\)\)/);
+  assert.match(desktopMain, /loadURL\(safeBrowserUrlOrDefault\(savedProfile\?\.lastBrowserUrl/);
+  assert.match(desktopMain, /!\["http:", "https:"\]\.includes\(parsed\.protocol\)/);
+  assert.match(desktopMain, /parsed\.username \|\| parsed\.password/);
+});
+
+test("GPT browser tabs keep an independent live URL and return home to ChatGPT", () => {
+  assert.match(desktopMain, /partition:\s*`\$\{GPT_PARTITION_PREFIX\}-\$\{id\}`/);
+  assert.match(desktopMain, /savedProfile\?\.lastBrowserUrl \|\| savedProfile\?\.lastUrl \|\| GPT_URL/);
+  assert.match(desktopMain, /action === "home" \|\| action === "new-chat"\) await contents\.loadURL\(GPT_URL\)/);
+  assert.match(app, /syncGptBrowserAddress\(result\.url\)/);
+  assert.match(app, /gptBrowserHomeBtn.*navigateEmbeddedGpt\("home"\)/);
+  assert.match(html, /id="gptBrowserAddressInput"/);
 });
 
 test("GPT material folders support context editing, recycle-bin deletion and drag move", () => {
@@ -571,6 +697,9 @@ test("normal production never routes package output into acceptance folders", ()
 test("GPT packaging writes its task manifest beside the actual downloaded images", () => {
   assert.match(server, /const effectiveDownloadRoot = requestedDownloadRoot/);
   assert.match(server, /taskFile = path\.join\(effectiveDownloadRoot, `chatgpt-workpkg-task-/);
+  assert.match(server, /sourceMaterialPath: String\(body\.sourceMaterialPath \|\| ""\)/);
+  assert.match(server, /sourceMaterialPath: String\(source\.sourceMaterialPath \|\| ""\)/);
+  assert.match(server, /sourceMaterialPath: item\.sourceMaterialPath \|\| ""/);
   assert.match(server, /pathname === "\/api\/extension\/save-copy-text"/);
   assert.match(server, /\.gpt-copy-staging/);
   assert.match(server, /removeExtensionCopyText/);
@@ -649,7 +778,18 @@ test("GPT browser tabs can be reordered and renamed without changing the running
   assert.match(app, /renameGptAccount/);
   assert.match(desktopPreload, /reorderProfiles/);
   assert.match(desktopMain, /desktop:gpt-profile-reorder/);
-  assert.match(app, /if \(gptAutoRunning\) \{\s*showWorkbenchAssistantBubble\(`/);
+  assert.match(app, /gptAutoRunning && !options\.silent/);
+});
+
+test("GPT account tab context menu supports disable, rename and remove with cookie warning", () => {
+  assert.match(html, /id="contextToggleDisable"/);
+  assert.match(html, /id="contextRemoveAccount"/);
+  assert.match(app, /toggleGptAccountDisabled/);
+  assert.match(app, /removeGptAccount/);
+  assert.match(app, /renameGptAccount[\s\S]*?openSystemDialog/);
+  assert.match(app, /removeGptAccount[\s\S]*?openSystemDialog/);
+  assert.match(app, /Cookie、GPT 登录状态、Google 登录/);
+  assert.match(app, /gpt-account-tab\.disabled/);
 });
 
 test("GPT template panel supports local folders and persistent online conversation templates", () => {
@@ -661,7 +801,8 @@ test("GPT template panel supports local folders and persistent online conversati
   assert.match(app, /saveGptOnlineTemplate/);
   assert.match(app, /data-gpt-online-template-delete/);
   assert.match(server, /pathname === "\/api\/gpt-online-templates"/);
-  assert.match(desktopMain, /chatgpt\\\.com\\\/\(\?:c\|share\)/);
+  assert.match(desktopMain, /safeBrowserUrl/);
+  assert.match(desktopMain, /await contents\.loadURL\(targetUrl\)/);
 });
 
 test("material and template rows expose the same manual upload action without starting automation", () => {
@@ -685,7 +826,7 @@ test("new account windows receive the V3.6 master prompt while trained conversat
 });
 
 test("multi-account endless mode keeps one serial task per browser and isolates quota stops", () => {
-  assert.match(html, /value="multi">多账号单模板·永不停歇/);
+  assert.match(html, /value="multi"[^>]*>多账号全自动（旧版）/);
   assert.match(app, /pendingGroups\.splice\(claimIndex, 1\)/);
   assert.match(app, /await runGptTaskOnBrowser\(task, account, tracker\)/);
   assert.match(app, /isActualGptLimitMessage[\s\S]*?return;/);
@@ -741,4 +882,90 @@ test("a new post cannot upload while the previous GPT response is still generati
   assert.match(gptSidebar, /waitForPageIdleBeforeFreshUpload/);
   assert.match(gptSidebar, /WEB_RESPONSE_IN_FLIGHT/);
   assert.match(gptSidebar, /等待上一帖完成/);
+});
+
+test("continuous account windows retry only transient readiness failures and isolate quota snapshots", () => {
+  assert.match(app, /function isTransientGptWindowFailure/);
+  assert.match(app, /网页状态没有完成确认/);
+  assert.match(app, /clearTimeout\(gptWindowRetryTimers\.get\(accountId\)\)/);
+  assert.match(app, /const quotaKey = String\(gptAccounts\.find\(\(item\) => item\.id === key\)\?\.quotaGroup \|\| key\)/);
+  assert.match(app, /await refreshGptQuota\(account\.id\)/);
+});
+
+test("cat usage is account-window specific and refreshes from real quota events", () => {
+  assert.match(app, /currentSetNumber/);
+  assert.match(app, /近\$\{quota\.settings\?\.windowHours \|\| 3\}小时上传/);
+  assert.doesNotMatch(app, /预计上传 \$\{imageUploads\} 张图/);
+  assert.match(app, /tb-workbench-quota-updated/);
+  assert.match(app, /startGptQuotaUsageRefresh/);
+});
+
+test("generated quota is recorded when the current reply is confirmed, before download", () => {
+  assert.match(gptSidebar, /generationQuotaRecorded/);
+  assert.match(gptSidebar, /recordWorkbenchQuota\(task\.entry, "generated", imageUrls\.length\)/);
+  assert.doesNotMatch(gptSidebar, /recordWorkbenchQuota\(task\.entry, "generated", downloadedImages\)/);
+});
+
+test("per-window mode: each account window stores and restores its own production mode", () => {
+  // loadGptAccounts includes a mode field per account
+  assert.match(app, /mode:\s*item\.mode\s*\?\s*normalizeGptProductionMode\(item\.mode\)/);
+  // handleGptModeChange persists the mode on the current account
+  assert.match(app, /currentAccount\.mode\s*=\s*key/);
+  // switchGptAccount restores the mode from the account
+  assert.match(app, /const accountMode\s*=\s*account\.mode/);
+  assert.match(app, /gptAutoSettings\.mode\s*=\s*accountMode/);
+  // hydrateGptBrowserProfiles preserves mode across Electron sync
+  assert.match(app, /previousModes/);
+  // Account tabs show the mode tag
+  assert.match(app, /gpt-account-mode-tag/);
+});
+
+
+test("automatic mode is a one-shot batch that never refills or schedules endless production", () => {
+  // automatic 模式不是连续模式
+  assert.match(app, /automatic:\s*\{[^}]*continuous:\s*false/);
+  // isContinuousGptProductionArmed 同时校验 isContinuousGptMode，automatic 永远不会触发永不停歇调度
+  assert.match(app, /function isContinuousGptProductionArmed\(\)\s*\{\s*return isContinuousGptMode\(\)\s*&&\s*localStorage\.getItem\(GPT_CONTINUOUS_RUN_STORAGE_KEY\) === "true"/);
+  // prepareAutoGptQueue 只在 isContinuousGptMode 守卫内调用，automatic 不补充素材
+  assert.match(app, /if \(!hasPendingQueue && isContinuousGptMode\(\)\)\s*\{\s*hasPendingQueue = Boolean\(await prepareAutoGptQueue/);
+  // automatic 模式 autoRun = true（非 manual 走全自动）
+  assert.match(app, /const manualMode = normalizedMode === "manual"/);
+  assert.match(app, /task\.autoRun = !manualMode/);
+  // manual 模式按钮"准备并上传当前一套"，其他模式（含 automatic）"开始自动生产"
+  assert.match(app, /gptAutoSettings\.mode === "manual" \? "准备并上传当前一套" : "开始自动生产"/);
+});
+
+test("automatic mode resumes only the remaining queue after a quota probe, never refills new material", () => {
+  const resumeIdx = app.indexOf("async function resumeGptQueueAfterQuotaProbe");
+  assert.ok(resumeIdx >= 0, "resumeGptQueueAfterQuotaProbe must exist");
+  const resumeSection = app.slice(resumeIdx, resumeIdx + 2400);
+  // manual 模式不自动恢复
+  assert.match(resumeSection, /if \(gptAutoSettings\.mode === "manual"\) return/);
+  // 补充素材只在 continuous 模式，automatic 只续剩余队列
+  assert.match(resumeSection, /if \(!hasPendingQueue && isContinuousGptMode\(\)\)\s*\{\s*hasPendingQueue = Boolean\(await prepareAutoGptQueue/);
+});
+test("stop button resets gptAutoRunning so mode switch works after stopping", () => {
+  assert.match(app, /\$\("#gptStopQueueBtn"\)\?\.addEventListener\("click", async \(\) =>/);
+  assert.match(app, /gptAutoPaused = true;[\s\S]*?gptQueuePaused = true;[\s\S]*?gptAutoRunning = false;/);
+});
+
+test("GPT mode definitions include 6 user-facing modes plus semi-auto compatibility", () => {
+  assert.match(app, /manual:\s*\{[^}]*label:\s*"人工控制"/);
+  assert.match(app, /automatic:\s*\{[^}]*label:\s*"选材后自动"/);
+  assert.match(app, /single:\s*\{[^}]*label:\s*"单账号全自动"/);
+  assert.match(app, /scheduled:\s*\{[^}]*label:\s*"定时单账号全自动"/);
+  assert.match(app, /rotate:\s*\{[^}]*label:\s*"多账号全自动"/);
+  assert.match(app, /patrol:\s*\{[^}]*label:\s*"单账号多对话巡检"/);
+  assert.match(app, /"semi-auto":\s*\{[^}]*label:\s*"半自动（兼容）"[^}]*hidden:\s*true/);
+});
+
+test("normalizeGptProductionMode maps legacy multi to rotate and recognizes scheduled/patrol", () => {
+  assert.match(app, /if \(mode === "scheduled"/);
+  assert.match(app, /if \(mode === "patrol"/);
+  assert.match(app, /if \(mode === "multi"\) return "rotate"/);
+});
+
+test("scheduled and patrol modes are continuous for automatic queue replenishment", () => {
+  assert.match(app, /scheduled:\s*\{[^}]*continuous:\s*true/);
+  assert.match(app, /patrol:\s*\{[^}]*continuous:\s*true/);
 });

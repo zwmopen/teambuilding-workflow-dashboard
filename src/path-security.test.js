@@ -272,11 +272,11 @@ test('manual material tags and usage count stay bound to folder hash after a mov
   }
 });
 
-test('successful material production uses human-readable usage archive folders', () => {
-  assert.equal(server.materialUsageDirectoryName(1), '已使用一次');
-  assert.equal(server.materialUsageDirectoryName(2), '已使用两次');
-  assert.equal(server.materialUsageDirectoryName(3), '已使用三次');
-  assert.equal(server.materialUsageDirectoryName(4), '已使用4次');
+test('successful material production uses numeric usage archive folders', () => {
+  assert.equal(server.materialUsageDirectoryName(1), '1');
+  assert.equal(server.materialUsageDirectoryName(2), '2');
+  assert.equal(server.materialUsageDirectoryName(3), '3');
+  assert.equal(server.materialUsageDirectoryName(4), '4');
 });
 
 test('identical material contents still receive distinct folder identity hashes', () => {

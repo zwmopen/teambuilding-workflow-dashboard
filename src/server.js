@@ -81,7 +81,7 @@ const APP_VERSION = (() => {
   catch { return require("./package.json").version || "0.0.0"; }
 })();
 const RELEASE_ROOT = process.env.TEAMBUILDING_RELEASE_ROOT || path.join(PROJECT_APP_ROOT, "releases");
-const DATA_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运行数据\\江湖有旅人\\图文生产控制台";
+const DATA_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运行数据\\江湖有旅人\\团建工作台";
 const STATE_FILE = path.join(DATA_ROOT, "state.json");
 const PROMPTS_FILE = path.join(DATA_ROOT, "prompt-versions.json");
 const TASK_INDEX_FILE = path.join(DATA_ROOT, "production-task-index.json");
@@ -108,13 +108,47 @@ const MATERIAL_GLOBAL_INDEX_FILE = path.join(DATA_ROOT, "material-global-index.j
 const GPT_QUOTA_LEDGER_FILE = path.join(DATA_ROOT, "gpt-production-quota.json");
 const GPT_PRODUCTION_CHECKPOINT_FILE = path.join(DATA_ROOT, "gpt-production-checkpoints.json");
 const GPT_PRODUCTION_ARCHIVE_LOG_FILE = path.join(DATA_ROOT, "gpt-production-archive.jsonl");
-const WORKPKG_CONFIG_FILE = process.env.TEAMBUILDING_WORKPKG_CONFIG_FILE || "D:\\Download\\workpkg_config.json";
-const DOWNLOAD_ROOT = process.env.TEAMBUILDING_DOWNLOAD_ROOT || "D:\\Download";
+const WORKPKG_SCRIPT_ROOT = path.join(DATA_ROOT, "work-package");
+const WORKPKG_CONFIG_FILE = process.env.TEAMBUILDING_WORKPKG_CONFIG_FILE || path.join(WORKPKG_SCRIPT_ROOT, "workpkg_config.json");
+const DOWNLOAD_ROOT = process.env.TEAMBUILDING_DOWNLOAD_ROOT || WORKPKG_SCRIPT_ROOT;
 const PUBLISH_ROOT = process.env.TEAMBUILDING_PUBLISH_ROOT
   || path.join(PROJECT_ROOT, "成品库（GPT+本地脚本制作）", "发布空间");
 const DEVICE_TRANSFER_ROOT = process.env.DEVICE_TRANSFER_SKILL_ROOT
   || "D:\\AICode\\AI\\skills\\技能包\\技能\\device-folder-transfer";
 const DEVICE_REGISTRY_FILE = path.join(DEVICE_TRANSFER_ROOT, "references", "device-registry.json");
+
+// Windows 上 `py` (Python Launcher) 不一定安装，查找可用的 Python 可执行文件
+let _pythonExe = null;
+function pythonExe() {
+  if (_pythonExe) return _pythonExe;
+  const candidates = [
+    "python",       // PATH 中的 python
+    "python3",      // PATH 中的 python3
+    "py",            // Python Launcher（如果安装了）
+    "C:\\Users\\z\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+    "C:\\Python311\\python.exe",
+    "D:\\Program Files\\Python311\\python.exe",
+  ];
+  for (const cmd of candidates) {
+    try {
+      const result = childProcess.spawnSync(cmd, ["--version"], {
+        windowsHide: true,
+        timeout: 5000,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      if (result.status === 0 && /Python \d/i.test(result.stdout || result.stderr || "")) {
+        _pythonExe = cmd;
+        return cmd;
+      }
+    } catch {
+      // 继续尝试下一个候选
+    }
+  }
+  // 回退到 "python"，让系统报错时给出可读信息
+  _pythonExe = "python";
+  return _pythonExe;
+}
 
 const imageExts = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const textExts = new Set([".txt", ".md"]);
@@ -585,12 +619,24 @@ function inferMaterialMainTag(categoryName, itemName, preview) {
   return "团建转化";
 }
 
-function inferMaterialUsageCountFromPath(entryPath = "", categoryName = "") {
+function inferMaterialUsageCountFromPath(entryPath = "", categoryName = "", options = {}) {
   const source = `${categoryName || ""} ${entryPath || ""}`;
   const numeric = source.match(/(?:已使用|已上传|已制作)\s*(\d+)\s*次/i);
   if (numeric) return Math.max(0, Number(numeric[1]) || 0);
   const chinese = source.match(/(?:已使用|已上传|已制作)\s*(一次|两次|二次|三次)/i)?.[1] || "";
-  return { "一次": 1, "两次": 2, "二次": 2, "三次": 3 }[chinese] || 0;
+  if (chinese) return { "一次": 1, "两次": 2, "二次": 2, "三次": 3 }[chinese] || 0;
+
+  // Canonical physical archive layout: the first folder directly below the
+  // configured material root is `1`, `2`, `3`, ... . Only that direct segment
+  // is trusted, so numbers in a post title or date cannot become usage data.
+  const materialRoot = String(options.materialRoot || "").trim();
+  if (materialRoot && entryPath) {
+    const relative = path.relative(path.resolve(materialRoot), path.resolve(entryPath));
+    const segments = relative.split(path.sep).filter(Boolean);
+    const archiveFolder = segments[0] || "";
+    if (/^[1-9]\d*$/.test(archiveFolder)) return Number(archiveFolder);
+  }
+  return 0;
 }
 
 function materialMetadataProfile(item, categoryName, options = {}) {
@@ -607,7 +653,9 @@ function materialMetadataProfile(item, categoryName, options = {}) {
     usageCount: Math.max(
       0,
       Number(saved.usageCount || 0),
-      inferMaterialUsageCountFromPath(item.path, categoryName)
+      inferMaterialUsageCountFromPath(item.path, categoryName, {
+        materialRoot: options.materialRoot || getWorkspaceSettings().materialRoot
+      })
     ),
     updatedAt: saved.updatedAt || "",
     hashCache: hashResult.cache,
@@ -644,8 +692,9 @@ function updateMaterialMetadata(body = {}, options = {}) {
   const tags = Array.isArray(body.tags)
     ? body.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 30)
     : (previous.tags || []);
+  const physicalUsageCount = inferMaterialUsageCountFromPath(entryPath, "", { materialRoot });
   const usageCount = body.incrementUsage === true
-    ? Math.max(0, Number(previous.usageCount || 0)) + 1
+    ? Math.max(0, Number(previous.usageCount || 0), physicalUsageCount) + 1
     : Math.max(0, Number(body.usageCount ?? previous.usageCount ?? 0));
   const now = new Date().toISOString();
   const record = {
@@ -889,18 +938,45 @@ function writeGptProductionCheckpoint(body = {}) {
     requestId,
     stage: String(source.stage || "").slice(0, 80),
     percent: Math.max(0, Math.min(100, Number(source.percent || 0))),
+    // ── 状态机字段（V1.0 设计说明书） ──
+    taskState: String(source.taskState || "").slice(0, 40),
     conversationUrl: String(source.conversationUrl || "").slice(0, 1000),
+    sourceMaterialPath: String(source.sourceMaterialPath || "").slice(0, 4000),
+    materialHash: String(source.materialHash || "").slice(0, 128),
+    templateId: String(source.templateId || "").slice(0, 80),
+    accountWindowId: String(source.accountWindowId || "").slice(0, 80),
+    attachmentCount: Math.max(0, Math.min(99, Number(source.attachmentCount || 0))),
+    promptHash: String(source.promptHash || "").slice(0, 128),
+    // ── 计划与确认字段 ──
     plannedImageCount: Math.max(0, Math.min(30, Number(source.plannedImageCount || 0))),
+    totalPlannedPages: Math.max(0, Math.min(30, Number(source.totalPlannedPages || 0))),
+    batchExpectedPages: Math.max(0, Math.min(30, Number(source.batchExpectedPages || 0))),
+    planText: String(source.planText || "").slice(0, 10_000),
     planSubmitted: Boolean(source.planSubmitted),
+    confirmSentAt: String(source.confirmSentAt || "").slice(0, 40),
+    confirmRetried: Boolean(source.confirmRetried),
+    // ── 图片字段 ──
     imageSubmitted: Boolean(source.imageSubmitted),
+    detectedImageCount: Math.max(0, Math.min(30, Number(source.detectedImageCount || 0))),
+    imageGenerationDetectedAt: String(source.imageGenerationDetectedAt || "").slice(0, 40),
+    firstImageReadyAt: String(source.firstImageReadyAt || "").slice(0, 40),
+    lastImageReadyAt: String(source.lastImageReadyAt || "").slice(0, 40),
+    // ── 文案字段 ──
     textSubmitted: Boolean(source.textSubmitted),
+    copyText: String(source.copyText || "").slice(0, 200_000),
+    copyTextPath: String(source.copyTextPath || "").slice(0, 2000),
+    // ── 下载与打包字段 ──
     batchId: String(source.batchId || "").slice(0, 80),
     downloadRoot: String(source.downloadRoot || "").slice(0, 2000),
     downloadedFiles: Array.isArray(source.downloadedFiles)
       ? source.downloadedFiles.map((item) => String(item || "").slice(0, 2000)).filter(Boolean).slice(0, 30)
       : [],
-    copyText: String(source.copyText || "").slice(0, 200_000),
     packagePath: String(source.packagePath || "").slice(0, 2000),
+    // ── 限额与恢复字段 ──
+    quotaDetectedAt: String(source.quotaDetectedAt || "").slice(0, 40),
+    nextProbeAt: String(source.nextProbeAt || "").slice(0, 40),
+    // ── 归档字段 ──
+    usageUpdated: Boolean(source.usageUpdated),
     updatedAt: new Date().toISOString()
   };
   const saved = readJson(GPT_PRODUCTION_CHECKPOINT_FILE, { version: 1, items: {} });
@@ -961,8 +1037,7 @@ function safeArchiveDestination(targetRoot, sourcePath, fingerprint) {
 
 function materialUsageDirectoryName(usageCount) {
   const count = Math.max(1, Number(usageCount) || 1);
-  const names = { 1: "一次", 2: "两次", 3: "三次" };
-  return `已使用${names[count] || `${count}次`}`;
+  return String(count);
 }
 
 function archiveMaterialAfterProduction(body = {}) {
@@ -1002,6 +1077,25 @@ function archiveMaterialAfterProduction(body = {}) {
     name: path.basename(finalPath),
     usageCount
   });
+  const packageInput = String(body.packagePath || "").trim();
+  const libraryRoot = path.resolve(settings.workPackage?.libraryPath || "");
+  const packagePath = packageInput ? path.resolve(packageInput) : "";
+  if (packagePath && libraryRoot && isPathInside(libraryRoot, packagePath) && exists(packagePath)) {
+    const packageRecordFile = path.join(packagePath, "GPT作品记录.json");
+    if (exists(packageRecordFile) && fs.statSync(packageRecordFile).isFile()) {
+      try {
+        const packageRecord = readJson(packageRecordFile, {});
+        packageRecord.sourceMaterialPath ||= sourcePath;
+        packageRecord.sourceMaterialName ||= path.basename(sourcePath);
+        packageRecord.sourceMaterialArchivePath = finalPath;
+        packageRecord.sourceMaterialUpdatedAt = new Date().toISOString();
+        writeJson(packageRecordFile, packageRecord);
+      } catch {
+        // Archiving remains successful; the package record can be repaired
+        // later from the append-only archive event.
+      }
+    }
+  }
   const event = {
     recordedAt: new Date().toISOString(),
     requestId: String(body.requestId || ""),
@@ -1010,6 +1104,8 @@ function archiveMaterialAfterProduction(body = {}) {
     packagePath: String(body.packagePath || ""),
     from: sourcePath,
     to: finalPath,
+    sourceMaterialPath: sourcePath,
+    sourceMaterialArchivePath: finalPath,
     usageCount,
     fingerprint: usageRecord.fingerprint
   };
@@ -1302,7 +1398,8 @@ function runExtensionWorkPackage(body = {}) {
   const metadata = JSON.stringify({
     accountName: String(body.accountName || ""),
     conversationUrl: String(body.conversationUrl || ""),
-    title: String(body.title || "")
+    title: String(body.title || ""),
+    sourceMaterialPath: String(body.sourceMaterialPath || "")
   });
   const args = [
     "-NoProfile",
@@ -1326,6 +1423,7 @@ function runExtensionWorkPackage(body = {}) {
       copyText: clipboardText,
       accountName: String(body.accountName || ""),
       conversationUrl: String(body.conversationUrl || ""),
+      sourceMaterialPath: String(body.sourceMaterialPath || ""),
       // Embedded automation has no trustworthy foreground browser title. A
       // login/security page title such as "验证你的身份 - OpenAI" used to leak
       // into the output folder name. Matching the conversation title to the
@@ -2782,11 +2880,12 @@ function compactMaterialIndex(library, categoryId = "") {
     loaded: category.id === categoryId && category.loaded !== false,
     items: category.id === categoryId && category.loaded !== false
       ? (category.items || []).map((item) => {
-        return compactMaterialItem(item, category.name, usageByPath, {
-          metadata,
-          cache: hashCache,
-          onHashCacheChanged: () => { hashCacheChanged = true; }
-        });
+          return compactMaterialItem(item, category.name, usageByPath, {
+            metadata,
+            cache: hashCache,
+            materialRoot: root,
+            onHashCacheChanged: () => { hashCacheChanged = true; }
+          });
       })
       : []
   }));
@@ -3049,7 +3148,7 @@ function startMaterialGlobalIndexRefresh(options = {}) {
           path: post.path,
           name: post.name,
           preview
-        }, category.name, { metadata, cache: hashCache });
+          }, category.name, { metadata, cache: hashCache, materialRoot: root });
         items.push({
           id: post.path,
           categoryId: category.id,
@@ -4149,13 +4248,15 @@ function buildDistributionArgs(body = {}) {
 
 function runDistributionAction(args) {
   const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "restock_device.py");
+  const actionTaskId = `distribution-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return new Promise((resolve, reject) => {
-    const child = childProcess.spawn("py", [script, ...args], {
+    const child = childProcess.spawn(pythonExe(), [script, ...args], {
       cwd: DEVICE_TRANSFER_ROOT,
       env: {
         ...process.env,
         PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8"
+        PYTHONIOENCODING: "utf-8",
+        TRAE_TASK_ID: actionTaskId
       },
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
@@ -4241,12 +4342,13 @@ function startDistributionTask(body = {}) {
     child: null
   };
   const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "restock_device.py");
-  const child = childProcess.spawn("py", [script, ...args], {
+  const child = childProcess.spawn(pythonExe(), [script, ...args], {
     cwd: DEVICE_TRANSFER_ROOT,
     env: {
       ...process.env,
       PYTHONUTF8: "1",
-      PYTHONIOENCODING: "utf-8"
+      PYTHONIOENCODING: "utf-8",
+      TRAE_TASK_ID: taskId
     },
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"]
@@ -4309,7 +4411,7 @@ function cancelDistributionTask(taskId) {
   if (record.child && !record.child.killed) record.child.kill();
   if (record.remoteTaskId) {
     const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "send_to_device.py");
-    childProcess.spawn("py", [
+    childProcess.spawn(pythonExe(), [
       script,
       "--cancel-task",
       record.remoteTaskId,
@@ -4357,7 +4459,7 @@ function startGenericTransfer(source, device) {
     child: null
   };
   const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "send_to_device.py");
-  const child = childProcess.spawn("py", [script, "--source", resolvedSource, "--device", deviceName], {
+  const child = childProcess.spawn(pythonExe(), [script, "--source", resolvedSource, "--device", deviceName], {
     cwd: DEVICE_TRANSFER_ROOT,
     env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
     windowsHide: true,
@@ -4409,7 +4511,7 @@ function cancelGenericTransfer(taskId) {
   if (record.child && !record.child.killed) record.child.kill();
   if (record.remoteTaskId) {
     const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "send_to_device.py");
-    childProcess.spawn("py", [
+    childProcess.spawn(pythonExe(), [
       script,
       "--cancel-task",
       record.remoteTaskId,
@@ -4429,7 +4531,7 @@ function cancelGenericTransfer(taskId) {
 function runDeviceStatus() {
   const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "send_to_device.py");
   return new Promise((resolve, reject) => {
-    const child = childProcess.spawn("py", [script, "--status"], {
+    const child = childProcess.spawn(pythonExe(), [script, "--status"], {
       cwd: DEVICE_TRANSFER_ROOT,
       env: {
         ...process.env,
@@ -4534,8 +4636,10 @@ function waitForDistributionTask(taskId) {
 
 async function runAutomaticDistributionBatch(device, liveRecord, collections, settings) {
   const target = device.aliases?.[0] || device.displayName;
+  const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   appendAutomationLog({
     event: "started",
+    batchId,
     deviceId: device.id,
     device: device.note || device.displayName,
     phoneReserve: liveRecord.workCount,
@@ -4560,6 +4664,8 @@ async function runAutomaticDistributionBatch(device, liveRecord, collections, se
       completed += 1;
       appendAutomationLog({
         event: "item-completed",
+        batchId,
+        taskId: task.id,
         deviceId: device.id,
         device: device.note || device.displayName,
         collection: collection.name,
@@ -4569,6 +4675,7 @@ async function runAutomaticDistributionBatch(device, liveRecord, collections, se
     } catch (error) {
       appendAutomationLog({
         event: "failed",
+        batchId,
         deviceId: device.id,
         device: device.note || device.displayName,
         collection: collection.name,
@@ -4580,6 +4687,7 @@ async function runAutomaticDistributionBatch(device, liveRecord, collections, se
   }
   appendAutomationLog({
     event: "completed",
+    batchId,
     deviceId: device.id,
     device: device.note || device.displayName,
     completed,
@@ -5093,6 +5201,7 @@ async function route(req, res) {
         packageExpectedImageCount: packageInspection.expectedImageCount,
         packageValidatedByRecord: packageInspection.validatedByPackageRecord === true,
         conversationUrl: item.conversationUrl,
+        sourceMaterialPath: item.sourceMaterialPath || "",
         updatedAt: item.updatedAt
       };
     });

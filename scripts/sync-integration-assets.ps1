@@ -8,17 +8,19 @@ $extensionVendorRoot = "D:\AICode\工具开发\projects\teambuilding-gpt-product
 
 New-Item -ItemType Directory -Force -Path $integrationRoot, $workPackageRoot, $extensionVendorRoot | Out-Null
 
+$workPackageSourceRoot = "D:\AICode\运行数据\江湖有旅人\团建工作台\work-package"
+
 $publicAssets = @(
   @{
     Source = Join-Path $projectsRoot "chatgpt-conversation-tree\src\chatgpt-conversation-tree.user.js"
     Target = Join-Path $integrationRoot "chatgpt-conversation-tree.user.js"
   },
   @{
-    Source = "D:\Download\configure_work_package.ps1"
+    Source = Join-Path $workPackageSourceRoot "configure_work_package.ps1"
     Target = Join-Path $workPackageRoot "configure_work_package.ps1"
   },
   @{
-    Source = "D:\Download\make_work_package.ps1"
+    Source = Join-Path $workPackageSourceRoot "make_work_package.ps1"
     Target = Join-Path $workPackageRoot "make_work_package.ps1"
   }
 )
@@ -37,7 +39,7 @@ if (Test-Path -LiteralPath $syncedUserscript) {
 }
 
 # Preserve the existing VBS launchers as parallel fallbacks without depending on localized names.
-Get-ChildItem -LiteralPath "D:\Download" -Filter "*.vbs" -File | ForEach-Object {
+Get-ChildItem -LiteralPath $workPackageSourceRoot -Filter "*.vbs" -File -ErrorAction SilentlyContinue | ForEach-Object {
   $source = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue
   if ($source -match "(configure|make)_work_package\.ps1") {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $workPackageRoot $_.Name) -Force

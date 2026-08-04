@@ -11,7 +11,7 @@ if (process.env.TB_USER_DATA_ROOT) {
 
 const APP_PORT = String(process.env.PORT || "4327").trim() || "4327";
 const APP_URL = `http://127.0.0.1:${APP_PORT}/`;
-const RUNTIME_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运行数据\\江湖有旅人\\图文生产控制台";
+const RUNTIME_ROOT = process.env.TEAMBUILDING_DASHBOARD_RUNTIME || "D:\\AICode\\运行数据\\江湖有旅人\\团建工作台";
 const DESKTOP_LOG_FILE = path.join(RUNTIME_ROOT, "desktop.log");
 const GPT_LOGIN_RECOVERY_ROOT = path.join(RUNTIME_ROOT, "gpt-login-recovery");
 const GPT_PENDING_BACKUP_FILE = path.join(GPT_LOGIN_RECOVERY_ROOT, "pending-backup.json");
@@ -93,6 +93,13 @@ async function ensureAssistantOverlay() {
   });
   assistantOverlayWindow = overlay;
   overlay.setMenuBarVisibility(false);
+  // WebContentsView is composited above the renderer DOM and therefore cannot
+  // be ordered with CSS z-index.  Keep the native assistant as a child-level
+  // floating window so it stays above the embedded GPT surface while the
+  // workbench is visible.  It is still hidden together with the main window
+  // (minimize/background/quit handlers below), so it does not become a global
+  // desktop widget.
+  overlay.setAlwaysOnTop(true, "floating", 1);
   overlay.on("close", (event) => {
     if (isExplicitQuit) return;
     event.preventDefault();
@@ -109,8 +116,15 @@ function durableRuntimeAppRoot() {
   return path.join(RUNTIME_ROOT, "runtime-builds", APP_VERSION, "app");
 }
 
+function isDevMode() {
+  // app.isPackaged 在 Electron 43.x 中通过 execPath 是否为 electron.exe 来判断
+  // 但当我们直接用 node_modules/electron/dist/electron.exe 运行 main.js 时仍然返回 true
+  // 更可靠的方式：检查可执行文件名是否为 electron.exe
+  return path.basename(process.execPath).toLowerCase() === "electron.exe";
+}
+
 function ensureDurableRuntimeResources() {
-  if (!app.isPackaged) return path.resolve(__dirname, "..");
+  if (isDevMode()) return path.resolve(__dirname, "..");
   const source = path.resolve(__dirname, "..");
   const target = durableRuntimeAppRoot();
   const manifestFile = path.join(target, "runtime-manifest.json");
@@ -128,7 +142,7 @@ function ensureDurableRuntimeResources() {
 }
 
 function runtimeAppRoot() {
-  if (!app.isPackaged) return path.resolve(__dirname, "..");
+  if (isDevMode()) return path.resolve(__dirname, "..");
   const durable = durableRuntimeAppRoot();
   return fs.existsSync(path.join(durable, "runtime-manifest.json")) ? durable : ensureDurableRuntimeResources();
 }
@@ -147,6 +161,7 @@ function defaultBrowserProfiles() {
       quotaGroup: "account-1",
       hidden: false,
       lastUrl: GPT_URL,
+      lastBrowserUrl: GPT_URL,
       createdAt: new Date().toISOString(),
       lastOpenedAt: new Date().toISOString()
     }]
@@ -163,6 +178,7 @@ function readBrowserProfiles() {
         quotaGroup: safeGptAccountId(profile.quotaGroup || profile.id),
         hidden: Boolean(profile.hidden),
         lastUrl: safeGptUrl(profile.lastUrl),
+        lastBrowserUrl: safeBrowserUrlOrDefault(profile.lastBrowserUrl || profile.lastUrl || GPT_URL),
         createdAt: String(profile.createdAt || new Date().toISOString()),
         lastOpenedAt: String(profile.lastOpenedAt || "")
       })).slice(0, 8)
@@ -189,6 +205,42 @@ function safeGptUrl(value = "") {
   }
 }
 
+// The embedded GPT surface is also a real browser tab.  Keep navigation
+// limited to normal web URLs so an address pasted into the workbench cannot
+// execute javascript, open local files, or jump into a privileged Electron
+// scheme.  The persistent account partition is intentionally reused by the
+// caller, so visiting another site does not create a second login session.
+function safeBrowserUrl(value = "") {
+  let raw = String(value || "").trim();
+  if (!raw) throw new Error("请输入要访问的网址");
+  if (!/^[a-z][a-z\d+.-]*:/i.test(raw)) {
+    raw = /^(?:localhost|127(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2})(?::\d+)?(?:\/|$)/i.test(raw)
+      ? `http://${raw}`
+      : `https://${raw}`;
+  }
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("网址格式不正确，请输入 http:// 或 https:// 地址");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("只允许访问 http:// 或 https:// 网页");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("为保护账号安全，不允许在网址中携带用户名或密码");
+  }
+  return parsed.href;
+}
+
+function safeBrowserUrlOrDefault(value = "", fallback = GPT_URL) {
+  try {
+    return safeBrowserUrl(value || fallback);
+  } catch {
+    return fallback;
+  }
+}
+
 function rememberGptUrl(accountId, value) {
   const nextUrl = safeGptUrl(value);
   if (nextUrl === GPT_URL && String(value || "").trim() !== GPT_URL) return;
@@ -198,6 +250,28 @@ function rememberGptUrl(accountId, value) {
   profile.lastUrl = nextUrl;
   profile.lastOpenedAt = new Date().toISOString();
   writeBrowserProfiles(state);
+}
+
+function rememberBrowserUrl(accountId, value) {
+  const nextUrl = safeBrowserUrlOrDefault(value, "");
+  if (!nextUrl) return;
+  const state = readBrowserProfiles();
+  const profile = state.profiles.find((item) => item.id === safeGptAccountId(accountId));
+  if (!profile || profile.lastBrowserUrl === nextUrl) return;
+  profile.lastBrowserUrl = nextUrl;
+  if (/^https:\/\/(?:chatgpt\.com|chat\.openai\.com)(?:\/|$)/i.test(nextUrl)) {
+    profile.lastUrl = safeGptUrl(nextUrl);
+  }
+  profile.lastOpenedAt = new Date().toISOString();
+  writeBrowserProfiles(state);
+  // Navigation can also happen inside the embedded browser itself (clicking a
+  // conversation, a shared template, or an external page), without going
+  // through the renderer's address-bar handler. Push the live URL back to the
+  // workbench so the visible address bar follows the active account window.
+  mainWindow?.webContents.send("desktop:gpt-url-changed", {
+    accountId: safeGptAccountId(accountId),
+    url: nextUrl
+  });
 }
 
 function writeBrowserProfiles(value) {
@@ -312,6 +386,45 @@ function resolveGptExtensionPath() {
     ? [configured, bundled, development]
     : (app.isPackaged ? [bundled, development] : [development, bundled]);
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, "manifest.json"))) || candidates[0];
+}
+
+// --- Auto-reload GPT views when extension source files change ---
+let extensionWatcher = null;
+let extensionReloadTimer = null;
+
+function reloadAllGptViewsForExtensionChange() {
+  for (const [id, account] of gptAccounts) {
+    if (!account.view || account.view.webContents.isDestroyed()) continue;
+    if (!account.view.webContents.getURL?.().startsWith("https://")) continue;
+    appendDesktopLog("gpt-extension-auto-reload", `account=${id} reason=extension-file-changed`);
+    account.view.webContents.reload();
+  }
+}
+
+function watchExtensionForChanges() {
+  if (extensionWatcher) return;
+  const extensionPath = resolveGptExtensionPath();
+  if (!fs.existsSync(extensionPath)) return;
+  try {
+    extensionWatcher = fs.watch(extensionPath, { recursive: true }, (_eventType, filename) => {
+      if (!filename || !/\.(?:js|json|css)$/i.test(filename)) return;
+      // Debounce: wait 800ms after the last change before reloading,
+      // so a multi-file save doesn't trigger multiple reloads.
+      if (extensionReloadTimer) clearTimeout(extensionReloadTimer);
+      extensionReloadTimer = setTimeout(() => {
+        extensionReloadTimer = null;
+        reloadAllGptViewsForExtensionChange();
+      }, 800);
+    });
+    extensionWatcher.on("error", () => {
+      // Watcher may fail if the directory is recreated; retry once.
+      try { extensionWatcher?.close(); } catch {}
+      extensionWatcher = null;
+    });
+    appendDesktopLog("gpt-extension-watcher-started", extensionPath);
+  } catch (error) {
+    appendDesktopLog("gpt-extension-watcher-failed", error.message);
+  }
 }
 
 function safeGptBounds(input = {}) {
@@ -510,14 +623,14 @@ async function ensureGptAccount(accountId = activeGptAccountId) {
       appendDesktopLog("gpt-extension-not-injected", `account=${id} path=${account.extensionPath}`);
     }
   });
-  account.view.webContents.on("did-navigate", (_event, url) => rememberGptUrl(id, url));
-  account.view.webContents.on("did-navigate-in-page", (_event, url) => rememberGptUrl(id, url));
+  account.view.webContents.on("did-navigate", (_event, url) => rememberBrowserUrl(id, url));
+  account.view.webContents.on("did-navigate-in-page", (_event, url) => rememberBrowserUrl(id, url));
   account.view.webContents.on("did-fail-load", (_event, code, description, validatedURL, isMainFrame) => {
     if (isMainFrame) Object.assign(account.pageState, { loading: false, finished: false, error: `${code}: ${description}` });
     appendDesktopLog("gpt-load-failed", `account=${id} code=${code} main=${isMainFrame} url=${validatedURL} ${description}`);
   });
   const savedProfile = readBrowserProfiles().profiles.find((profile) => profile.id === id);
-  await account.view.webContents.loadURL(safeGptUrl(savedProfile?.lastUrl));
+  await account.view.webContents.loadURL(safeBrowserUrlOrDefault(savedProfile?.lastBrowserUrl || savedProfile?.lastUrl || GPT_URL));
   await initializeEmbeddedGptPage(account);
   return account;
   })();
@@ -545,6 +658,74 @@ async function ensureGptView(accountId = activeGptAccountId) {
   return account.view;
 }
 
+function waitForGptPageLoad(contents, timeoutMs = 120000) {
+  if (!contents || contents.isDestroyed()) return Promise.resolve({ ok: false, error: "GPT 网页视图不可用" });
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      contents.removeListener("did-finish-load", onFinish);
+      contents.removeListener("did-fail-load", onFail);
+      resolve(result);
+    };
+    const onFinish = () => finish({ ok: true, url: contents.getURL() });
+    const onFail = (_event, code, description, validatedURL, isMainFrame) => {
+      if (isMainFrame) finish({ ok: false, error: `${code}: ${description}`, url: validatedURL });
+    };
+    const timer = setTimeout(() => finish({ ok: false, error: "GPT 网页刷新超时", url: contents.getURL() }), Math.max(5000, timeoutMs));
+    contents.once("did-finish-load", onFinish);
+    contents.on("did-fail-load", onFail);
+  });
+}
+
+async function refreshGptAccountSession(accountId = activeGptAccountId, options = {}) {
+  const id = safeGptAccountId(accountId);
+  const account = await ensureGptAccount(id);
+  const contents = account?.view?.webContents;
+  if (!contents || contents.isDestroyed()) return { ok: false, accountId: id, error: "GPT 网页视图不可用" };
+  if (account.maintenancePromise) return account.maintenancePromise;
+  const clearTemporaryCache = Boolean(options.clearTemporaryCache || options.clearCache);
+  const reason = String(options.reason || (clearTemporaryCache ? "3h-temporary-cache" : "production-complete")).slice(0, 80);
+  account.maintenancePromise = (async () => {
+    let cacheError = "";
+    if (clearTemporaryCache) {
+      try {
+        // Safe maintenance boundary: clear Chromium's HTTP/media cache only.
+        // Never call clearStorageData here; cookies, localStorage and the
+        // account partition contain the user's GPT/Google login state.
+        await account.session.clearCache();
+      } catch (error) {
+        cacheError = String(error?.message || error);
+        appendDesktopLog("gpt-cache-clear-failed", `account=${id} reason=${reason} ${cacheError}`);
+      }
+    }
+    const load = waitForGptPageLoad(contents);
+    if (clearTemporaryCache && typeof contents.reloadIgnoringCache === "function") contents.reloadIgnoringCache();
+    else contents.reload();
+    const result = await load;
+    Object.assign(account.pageState, {
+      loading: !result.ok,
+      domReady: result.ok,
+      finished: result.ok,
+      error: result.ok ? "" : String(result.error || "GPT 网页刷新失败")
+    });
+    appendDesktopLog("gpt-page-maintenance", `account=${id} reason=${reason} cacheCleared=${clearTemporaryCache} ok=${result.ok}${cacheError ? ` cacheError=${cacheError}` : ""}`);
+    return {
+      ok: Boolean(result.ok),
+      accountId: id,
+      url: result.url || contents.getURL(),
+      cacheCleared: clearTemporaryCache && !cacheError,
+      cacheError,
+      error: result.ok ? "" : String(result.error || "GPT 网页刷新失败")
+    };
+  })().finally(() => {
+    account.maintenancePromise = null;
+  });
+  return account.maintenancePromise;
+}
+
 async function sendTaskToEmbeddedGpt(task = {}) {
   const accountId = safeGptAccountId(task.accountId || activeGptAccountId);
   const view = await ensureGptView(accountId);
@@ -568,6 +749,7 @@ async function sendTaskToEmbeddedGpt(task = {}) {
     retryOf: String(task.retryOf || ""),
     retryFromStage: String(task.retryFromStage || ""),
     retryFromPercent: Math.max(0, Math.min(100, Number(task.retryFromPercent || 0))),
+    reconcileAction: String(task.reconcileAction || ""),
     forceUpload: Boolean(task.forceUpload),
     expectedImages: Math.max(0, Number(task.expectedImages || task.expectedImageCount || 0))
   };
@@ -626,12 +808,20 @@ ipcMain.handle("desktop:gpt-profile-save", async (_event, input = {}) => {
   const state = readBrowserProfiles();
   const id = safeGptAccountId(input.id);
   const existing = state.profiles.find((profile) => profile.id === id);
+  // Keep the browser's live address separate from the last ChatGPT
+  // conversation URL. Renderer-side profile saves often only update the
+  // label or quota group; they must never reset an external page to GPT.
+  const lastBrowserUrl = safeBrowserUrlOrDefault(
+    input.lastBrowserUrl || existing?.lastBrowserUrl || input.lastUrl || existing?.lastUrl || GPT_URL,
+    GPT_URL
+  );
   const profile = {
     id,
     name: String(input.name || existing?.name || `账号窗口 ${state.profiles.length + 1}`).trim().slice(0, 24),
     quotaGroup: safeGptAccountId(input.quotaGroup || existing?.quotaGroup || id),
     hidden: Boolean(input.hidden ?? existing?.hidden),
     lastUrl: safeGptUrl(input.lastUrl || existing?.lastUrl),
+    lastBrowserUrl,
     createdAt: existing?.createdAt || new Date().toISOString(),
     lastOpenedAt: String(input.lastOpenedAt || existing?.lastOpenedAt || new Date().toISOString())
   };
@@ -858,7 +1048,8 @@ ipcMain.handle("desktop:gpt-show", async (_event, input = {}) => {
     composerReady: Boolean(liveReady.composerReady),
     url: view.webContents.getURL(),
     canGoBack: view.webContents.canGoBack(),
-    canGoForward: view.webContents.canGoForward()
+    canGoForward: view.webContents.canGoForward(),
+    isChatGpt: /^https:\/\/(?:chatgpt\.com|chat\.openai\.com)(?:\/|$)/i.test(view.webContents.getURL() || "")
   };
 });
 
@@ -887,6 +1078,14 @@ ipcMain.handle("desktop:gpt-release-idle", async (_event, input = {}) => {
   return { ok: true, released };
 });
 
+ipcMain.handle("desktop:gpt-maintenance", async (_event, input = {}) => {
+  const accountId = safeGptAccountId(input.accountId || activeGptAccountId);
+  return refreshGptAccountSession(accountId, {
+    clearTemporaryCache: Boolean(input.clearTemporaryCache || input.clearCache),
+    reason: input.reason
+  });
+});
+
 ipcMain.handle("desktop:gpt-navigate", async (_event, input = {}) => {
   const accountId = safeGptAccountId(input.accountId || activeGptAccountId);
   const account = await ensureGptAccount(accountId);
@@ -895,10 +1094,7 @@ ipcMain.handle("desktop:gpt-navigate", async (_event, input = {}) => {
   if (action === "back" && contents.canGoBack()) contents.goBack();
   else if (action === "forward" && contents.canGoForward()) contents.goForward();
   else if (action === "url") {
-    const targetUrl = safeGptUrl(input.targetUrl);
-    if (!targetUrl || !/^https:\/\/chatgpt\.com\/(?:c|share)\//i.test(targetUrl)) {
-      throw new Error("只允许打开 ChatGPT 会话链接或分享链接");
-    }
+    const targetUrl = safeBrowserUrl(input.targetUrl);
     await contents.loadURL(targetUrl);
   }
   else if (action === "home" || action === "new-chat") await contents.loadURL(GPT_URL);
@@ -908,7 +1104,8 @@ ipcMain.handle("desktop:gpt-navigate", async (_event, input = {}) => {
     accountId,
     url: contents.getURL(),
     canGoBack: contents.canGoBack(),
-    canGoForward: contents.canGoForward()
+    canGoForward: contents.canGoForward(),
+    isChatGpt: /^https:\/\/(?:chatgpt\.com|chat\.openai\.com)(?:\/|$)/i.test(contents.getURL() || "")
   };
 });
 
@@ -922,6 +1119,35 @@ ipcMain.handle("desktop:gpt-workflow-status", async (_event, accountId = activeG
     try { return JSON.parse(document.getElementById("tb-workbench-bridge-progress")?.textContent || "null"); }
     catch { return null; }
   })()`, true).catch(() => null);
+});
+
+ipcMain.handle("desktop:gpt-inspect-status", async (_event, accountId = activeGptAccountId) => {
+  const account = gptAccounts.get(safeGptAccountId(accountId));
+  const contents = account?.view?.webContents;
+  if (!contents || contents.isDestroyed()) return null;
+  const requestId = `inspect-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return contents.executeJavaScript(`new Promise((resolve) => {
+    const requestId = ${JSON.stringify(requestId)};
+    const timeout = setTimeout(() => {
+      window.removeEventListener("message", onMessage);
+      resolve(null);
+    }, 5000);
+    function onMessage(event) {
+      const data = event?.data;
+      if (data?.source !== "tb-gpt-production-extension"
+        || data?.type !== "tb-workbench-inspect-result"
+        || data.requestId !== requestId) return;
+      clearTimeout(timeout);
+      window.removeEventListener("message", onMessage);
+      resolve(data);
+    }
+    window.addEventListener("message", onMessage);
+    window.postMessage({
+      source: "teambuilding-workbench",
+      type: "tb-workbench-inspect-request",
+      requestId
+    }, "*");
+  })`, true).catch(() => null);
 });
 
 ipcMain.handle("desktop:gpt-manual-action", async (_event, input = {}) => {
@@ -1182,6 +1408,10 @@ async function createWindow() {
       sandbox: true,
       webviewTag: false,
       partition: WORKBENCH_PARTITION,
+      // The renderer owns the durable GPT maintenance timers and queue
+      // checkpoints. Keep them alive when the workbench is hidden to tray;
+      // the native GPT WebContentsView already has the same guarantee.
+      backgroundThrottling: false,
       preload: path.join(__dirname, "preload.js")
     }
   });
@@ -1254,6 +1484,7 @@ if (!hasSingleInstanceLock) {
     applyPendingGptLoginBackup();
     applyPendingGptLoginRestore();
     createTray();
+    watchExtensionForChanges();
     return createWindow();
   }).catch((error) => {
     appendDesktopLog("startup-failed", error.stack || error.message);

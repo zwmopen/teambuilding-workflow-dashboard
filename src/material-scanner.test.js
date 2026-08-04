@@ -16,6 +16,9 @@ test("physical usage archive folders provide a minimum usage count", () => {
   assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\已使用一次\\post-a"), 1);
   assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\已上传 2 次\\post-b"), 2);
   assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\已制作三次GPT\\post-c"), 3);
+  assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\1\\post-d", "", { materialRoot: "D:\\materials" }), 1);
+  assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\4\\post-e", "", { materialRoot: "D:\\materials" }), 4);
+  assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\fresh\\2026\\post-f", "", { materialRoot: "D:\\materials" }), 0);
   assert.equal(inferMaterialUsageCountFromPath("D:\\materials\\fresh\\post-d"), 0);
 });
 

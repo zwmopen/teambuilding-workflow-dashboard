@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.14.10" />
+    <link rel="stylesheet" href="/styles.css?v=0.14.27" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -19,9 +19,9 @@
           <strong>团建工作台</strong>
           <span>生产 · 分发 · 转化</span>
         </div>
-        <button class="tab rail-tab active" data-tab="dashboard" type="button" title="内容制作">
+        <button class="tab rail-tab active" data-tab="dashboard" type="button" title="素材生产（暂不开发）">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z"/><path d="m18.5 16 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/></svg>
-          <span>内容制作</span>
+          <span>素材生产（暂不开发）</span>
         </button>
         <button class="tab rail-tab rail-tab-test" data-tab="gptProductionTest" type="button" title="内容生产（自动）">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H9l-4 4v-14Z"/><path d="m10 8 1 2.6 2.6 1-2.6 1L10 15l-1-2.4-2.6-1 2.6-1L10 8Z"/><path d="M15 8h2M15 11h2"/></svg>
@@ -69,14 +69,14 @@
         <section class="production-workbench-shell">
           <header class="production-workbench-heading">
             <div>
-              <p class="label">内容制作</p>
+              <p class="label">素材生产（暂不开发）</p>
               <h2>选素材 → 选模板 → 生产 → 打包待发</h2>
               <p>一个页面完成一次作品生产。素材和模板是输入，中间对话负责调整，右侧只看真实成品文件夹。</p>
             </div>
             <div class="detail-button-row">
               <span class="workbench-engine-state" id="workbenchEngineState">正在读取本地生产引擎…</span>
-              <button class="page-settings-button" type="button" data-open-page-settings="production" title="内容制作设置" aria-label="打开内容制作设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button>
-              <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明" aria-label="查看内容制作说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
+              <button class="page-settings-button" type="button" data-open-page-settings="production" title="素材生产（暂不开发）设置" aria-label="打开素材生产（暂不开发）设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button>
+              <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明" aria-label="查看素材生产（暂不开发）说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
             </div>
           </header>
 
@@ -192,7 +192,7 @@
             <span class="api-mode-badge">本地作品生产</span>
             <strong>模板定样，素材换内容</strong>
             <small>先锁定视觉模板，再选择素材，生成同风格作品与配套文案。</small>
-            <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明" aria-label="查看内容制作说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
+            <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明" aria-label="查看素材生产（暂不开发）说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
           </div>
           <div class="production-api-steps">
             <label class="production-api-step"><b>01</b><span><strong>选择模板</strong><select id="templateQuickSelect" class="search-input compact-select"></select></span></label>
@@ -380,17 +380,26 @@
                 <div class="gpt-mode-row">
                   <label for="gptProductionMode">生产模式</label>
                     <select id="gptProductionMode" title="右键打开当前生产模式设置">
-                      <option value="manual">手动模式</option>
-                      <option value="single">单账号单模板·永不停歇</option>
-                      <option value="multi">多账号单模板·永不停歇</option>
+                      <option value="manual">人工控制</option>
+                      <option value="automatic">选材后自动</option>
+                      <option value="single">单账号全自动</option>
+                      <option value="scheduled">定时单账号全自动</option>
+                      <option value="rotate">多账号全自动</option>
+                      <option value="patrol">单账号多对话巡检</option>
+                      <option value="semi-auto" hidden>半自动（兼容）</option>
+                      <option value="multi" hidden>多账号全自动（旧版）</option>
+                      <!-- Legacy selector markers keep persisted 0.14.x test/config readers compatible. -->
                   </select>
                 </div>
+                <p class="gpt-mode-hint" id="gptModeHint" aria-live="polite"></p>
                 <label for="gptTestExtraPrompt">本次补充要求</label>
                 <textarea id="gptTestExtraPrompt" rows="3" placeholder="可留空；模板规则和素材 TXT 会自动带入"></textarea>
                 <button id="gptTestSendBtn" class="primary-button" type="button">开始自动生产</button>
                 <button id="gptManualNextBtn" class="secondary-button" type="button" hidden>完成当前，上传下一套</button>
+                <button id="gptSemiAutoResumeBtn" class="secondary-button" type="button" hidden>确认继续出图</button>
                 <div class="gpt-queue-actions">
                   <button id="gptPauseQueueBtn" type="button">暂停</button>
+                  <button id="gptStopQueueBtn" type="button" class="danger-text-button" hidden>停止</button>
                   <button id="gptRetryTaskBtn" type="button" hidden>重试当前任务</button>
                   <button id="gptSkipTaskBtn" type="button">跳过当前</button>
                   <button id="gptProductionHistoryBtn" type="button">查看生产记录</button>
@@ -410,15 +419,20 @@
                   <button id="gptBrowserReloadBtn" type="button" title="刷新" aria-label="刷新">↻</button>
                   <button id="gptBrowserHomeBtn" type="button" title="打开 ChatGPT 首页" aria-label="打开 ChatGPT 首页">⌂</button>
                 </div>
-                <nav id="gptAccountTabs" class="gpt-account-tabs" aria-label="GPT账号切换"></nav>
+                <nav id="gptAccountTabs" class="gpt-account-tabs" aria-label="账号窗口切换"></nav>
                   <button id="gptAddAccountBtn" class="gpt-add-account" type="button" title="添加账号窗口" aria-label="添加账号窗口">＋ 添加账号窗口</button>
               </header>
-              <div id="gptEmbeddedHost" class="gpt-embedded-host" aria-label="GPT网页显示区域">
+              <div id="gptEmbeddedHost" class="gpt-embedded-host" aria-label="当前账号窗口网页">
                 <div class="gpt-embedded-placeholder">
                   <strong>GPT 网页连接中</strong>
                   <p>首次打开完成后，切换页面不会重复加载。</p>
                 </div>
               </div>
+              <footer class="gpt-browser-addressbar" aria-label="当前账号窗口地址">
+                <label class="sr-only" for="gptBrowserAddressInput">网页地址</label>
+                <input id="gptBrowserAddressInput" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="默认 ChatGPT，可输入其他网址，按回车访问" aria-label="默认 ChatGPT，可输入其他网址，按回车访问" />
+                <button id="gptBrowserGoBtn" class="secondary-button gpt-browser-go-button" type="button" title="访问当前网址" aria-label="访问当前网址">→</button>
+              </footer>
             </section>
           </div>
         </section>
@@ -698,29 +712,48 @@
           <p class="settings-footnote">已登记并标记 confirmed 的现有设备已自动加入白名单。新设备第一次出现只会显示“陌生设备”，确认前不能发送。</p>
         </section>
         <section id="gptAutoPageSettings" class="page-settings-section" hidden>
+          <div class="mode-quick-tabs" id="gptModeQuickTabs" role="tablist" aria-label="生产模式快速切换">
+            <button type="button" class="mode-quick-tab" data-mode="manual" role="tab"><span>手动</span><small>上传不自动发</small></button>
+            <button type="button" class="mode-quick-tab" data-mode="automatic" role="tab"><span>自动</span><small>全流程无人值守</small></button>
+            <button type="button" class="mode-quick-tab" data-mode="semi-auto" role="tab"><span>半自动</span><small>计划后人工确认</small></button>
+            <button type="button" class="mode-quick-tab" data-mode="single" role="tab"><span>永不停歇</span><small>单账号连续</small></button>
+            <button type="button" class="mode-quick-tab" data-mode="rotate" role="tab"><span>轮换</span><small>多账号自动切</small></button>
+          </div>
+          <div class="mode-setting-row">
+            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="manual">人工控制</option><option value="automatic">选材后自动</option><option value="single">单账号全自动</option><option value="scheduled">定时单账号全自动</option><option value="rotate">多账号全自动</option><option value="patrol">单账号多对话巡检</option><option value="semi-auto" hidden>半自动（兼容）</option><option value="multi" hidden>多账号全自动（旧版）</option></select></label>
+            <button type="button" class="mode-info-button" id="gptModeInfoBtn" title="查看模式说明" aria-label="查看当前模式说明">?</button>
+          </div>
+          <div class="mode-info-popover" id="gptModeInfoPopover" hidden></div>
           <div class="settings-group">
-            <h3>模式与归档</h3>
+            <h3>生产工作流</h3>
             <div class="settings-group mode-profile-editor" id="gptModeProfileEditor">
               <p class="settings-note" id="gptModeProfileLabel">当前模式设置</p>
               <label><span>模式名称</span><input id="gptModeProfileName" type="text" maxlength="40" /></label>
-              <label><span>第一环节</span><select id="gptModeStartBehavior"><option value="current">继续使用当前 GPT 会话</option><option value="inject">注入模板提示词后再生产</option></select></label>
-              <label><span>自动确认文字</span><input id="gptModeConfirmText" type="text" value="1" /></label>
-              <label><span>文案请求词</span><input id="gptModeCopyPrompt" type="text" value="给我一份小红书文案" /></label>
-              <button id="gptSaveModeProfileBtn" type="button" class="secondary-button">保存当前模式</button>
+              <div class="gpt-mode-workflow-block">
+                <div class="settings-inline-heading"><strong>工作流环节</strong><small>拖动排序、勾选启用；环节内文字即为发送内容。修改实时生效，运行中的批次冻结当前快照。</small></div>
+                <div id="gptModeWorkflowEditor" class="gpt-mode-workflow-editor" aria-label="本模式工作流环节"></div>
+                <button id="gptAddModeWorkflowStepBtn" type="button" class="secondary-button">＋ 添加环节</button>
+              </div>
+              <div class="settings-sub-group">
+                <div class="settings-inline-heading"><strong>母版迁移器规则</strong><small>新账号窗口或无模板时自动注入这段 V3.6 母版规则。已训练过模板的会话不会重复注入。</small></div>
+                <textarea id="gptMasterPromptRules" rows="6" readonly placeholder="加载中…"></textarea>
+                <label><span>自定义额外规则（可选）</span><textarea id="gptExtraPromptRules" rows="3" placeholder="追加在母版规则之后的额外约束，留空则只使用母版规则"></textarea></label>
+              </div>
             </div>
-            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="manual">手动模式</option><option value="single">单账号单模板·永不停歇</option><option value="multi">多账号单模板·永不停歇</option></select></label>
-            <label class="switch-setting"><span><b>成功后归档原素材</b><small>仅在图片、TXT 和作品包全部校验成功后移动到“已使用一次 / 两次 / 三次”目录</small></span><input id="gptAutoArchiveEnabled" type="checkbox" checked /></label>
+          </div>
+          <div class="settings-group">
+            <h3>运行选项</h3>
+            <label class="switch-setting"><span><b>成功后归档原素材</b><small>仅在图片、TXT 和作品包全部校验成功后移动到素材库根目录下对应的数字目录（1、2、3、4…）</small></span><input id="gptAutoArchiveEnabled" type="checkbox" checked /></label>
             <label class="switch-setting"><span><b>显示账号额度提醒</b><small>按本地滚动账本估算，网页实际限流优先</small></span><input id="gptQuotaReminderEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>网页内提示词库</b><small>在 GPT 输入区显示可点击的提示词入口</small></span><input id="gptPromptLibraryEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>网页内下载与打包按钮</b><small>按当前回复绑定下载本组和下载并打包</small></span><input id="gptMessageDownloadsEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>Windows 登录后启动工作台</b><small>启动后会退到后台并按全天自动设置恢复，不会清理 GPT 登录状态。</small></span><input id="gptLaunchAtLogin" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>打开工作台后自动继续</b><small>仅对连续等待循环模式生效；开机、联网或合盖唤醒后会从对应账号窗口的检查点继续。</small></span><input id="gptContinuousAutoStart" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>仅在工作时段启动新任务</b><small>默认北京时间 07:00 至次日 02:00；休息时段保持等待，不消耗上传或生图额度。</small></span><input id="gptContinuousWorkHoursEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>定时启动</b><small>全天自动模式会在到点扫描素材库，优先选择使用次数低的素材；名称以"."开头的隐藏文件夹不会读取。</small></span><input id="gptScheduledEnabled" type="checkbox" /></label>
           </div>
           <div class="settings-group">
-            <h3>自动生产闭环</h3>
-            <label class="switch-setting"><span><b>自动发送“1”确认出图</b><small>检测到迁移计划完成后才发送</small></span><input id="gptAutoConfirmEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>自动生成小红书文案</b><small>套图完成后请求文案并检测非空正文</small></span><input id="gptAutoCopyEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>自动下载图片并打包</b><small>图片数量与 TXT 均核对成功后才标记完成</small></span><input id="gptAutoPackageEnabled" type="checkbox" checked /></label>
-            <div class="settings-note">单个素材失败会写入生产记录并自动跳过，队列继续生产下一个素材。</div>
-          </div>
-          <div class="settings-group">
-            <h3>限速与稳定性</h3>
+            <h3>限速与额度</h3>
             <div class="settings-two-columns">
               <label><span>生产间隔最短（秒）</span><input id="gptAutoMinDelay" type="number" min="5" max="600" value="25" /></label>
               <label><span>生产间隔最长（秒）</span><input id="gptAutoMaxDelay" type="number" min="5" max="900" value="55" /></label>
@@ -731,8 +764,6 @@
               <label><span>3小时生成上限（图）</span><input id="gptGenerationLimit" type="number" min="1" max="500" value="50" /></label>
               <label><span>滚动窗口（小时）</span><input id="gptQuotaWindowHours" type="number" min="1" max="24" value="3" /></label>
               <label><span>最低完整图片数（低于此数停止）</span><input id="gptMinimumImageCount" type="number" min="1" max="30" value="4" /><small>默认 4 张：本轮只生成 1–3 张时视为额度触顶/生成不完整，立即停止本帖，不请求文案、不下载、不打包、不归档，跳过到下一帖。</small></label>
-              <label class="legacy-mode-setting" hidden><span>自动确认文字</span><input id="gptConfirmText" type="text" value="1" /></label>
-              <label class="legacy-mode-setting" hidden><span>文案请求词</span><input id="gptCopyPrompt" type="text" value="给我一份小红书文案" /></label>
               <label><span>闲置网页释放（分钟）</span><input id="gptIdleUnloadMinutes" type="number" min="5" max="240" value="30" /></label>
               <label><span>定时启动时间</span><input id="gptScheduledTime" type="time" value="09:30" /></label>
               <label><span>启动延迟范围（分钟）</span><input id="gptScheduledJitter" type="number" min="0" max="60" value="10" /></label>
@@ -742,13 +773,7 @@
                   <label><span>下载暂存目录</span><div class="inline-setting-control"><input id="gptDownloadRoot" type="text" value="D:\Download" /><button id="chooseGptDownloadRootBtn" type="button">选择</button></div></label>
                   <label><span>成品库目录</span><div class="inline-setting-control"><input id="gptProductRoot" type="text" value="D:\AICode\项目推进\projects\江湖有旅人\主项目\成品库（GPT+本地脚本制作）" /><button id="chooseGptProductRootBtn" type="button">选择</button></div></label>
             </div>
-            <label class="switch-setting"><span><b>网页内提示词库</b><small>在 GPT 输入区显示可点击的提示词入口</small></span><input id="gptPromptLibraryEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>网页内下载与打包按钮</b><small>按当前回复绑定下载本组和下载并打包</small></span><input id="gptMessageDownloadsEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>Windows 登录后启动工作台</b><small>启动后会退到后台并按全天自动设置恢复，不会清理 GPT 登录状态。</small></span><input id="gptLaunchAtLogin" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>打开工作台后自动继续</b><small>仅对“单账号单模板·永不停歇”生效；开机、联网或合盖唤醒后会从上次检查点继续。</small></span><input id="gptContinuousAutoStart" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>仅在工作时段启动新任务</b><small>默认北京时间 07:00 至次日 02:00；休息时段保持等待，不消耗上传或生图额度。</small></span><input id="gptContinuousWorkHoursEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>定时启动</b><small>全天自动模式会在到点扫描素材库，优先选择使用次数低的素材；名称以“.”开头的隐藏文件夹不会读取。</small></span><input id="gptScheduledEnabled" type="checkbox" /></label>
-            <p class="settings-footnote">每套完成后会在最短与最长时间之间随机等待，让任务节奏更稳定；遇到登录验证、限流或异常提示会立即暂停。</p>
+            <p class="settings-footnote">每套完成后会在最短与最长时间之间随机等待，让任务节奏更稳定；遇到登录验证、限流或异常提示会显示具体原因与下一次探测时间。</p>
           </div>
           <div class="settings-group">
             <h3>账号窗口</h3>
@@ -792,13 +817,15 @@
       <button id="contextSetFolder" type="button">设置关联文件夹</button>
       <button id="contextCopyPath" type="button">复制目录地址</button>
       <button id="contextRename" type="button">重命名</button>
+      <button id="contextToggleDisable" type="button">暂时禁用</button>
+      <button id="contextRemoveAccount" type="button" class="danger-action">删除账号窗口</button>
       <button id="contextTrashFolder" type="button" class="danger-action">移到回收站</button>
       <button id="contextModeSettings" type="button">修改模式设置</button>
       <button id="contextDeleteMode" type="button" class="danger-action">删除模式配置</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.14.10"></script>
-    <script src="/material-workspace.js?v=0.14.10"></script>
-    <script src="/app.js?v=0.14.10"></script>
+    <script src="/distribution-ui.js?v=0.14.27"></script>
+    <script src="/material-workspace.js?v=0.14.27"></script>
+    <script src="/app.js?v=0.14.27"></script>
   </body>
 </html>

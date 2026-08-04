@@ -45,12 +45,25 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   releaseIdle(minutes = 30) {
     return ipcRenderer.invoke("desktop:gpt-release-idle", { minutes: Number(minutes || 30) });
   },
+  maintenance(input = {}) {
+    return ipcRenderer.invoke("desktop:gpt-maintenance", {
+      accountId: String(input.accountId || ""),
+      clearTemporaryCache: Boolean(input.clearTemporaryCache || input.clearCache),
+      reason: String(input.reason || "")
+    });
+  },
   navigate(action, accountId = "", targetUrl = "") {
     return ipcRenderer.invoke("desktop:gpt-navigate", {
       action: String(action || "reload"),
       accountId: String(accountId || ""),
       targetUrl: String(targetUrl || "")
     });
+  },
+  onUrlChanged(callback) {
+    if (typeof callback !== "function") return () => {};
+    const listener = (_event, input) => callback(input || {});
+    ipcRenderer.on("desktop:gpt-url-changed", listener);
+    return () => ipcRenderer.removeListener("desktop:gpt-url-changed", listener);
   },
   reload(accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-navigate", {
@@ -63,6 +76,9 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   },
   workflowStatus(accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-workflow-status", String(accountId || ""));
+  },
+  inspectStatus(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-inspect-status", String(accountId || ""));
   },
   manualAction(action = "download", accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-manual-action", {

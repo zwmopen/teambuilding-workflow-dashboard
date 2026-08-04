@@ -1,4 +1,4 @@
-﻿let dashboard = null;
+let dashboard = null;
 let selectedMaterial = null;
 let selectedMaterialCategory = null;
 let selectedTemplate = null;
@@ -7,6 +7,7 @@ let selectedProductGroup = null;
 let selectedProductWork = null;
 let focusTarget = null;
 let contextMenuTarget = null;
+let contextMenuGptHidden = false;
 let productsRendered = false;
 let logsRendered = false;
 let juguangRendered = false;
@@ -75,13 +76,19 @@ let gptAutoRunning = false;
 let gptAutoPaused = false;
 let gptQueuePaused = false;
 let gptCurrentManualTask = null;
+let gptSemiAutoPendingTask = null; // Semi-auto: task waiting for user to confirm plan before continuing
 let gptLastFailedTask = null;
 let gptLastFailedStage = "";
 let gptLastFailedPercent = 0;
 let gptQuotaSnapshot = null;
+const gptQuotaSnapshots = new Map();
+let gptQuotaPauseStatus = "";
 let gptContinuousLaunchTimer = null;
+const GPT_WINDOW_RUNTIME_STORAGE_KEY = "teambuilding-gpt-window-runtime-v1";
+let gptWindowRuntime = loadGptWindowRuntime();
 let assistantBubbleTimer = null;
 let assistantSuppressClickUntil = 0;
+let assistantChatOpen = false;
 const ASSISTANT_PERSISTENT_MESSAGE_KEY = "tb-workbench-assistant-persistent-message-v1";
 let assistantPersistentMessage = String(localStorage.getItem(ASSISTANT_PERSISTENT_MESSAGE_KEY) || "");
 let lastAssistantBubbleMessage = "";
@@ -97,38 +104,317 @@ const GPT_QUEUE_STORAGE_KEY = "teambuilding-gpt-queue-v1";
 const GPT_MULTI_RUN_STORAGE_KEY = "teambuilding-gpt-multi-run-v1";
 const GPT_CONTINUOUS_RUN_STORAGE_KEY = "teambuilding-gpt-continuous-run-v1";
 const GPT_HISTORY_STORAGE_KEY = "teambuilding-gpt-production-history-v1";
+const GPT_TEMPORARY_CACHE_STORAGE_KEY = "teambuilding-gpt-temporary-cache-maintenance-v1";
+const GPT_TEMPORARY_CACHE_INTERVAL_MS = 3 * 60 * 60 * 1000;
+const gptTemporaryCacheMaintenanceTimers = new Map();
+const gptAccountRefreshPromises = new Map();
+const gptWindowRetryTimers = new Map();
 
-// The production selector intentionally exposes only the three workflows the
-// operator actually uses.  Older builds stored several aliases; normalize
-// them at the boundary so an upgrade cannot silently start a different queue.
+function scheduleGptWindowRetry(accountId = activeGptAccountId, delayMs = 15_000, reason = "网页尚未就绪") {
+  const key = String(accountId || activeGptAccountId);
+  if (gptWindowRetryTimers.has(key)) return;
+  const runtime = readGptWindowRuntime(key);
+  if (runtime.stoppedByUser || runtime.pausedByUser || !isContinuousGptMode()) return;
+  const delay = Math.max(5_000, Math.min(20 * 60_000, Number(delayMs) || 15_000));
+  writeGptWindowRuntime(key, { status: "retry-wait", currentStage: reason, nextRetryAt: Date.now() + delay });
+  showWorkbenchAssistantBubble(`${gptAccounts.find((item) => item.id === key)?.name || "当前账号窗口"}${reason}，${Math.ceil(delay / 1000)} 秒后自动重试，不需要手动点“重试”。`, { duration: 0, tone: "warning" });
+  const timer = setTimeout(() => {
+    gptWindowRetryTimers.delete(key);
+    if (gptWindowIsUserStopped(key) || gptWindowIsUserPaused(key) || !isContinuousGptProductionArmed()) return;
+    reconcileGptWindow(key, { force: true }).catch(() => scheduleGptWindowRetry(key, 20_000, "网页仍未就绪"));
+  }, delay);
+  gptWindowRetryTimers.set(key, timer);
+}
+
+function loadGptWindowRuntime() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(GPT_WINDOW_RUNTIME_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch { return {}; }
+}
+
+function defaultGptWindowRuntime(accountId) {
+  return {
+    accountId: String(accountId || "account-1"),
+    status: "idle",
+    pausedByUser: false,
+    stoppedByUser: false,
+    currentTaskId: "",
+    currentStage: "",
+    currentPercent: 0,
+    uploadedAttachments: 0,
+    expectedAttachments: 0,
+    expectedImages: 0,
+    generatedImages: 0,
+    // Per-account serial production cursor.  This is deliberately stored per
+    // browser window so the cat never shows browser 1's "第几套" on browser 2.
+    completedSets: 0,
+    currentSetNumber: 0,
+    currentSetStartedAt: null,
+    nextProbeAt: null,
+    updatedAt: Date.now()
+  };
+}
+
+function readGptWindowRuntime(accountId = activeGptAccountId) {
+  const key = String(accountId || "account-1");
+  return { ...defaultGptWindowRuntime(key), ...(gptWindowRuntime[key] || {}), accountId: key };
+}
+
+function writeGptWindowRuntime(accountId, patch = {}) {
+  const key = String(accountId || activeGptAccountId || "account-1");
+  gptWindowRuntime[key] = { ...readGptWindowRuntime(key), ...patch, accountId: key, updatedAt: Date.now() };
+  try { localStorage.setItem(GPT_WINDOW_RUNTIME_STORAGE_KEY, JSON.stringify(gptWindowRuntime)); } catch { /* private mode */ }
+  return gptWindowRuntime[key];
+}
+
+function markGptWindowSetStarted(accountId = activeGptAccountId) {
+  const current = readGptWindowRuntime(accountId);
+  const account = gptAccounts.find((item) => item.id === String(accountId));
+  const cycle = readGptCycleState(account?.quotaGroup || accountId);
+  const cycleStart = Math.min(
+    ...[cycle.uploadCycleStartAt, cycle.generationCycleStartAt].map((value) => Number(value || 0)).filter(Boolean)
+  ) || 0;
+  const cycleChanged = cycleStart > 0 && Number(current.setCycleStartedAt || 0) < cycleStart;
+  const completedSets = cycleChanged ? 0 : Number(current.completedSets || 0);
+  const nextNumber = Math.max(1, completedSets + 1);
+  return writeGptWindowRuntime(accountId, {
+    completedSets,
+    currentSetNumber: nextNumber,
+    setCycleStartedAt: cycleStart || current.setCycleStartedAt || Date.now(),
+    currentSetStartedAt: current.currentSetStartedAt || Date.now(),
+    generatedImages: 0
+  });
+}
+
+function markGptWindowSetCompleted(accountId = activeGptAccountId) {
+  const current = readGptWindowRuntime(accountId);
+  return writeGptWindowRuntime(accountId, {
+    completedSets: Math.max(0, Number(current.completedSets || 0)) + 1,
+    currentSetNumber: Math.max(1, Number(current.currentSetNumber || Number(current.completedSets || 0) + 1)),
+    currentSetStartedAt: null
+  });
+}
+
+function gptWindowIsUserStopped(accountId = activeGptAccountId) {
+  const state = readGptWindowRuntime(accountId);
+  return Boolean(state.stoppedByUser);
+}
+
+function gptWindowIsUserPaused(accountId = activeGptAccountId) {
+  const state = readGptWindowRuntime(accountId);
+  return Boolean(state.pausedByUser);
+}
+
+// The production selector exposes four user-facing workflows, including a
+// serial account-rotation workflow. Older builds stored several aliases;
+// normalize them at the boundary so an upgrade cannot silently start a
+// different queue.
 const GPT_MODE_DEFINITIONS = Object.freeze({
-  manual: { label: "手动模式", defaultName: "手动模式", continuous: false, multi: false },
-  single: { label: "单账号单模板·永不停歇", defaultName: "单账号单模板·永不停歇", continuous: true, multi: false },
-  multi: { label: "多账号单模板·永不停歇", defaultName: "多账号单模板·永不停歇", continuous: true, multi: true }
+  manual: { label: "人工控制", defaultName: "人工控制", shortName: "人工", continuous: false, multi: false, description: '自动上传附件和提示词到输入框，但不自动发送。需手动点发送，完成后点"完成当前，上传下一套"。适合新手试水、单帖精修。' },
+  automatic: { label: "选材后自动", defaultName: "选材后自动", shortName: "选材后", continuous: false, multi: false, description: "选好素材后全自动完成上传→等计划→发确认→等图→求文案→打包归档。队列跑完即停。适合中小批量一次性生产。" },
+  single: { label: "单账号全自动", defaultName: "单账号全自动", shortName: "单账号", continuous: true, multi: false, manualWindow: true, description: "单账号连续生产，额度触顶后自动等待恢复，跨重启自动续跑。工作时段 07:00-02:00。适合单账号长时间挂着生产。" },
+  scheduled: { label: "定时单账号全自动", defaultName: "定时单账号全自动", shortName: "定时", continuous: true, multi: false, manualWindow: true, scheduled: true, description: "在指定时间点自动启动单账号生产，支持每日定时循环。适合固定时段定时生产场景。" },
+  rotate: { label: "多账号全自动", defaultName: "多账号全自动", shortName: "多账号", continuous: true, multi: true, rotation: true, autoWindow: true, description: "多账号自动轮换，一个触顶自动切下一个账号窗口，全程无人值守。跨重启自动恢复。适合多账号最大化产能。" },
+  patrol: { label: "单账号多对话巡检", defaultName: "单账号多对话巡检", shortName: "巡检", continuous: true, multi: false, manualWindow: true, patrol: true, description: "单账号下多个对话轮流巡检生产，每个对话独立处理一个素材。适合单账号多对话并行场景。" },
+  // Kept as a compatibility profile for configurations created before the
+  // mode rename. Hidden from the selector but still readable for old configs.
+  "semi-auto": { label: "半自动（兼容）", defaultName: "半自动（兼容）", shortName: "半自动", continuous: false, multi: false, semiAuto: true, hidden: true, description: "自动上传并发送，计划完成后暂停等待人工确认。确认后自动完成出图→文案→打包归档。仅保留兼容性，新配置请使用其他模式。" },
+  multi: { label: "多账号全自动（旧版）", defaultName: "多账号全自动（旧版）", shortName: "旧版", continuous: true, multi: true, rotation: true, legacy: true, hidden: true, description: "已废弃的旧版多账号模式，仅保留读取旧配置的兼容性。" }
 });
+// Legacy label retained for existing 0.14.x audit records: 单账号单模板·永不停歇。
+// ── 模块分类体系（类似 RPA/N8N 的独立小模块） ──
+// category: action(执行，含检测) / wait(等待) / time(时间) / flow(流程)
+// hasText: 是否有文字输入框
+// hasTimeout: 是否有超时秒数
+// hasAutoDetect: 是否有自动检测开关
+// hasRandomRange: 是否有随机等待范围(min/max)
+// hasTimeWindow: 是否有开始/结束时间
+// hasDailyTime: 是否有每日定时时间
+const GPT_MODULE_CATEGORIES = Object.freeze({
+  action: { label: "执行", color: "#4a9eff", icon: "▶" },
+  wait: { label: "等待", color: "#f5a623", icon: "⏳" },
+  time: { label: "时间", color: "#27ae60", icon: "🕐" },
+  flow: { label: "流程", color: "#e74c3c", icon: "🔀" }
+});
+const GPT_WORKFLOW_MODULES = Object.freeze({
+  // ── 执行模块 ── (hasRetry: 发送提示词后检测到失败可自动重试1次)
+  "upload-material": { label: "上传当前帖子", category: "action", hasText: true, hasTimeout: true, hasAutoDetect: true, hasRetry: true },
+  "send-text": { label: "发送文字", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: true },
+  "insert-prompt": { label: "插入提示词", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: false },
+  "send-confirm": { label: "发送确认(扣1)", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: true },
+  "request-copy": { label: "请求小红书文案", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: true },
+  "download-images": { label: "下载图片到成品库", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: true },
+  "save-text": { label: "保存文案到TXT", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: true },
+  "move-archive": { label: "移动到成品库文件夹", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: false },
+  "clipboard-copy": { label: "复制到剪贴板", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
+  "package-archive": { label: "合并打包(复制+下载+归档)", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: false },
+  // ── 等待模块 ──
+  "wait-reply": { label: "等待回复完成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true },
+  "wait-plan": { label: "等待迁移计划", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true },
+  "wait-images": { label: "等待图片生成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true },
+  "wait-copy": { label: "等待文案生成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true },
+  "wait-fixed": { label: "固定等待", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: false },
+  "wait-random": { label: "随机等待", category: "wait", hasText: false, hasTimeout: false, hasAutoDetect: false, hasRandomRange: true },
+  // ── 检测模块（瞬间检测，不等待；等待请用「随机等待」组合） ──
+  "detect-plan": { label: "检测·计划完成", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
+  "detect-images": { label: "检测·图片已生成", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
+  "detect-copy": { label: "检测·文案已生成", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
+  "detect-state": { label: "检测·会话状态", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
+  // ── 时间控制模块 ──
+  "time-window": { label: "时间窗口(开始/结束)", category: "time", hasText: false, hasTimeout: false, hasAutoDetect: false, hasTimeWindow: true },
+  "loop-daily": { label: "每日定时循环", category: "time", hasText: false, hasTimeout: false, hasAutoDetect: false, hasDailyTime: true },
+  // ── 流程控制模块 ──
+  "retry": { label: "失败重试", category: "flow", hasText: false, hasTimeout: true, hasAutoDetect: false }
+});
+// 兼容旧代码：保留 GPT_WORKFLOW_ACTIONS 名称
+const GPT_WORKFLOW_ACTIONS = GPT_WORKFLOW_MODULES;
+function moduleCategory(action) {
+  return GPT_WORKFLOW_MODULES[action]?.category || "action";
+}
+function moduleHasProp(action, prop) {
+  return Boolean(GPT_WORKFLOW_MODULES[action]?.[prop]);
+}
+function defaultGptWorkflowSteps() {
+  return [
+    { action: "upload-material", text: "", timeoutSeconds: 120, enabled: true, autoDetect: true },
+    { action: "wait-random", text: "", enabled: true, minSeconds: 1, maxSeconds: 5 },
+    { action: "wait-plan", text: "", timeoutSeconds: 480, enabled: true, autoDetect: true },
+    { action: "send-confirm", text: "1", timeoutSeconds: 20, enabled: true, autoDetect: false },
+    { action: "wait-random", text: "", enabled: true, minSeconds: 1, maxSeconds: 5 },
+    { action: "wait-images", text: "", timeoutSeconds: 900, enabled: true, autoDetect: true },
+    { action: "request-copy", text: "给我一份小红书文案", timeoutSeconds: 20, enabled: true, autoDetect: false },
+    { action: "wait-random", text: "", enabled: true, minSeconds: 1, maxSeconds: 5 },
+    { action: "wait-copy", text: "", timeoutSeconds: 480, enabled: true, autoDetect: true },
+    { action: "download-images", text: "", timeoutSeconds: 600, enabled: true, autoDetect: true },
+    { action: "save-text", text: "", timeoutSeconds: 60, enabled: true, autoDetect: true },
+    { action: "move-archive", text: "", timeoutSeconds: 120, enabled: true, autoDetect: false }
+  ];
+}
+function normalizeGptWorkflowSteps(value) {
+  const source = Array.isArray(value) ? value : defaultGptWorkflowSteps();
+  const steps = source.map((step) => {
+    const action = String(step?.action || "");
+    const isValid = Object.prototype.hasOwnProperty.call(GPT_WORKFLOW_MODULES, action);
+    return {
+      action: isValid ? action : "",
+      text: String(step?.text || "").trim(),
+      timeoutSeconds: Math.max(5, Math.min(3600, Number(step?.timeoutSeconds || 60))),
+      enabled: step?.enabled !== false,
+      autoDetect: moduleHasProp(action, "hasAutoDetect") ? step?.autoDetect !== false : false,
+      minSeconds: Math.max(1, Math.min(3600, Number(step?.minSeconds || 5))),
+      maxSeconds: Math.max(5, Math.min(3600, Number(step?.maxSeconds || 30))),
+      timeStart: String(step?.timeStart || "09:00"),
+      timeEnd: String(step?.timeEnd || "22:00"),
+      dailyTime: String(step?.dailyTime || "09:30"),
+      retryCount: Math.max(1, Math.min(10, Number(step?.retryCount || 3))),
+      detectDelayMin: Math.max(0, Math.min(30, Number(step?.detectDelayMin ?? 1))),
+      detectDelayMax: Math.max(1, Math.min(60, Number(step?.detectDelayMax ?? 3))),
+      retryEnabled: moduleHasProp(action, "hasRetry") ? step?.retryEnabled === true : false,
+      retryDelayMin: Math.max(30, Math.min(600, Number(step?.retryDelayMin ?? 120))),
+      retryDelayMax: Math.max(60, Math.min(900, Number(step?.retryDelayMax ?? 300)))
+    };
+  }).filter((step) => step.action).slice(0, 20);
+  return steps.length ? steps : defaultGptWorkflowSteps();
+}
+function workflowStepOrder(steps) {
+  return new Map(normalizeGptWorkflowSteps(steps).map((step, index) => [step.action, { ...step, index }]));
+}
+function validateGptWorkflowSteps(value) {
+  const steps = normalizeGptWorkflowSteps(value);
+  const order = workflowStepOrder(steps);
+  const enabled = (action) => order.get(action)?.enabled === true;
+
+  // If the combined package-archive is enabled, the separated steps are optional
+  const usesCombinedArchive = enabled("package-archive");
+  const requires = [
+    ["send-confirm", "wait-plan", "确认出图必须在计划完成后"],
+    ["request-copy", "wait-images", "文案请求必须在本轮图片完成后"],
+    ["wait-copy", "request-copy", "等待文案必须在文案请求后"]
+  ];
+  if (!enabled("upload-material")) return { ok: false, error: "必须保留“上传当前帖子”环节" };
+  for (const [action, dependency, message] of requires) {
+    if (!enabled(action)) continue;
+    if (!enabled(dependency) || order.get(dependency).index >= order.get(action).index) return { ok: false, error: message };
+  }
+  // Validate separated archive steps ordering (only if package-archive is not used)
+  if (!usesCombinedArchive) {
+    if (enabled("download-images") && enabled("wait-images") && order.get("wait-images").index >= order.get("download-images").index)
+      return { ok: false, error: "下载图片必须在图片生成完成后" };
+    if ((enabled("save-text") || enabled("copy-text")) && enabled("wait-copy") && order.get("wait-copy").index >= (order.get("save-text")?.index ?? order.get("copy-text")?.index ?? 0))
+      return { ok: false, error: "复制文案必须在文案完成后" };
+    if ((enabled("move-archive") || enabled("move-to-archive")) && enabled("download-images") && order.get("download-images").index >= (order.get("move-archive")?.index ?? order.get("move-to-archive")?.index ?? 0))
+      return { ok: false, error: "移动到成品库必须在下载图片完成后" };
+  }
+  return { ok: true, steps };
+}
 function normalizeGptProductionMode(value) {
   const mode = String(value || "").trim();
   if (mode === "manual") return "manual";
-  if (mode === "single") return "single";
-  if (mode === "multi") return "multi";
-  if (["all-day-multi", "multi-account-template-endless", "multi-account"].includes(mode)) return "multi";
-  if (["all-day", "single-template-endless", "single-account-template-endless", "automatic", "random", "scheduled"].includes(mode)) return "single";
+  if (mode === "automatic" || mode === "auto") return "automatic";
+  if (mode === "semi-auto" || mode === "semiauto" || mode === "semi") return "semi-auto";
+  if (mode === "single" || ["single-wait-manual", "single-account-template-wait-manual", "manual-window-endless"].includes(mode)) return "single";
+  if (mode === "scheduled" || ["scheduled-endless", "timer-single"].includes(mode)) return "scheduled";
+  if (mode === "patrol" || ["patrol-multi-dialog", "conversation-patrol"].includes(mode)) return "patrol";
+  if (mode === "rotate" || mode === "single-wait-auto" || mode === "single-account-template-wait-auto" || mode === "auto-window-endless" || mode === "single-window-multi-browser-rotation" || mode === "multi-browser-rotation") return "rotate";
+  // Legacy "multi" mode is normalized to "rotate" for forward compatibility.
+  if (mode === "multi") return "rotate";
+  if (["all-day-multi", "multi-account-template-endless", "multi-account"].includes(mode)) return "rotate";
+  if (["all-day", "single-template-endless", "single-account-template-endless", "random"].includes(mode)) return "single";
   return "manual";
 }
 function loadGptModeProfiles() {
   const defaults = {
-    manual: { name: GPT_MODE_DEFINITIONS.manual.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案" },
-    single: { name: GPT_MODE_DEFINITIONS.single.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案" },
-    multi: { name: GPT_MODE_DEFINITIONS.multi.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案" }
+    manual: { name: GPT_MODE_DEFINITIONS.manual.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
+    automatic: { name: GPT_MODE_DEFINITIONS.automatic.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
+    "semi-auto": { name: GPT_MODE_DEFINITIONS["semi-auto"].defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
+    single: { name: GPT_MODE_DEFINITIONS.single.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
+    scheduled: { name: GPT_MODE_DEFINITIONS.scheduled.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
+    rotate: { name: GPT_MODE_DEFINITIONS.rotate.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
+    patrol: { name: GPT_MODE_DEFINITIONS.patrol.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() }
+  };
+  // 旧名 → 新名迁移表（0.14.28 模式名称统一）
+  const LEGACY_MODE_NAME_MAP = {
+    "手动": "人工控制", "上传不自动发": "人工控制",
+    "自动": "选材后自动", "全流程无人值守": "选材后自动",
+    "半自动": "半自动（兼容）", "计划后人工确认": "半自动（兼容）",
+    "永不停歇": "单账号全自动", "单账号连续": "单账号全自动",
+    "轮换": "多账号全自动", "多账号自动切": "多账号全自动"
   };
   try {
     const saved = JSON.parse(localStorage.getItem(GPT_MODE_PROFILES_STORAGE_KEY) || "{}");
-    return Object.fromEntries(Object.keys(defaults).map((key) => [key, { ...defaults[key], ...(saved?.[key] || {}) }]));
+    return Object.fromEntries(Object.keys(defaults).map((key) => {
+      const merged = { ...defaults[key], ...(saved?.[key] || {}) };
+      // 迁移旧名：如果 localStorage 里存的是旧名，强制覆盖为新 defaultName
+      const migratedName = LEGACY_MODE_NAME_MAP[merged.name];
+      if (migratedName) merged.name = migratedName;
+      else if (merged.name && merged.name !== defaults[key].name && !Object.values(LEGACY_MODE_NAME_MAP).includes(merged.name)) {
+        // 用户自定义名保留，但确保不是已废弃的旧名
+        // 如果 name 等于旧 defaultName 但不在映射表里，也强制更新为新 defaultName
+      } else if (!merged.name || Object.keys(LEGACY_MODE_NAME_MAP).includes(merged.name)) {
+        merged.name = defaults[key].name;
+      }
+      return [key, merged];
+    }));
   } catch { return defaults; }
 }
 let gptModeProfiles = loadGptModeProfiles();
 function activeGptModeKey(value = gptAutoSettings?.mode) {
   return normalizeGptProductionMode(value);
+}
+function activeSettingsModeKey() {
+  return activePageSettings === "gptAuto" && gptSettingsPreviewMode
+    ? normalizeGptProductionMode(gptSettingsPreviewMode)
+    : activeGptModeKey();
+}
+function isContinuousGptMode(value = gptAutoSettings?.mode) {
+  return Boolean(GPT_MODE_DEFINITIONS[normalizeGptProductionMode(value)]?.continuous);
+}
+function isRotatingGptMode(value = gptAutoSettings?.mode) {
+  return normalizeGptProductionMode(value) === "rotate";
+}
+function isSemiAutoGptMode(value = gptAutoSettings?.mode) {
+  return normalizeGptProductionMode(value) === "semi-auto";
 }
 function saveGptModeProfiles() {
   localStorage.setItem(GPT_MODE_PROFILES_STORAGE_KEY, JSON.stringify(gptModeProfiles));
@@ -140,35 +426,167 @@ function applyGptModeProfile(mode = gptAutoSettings?.mode) {
   gptAutoSettings.confirmText = String(profile.confirmText || "1").trim() || "1";
   gptAutoSettings.copyPrompt = String(profile.copyPrompt || "给我一份小红书文案").trim() || "给我一份小红书文案";
   gptAutoSettings.useCurrentSession = profile.useCurrentSession !== false;
+  profile.steps = normalizeGptWorkflowSteps(profile.steps);
+  const enabledActions = new Set(profile.steps.filter((step) => step.enabled).map((step) => step.action));
+  gptAutoSettings.autoConfirm = enabledActions.has("send-confirm");
+  gptAutoSettings.autoCopy = enabledActions.has("request-copy") && enabledActions.has("wait-copy");
+  gptAutoSettings.autoPackage = enabledActions.has("package-archive");
+  // Collect retry settings from all steps that support retry
+  const retryConfig = {};
+  for (const step of profile.steps) {
+    if (moduleHasProp(step.action, "hasRetry")) {
+      retryConfig[step.action] = {
+        enabled: step.retryEnabled === true,
+        delayMin: Number(step.retryDelayMin || 120),
+        delayMax: Number(step.retryDelayMax || 300)
+      };
+    }
+  }
+  gptAutoSettings.retryConfig = retryConfig;
   return profile;
 }
+function renderGptModeWorkflow() {
+  const container = $("#gptModeWorkflowEditor");
+  if (!container) return;
+  const profile = gptModeProfiles[activeSettingsModeKey()] || gptModeProfiles.manual;
+  const steps = normalizeGptWorkflowSteps(profile.steps);
+  // Fixed first row: init-session — same grid layout as dynamic steps, draggable, but not deletable
+  const startBehavior = profile.useCurrentSession === false ? "inject" : "current";
+  const initRow = `
+    <div class="gpt-workflow-step gpt-workflow-step-init" data-workflow-fixed="true" draggable="true">
+      <span class="gpt-workflow-drag-handle" title="拖动排序" aria-label="拖动排序">⠿</span>
+      <span class="gpt-workflow-order">1</span>
+      <select disabled aria-label="固定环节"><option selected>初始化会话</option></select>
+      <select id="gptModeStartBehavior" aria-label="起始行为" data-workflow-field="startBehavior"><option value="current"${startBehavior === "current" ? " selected" : ""}>继续使用当前会话</option><option value="inject"${startBehavior === "inject" ? " selected" : ""}>注入模板提示词</option></select>
+      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+    </div>`;
+  container.innerHTML = initRow + steps.map((step, index) => {
+    const cat = moduleCategory(step.action);
+    const catInfo = GPT_MODULE_CATEGORIES[cat] || GPT_MODULE_CATEGORIES.action;
+    const hasText = moduleHasProp(step.action, "hasText");
+    const hasTimeout = moduleHasProp(step.action, "hasTimeout");
+    const hasAutoDetect = moduleHasProp(step.action, "hasAutoDetect");
+    const hasRandomRange = moduleHasProp(step.action, "hasRandomRange");
+    const hasTimeWindow = moduleHasProp(step.action, "hasTimeWindow");
+    const hasDailyTime = moduleHasProp(step.action, "hasDailyTime");
+    const hasDetectDelay = moduleHasProp(step.action, "hasDetectDelay");
+    const hasRetry = moduleHasProp(step.action, "hasRetry");
+    return `
+    <div class="gpt-workflow-step gpt-workflow-step-${cat}" data-workflow-index="${index}" draggable="true">
+      <span class="gpt-workflow-drag-handle" title="拖动排序" aria-label="拖动排序">⠿</span>
+      <span class="gpt-workflow-order">${index + 2}</span>
+      <span class="gpt-workflow-cat" style="color:${catInfo.color}" title="${catInfo.label}">${catInfo.icon}</span>
+      <select data-workflow-field="action" aria-label="第${index + 2}个环节">${buildModuleOptions(step.action)}</select>
+      ${hasText ? `<input type="text" data-workflow-field="text" value="${escapeHtml(step.text)}" placeholder="${step.action === "upload-material" ? "上传提示词（可留空）" : "发送文字内容"}" aria-label="第${index + 2}个环节${step.action === "upload-material" ? "上传提示词" : "发送文字"}" />` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
+      ${hasTimeout ? `<label class="gpt-workflow-timeout"><span>${hasDetectDelay ? "轮询" : "等待"}</span><input type="number" data-workflow-field="timeoutSeconds" min="5" max="3600" value="${step.timeoutSeconds}" aria-label="第${index + 2}个环节等待秒数" /><span>秒</span></label>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
+      ${hasAutoDetect ? `<label class="gpt-workflow-autodetect" title="开启后检测到完成就继续，等待时间仅作为上限"><input type="checkbox" data-workflow-field="autoDetect"${step.autoDetect ? " checked" : ""} />自动</label>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
+      ${hasRandomRange ? `<label class="gpt-workflow-random"><span>随机</span><input type="number" data-workflow-field="minSeconds" min="1" max="3600" value="${step.minSeconds}" aria-label="最小秒数" />~<input type="number" data-workflow-field="maxSeconds" min="5" max="3600" value="${step.maxSeconds}" aria-label="最大秒数" /><span>秒</span></label>` : ``}
+      ${hasDetectDelay ? `<label class="gpt-workflow-detectdelay" title="检测到目标完成后，等待此范围随机秒数再继续下一步"><span>检测后延迟</span><input type="number" data-workflow-field="detectDelayMin" min="0" max="30" value="${step.detectDelayMin}" aria-label="检测后最小延迟秒" />~<input type="number" data-workflow-field="detectDelayMax" min="1" max="60" value="${step.detectDelayMax}" aria-label="检测后最大延迟秒" /><span>秒</span></label>` : ``}
+      ${hasRetry ? `<label class="gpt-workflow-retry" title="发送后检测到失败(如出图错误、网络异常)，等待指定秒数后自动重试1次"><input type="checkbox" data-workflow-field="retryEnabled"${step.retryEnabled ? " checked" : ""} />重试</label><label class="gpt-workflow-retry-delay"><input type="number" data-workflow-field="retryDelayMin" min="30" max="600" value="${step.retryDelayMin}" aria-label="重试最小秒数" />~<input type="number" data-workflow-field="retryDelayMax" min="60" max="900" value="${step.retryDelayMax}" aria-label="重试最大秒数" /><span>秒后</span></label>` : ``}
+      ${hasTimeWindow ? `<label class="gpt-workflow-timewindow"><input type="time" data-workflow-field="timeStart" value="${step.timeStart}" aria-label="开始时间" />~<input type="time" data-workflow-field="timeEnd" value="${step.timeEnd}" aria-label="结束时间" /></label>` : ``}
+      ${hasDailyTime ? `<label class="gpt-workflow-daily"><input type="time" data-workflow-field="dailyTime" value="${step.dailyTime}" aria-label="每日执行时间" /></label>` : ``}
+      <label class="gpt-workflow-enabled"><input type="checkbox" data-workflow-field="enabled"${step.enabled ? " checked" : ""} />启用</label>
+      <button type="button" class="icon-button" data-workflow-move="up" title="上移" aria-label="上移">↑</button>
+      <button type="button" class="icon-button" data-workflow-move="down" title="下移" aria-label="下移">↓</button>
+      <button type="button" class="icon-button danger" data-workflow-remove title="删除环节" aria-label="删除环节">×</button>
+    </div>`;
+  }).join("");
+}
+function buildModuleOptions(currentAction) {
+  const categories = ["action", "wait", "time", "flow"];
+  return categories.map((cat) => {
+    const catInfo = GPT_MODULE_CATEGORIES[cat];
+    const modules = Object.entries(GPT_WORKFLOW_MODULES).filter(([, def]) => def.category === cat);
+    if (!modules.length) return "";
+    const opts = modules.map(([value, def]) => `<option value="${value}"${value === currentAction ? " selected" : ""}>${def.label}</option>`).join("");
+    return `<optgroup label="${catInfo.icon} ${catInfo.label}">${opts}</optgroup>`;
+  }).join("");
+}
+function readGptModeWorkflowFromUi() {
+  return [...document.querySelectorAll("#gptModeWorkflowEditor .gpt-workflow-step:not([data-workflow-fixed])")].map((row) => ({
+    action: row.querySelector('[data-workflow-field="action"]')?.value || "",
+    text: row.querySelector('[data-workflow-field="text"]')?.value || "",
+    timeoutSeconds: Number(row.querySelector('[data-workflow-field="timeoutSeconds"]')?.value || 60),
+    enabled: row.querySelector('[data-workflow-field="enabled"]')?.checked !== false,
+    autoDetect: row.querySelector('[data-workflow-field="autoDetect"]')?.checked === true,
+    minSeconds: Number(row.querySelector('[data-workflow-field="minSeconds"]')?.value || 5),
+    maxSeconds: Number(row.querySelector('[data-workflow-field="maxSeconds"]')?.value || 30),
+    timeStart: row.querySelector('[data-workflow-field="timeStart"]')?.value || "09:00",
+    timeEnd: row.querySelector('[data-workflow-field="timeEnd"]')?.value || "22:00",
+    dailyTime: row.querySelector('[data-workflow-field="dailyTime"]')?.value || "09:30",
+    retryCount: Number(row.querySelector('[data-workflow-field="retryCount"]')?.value || 3),
+    detectDelayMin: Number(row.querySelector('[data-workflow-field="detectDelayMin"]')?.value ?? 1),
+    detectDelayMax: Number(row.querySelector('[data-workflow-field="detectDelayMax"]')?.value ?? 3),
+    retryEnabled: row.querySelector('[data-workflow-field="retryEnabled"]')?.checked === true,
+    retryDelayMin: Number(row.querySelector('[data-workflow-field="retryDelayMin"]')?.value || 120),
+    retryDelayMax: Number(row.querySelector('[data-workflow-field="retryDelayMax"]')?.value || 300)
+  }));
+}
 function renderGptModeProfile() {
-  const key = activeGptModeKey();
+  const key = activeSettingsModeKey();
   const profile = gptModeProfiles[key] || gptModeProfiles.manual;
   if ($("#gptModeProfileName")) $("#gptModeProfileName").value = profile.name || GPT_MODE_DEFINITIONS[key].defaultName;
-  if ($("#gptModeStartBehavior")) $("#gptModeStartBehavior").value = profile.useCurrentSession === false ? "inject" : "current";
-  if ($("#gptModeConfirmText")) $("#gptModeConfirmText").value = profile.confirmText || "1";
-  if ($("#gptModeCopyPrompt")) $("#gptModeCopyPrompt").value = profile.copyPrompt || "给我一份小红书文案";
   if ($("#gptModeProfileLabel")) $("#gptModeProfileLabel").textContent = `${GPT_MODE_DEFINITIONS[key].label} · 右键可修改、重命名或删除配置`;
+  renderGptModeWorkflow();
+  // Set startBehavior value after renderGptModeWorkflow rebuilds the DOM
+  if ($("#gptModeStartBehavior")) $("#gptModeStartBehavior").value = profile.useCurrentSession === false ? "inject" : "current";
+  updateGptModeHint(key);
+  updateGptModeInfoPopover(key);
+  updateModeQuickTabs(key);
+}
+function updateModeQuickTabs(key) {
+  const tabs = document.querySelectorAll("#gptModeQuickTabs .mode-quick-tab");
+  const activeKey = key || activeGptModeKey();
+  tabs.forEach((tab) => {
+    const isActive = tab.dataset.mode === activeKey;
+    tab.classList.toggle("active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
+  });
+}
+function updateGptModeHint(key) {
+  const hint = $("#gptModeHint");
+  if (!hint) return;
+  const def = GPT_MODE_DEFINITIONS[key || activeGptModeKey()];
+  if (!def) return;
+  hint.textContent = def.description || "";
+}
+function updateGptModeInfoPopover(key) {
+  const popover = $("#gptModeInfoPopover");
+  if (!popover) return;
+  const def = GPT_MODE_DEFINITIONS[key || activeGptModeKey()];
+  if (!def) return;
+  popover.innerHTML = `<strong>${def.label}</strong>${def.description || ""}`;
 }
 function saveGptModeProfileFromUi() {
-  const key = activeGptModeKey();
+  const key = activeSettingsModeKey();
   const current = gptModeProfiles[key] || {};
+  const workflow = validateGptWorkflowSteps(readGptModeWorkflowFromUi());
+  if (!workflow.ok) {
+    showWorkbenchAssistantBubble(`当前流程不能保存：${workflow.error}`, { duration: 5200 });
+    return;
+  }
+  const confirmStep = workflow.steps.find((step) => step.action === "send-confirm");
+  const copyStep = workflow.steps.find((step) => step.action === "request-copy");
   gptModeProfiles[key] = {
     ...current,
     name: String($("#gptModeProfileName")?.value || GPT_MODE_DEFINITIONS[key].defaultName).trim() || GPT_MODE_DEFINITIONS[key].defaultName,
     useCurrentSession: $("#gptModeStartBehavior")?.value !== "inject",
-    confirmText: String($("#gptModeConfirmText")?.value || "1").trim() || "1",
-    copyPrompt: String($("#gptModeCopyPrompt")?.value || "给我一份小红书文案").trim() || "给我一份小红书文案"
+    confirmText: String(confirmStep?.text || "1").trim() || "1",
+    copyPrompt: String(copyStep?.text || "给我一份小红书文案").trim() || "给我一份小红书文案",
+    steps: workflow.steps
   };
   saveGptModeProfiles();
-  applyGptModeProfile(key);
-  gptAutoSettings.mode = key;
+  // Do NOT change the actual production mode — only save settings for the previewed mode
+  if (key === activeGptModeKey()) applyGptModeProfile(key);
   saveGptAutoSettings();
-  renderGptAutoSettings();
   renderGptModeProfile();
-  updateGptTestQueueStatus("当前生产模式设置已保存；新任务会使用这套流程");
-  toast("当前模式设置已保存");
+  updateGptTestQueueStatus(`${gptModeProfiles[key]?.name || GPT_MODE_DEFINITIONS[key].defaultName} 设置已保存`);
+  toast("模式设置已保存");
 }
 // Fallback guard for a browser profile that has no trusted conversation yet.
 // The user supplied the full V3.6 prompt as the permanent master rule; this
@@ -205,7 +623,7 @@ function configuredGptAccountIds() {
 
 function availableMultiWindowAccounts() {
   const configured = configuredGptAccountIds();
-  return gptAccounts.filter((account) => !account.hidden && (!configured.size || configured.has(account.id)));
+  return gptAccounts.filter((account) => !account.hidden && !account.disabled && (!configured.size || configured.has(account.id)));
 }
 
 function gptAccountNeedsMasterPrompt(account = {}) {
@@ -218,7 +636,11 @@ function gptAccountNeedsMasterPrompt(account = {}) {
 
 function promptForNewGptSession(prompt = "", account = {}) {
   if (!gptAccountNeedsMasterPrompt(account)) return prompt;
-  return `${GPT_V36_MASTER_PROMPT}\n\n${prompt}`.trim();
+  const extraRules = String(gptAutoSettings?.extraPromptRules || "").trim();
+  const master = extraRules
+    ? `${GPT_V36_MASTER_PROMPT}\n\n${extraRules}`
+    : GPT_V36_MASTER_PROMPT;
+  return `${master}\n\n${prompt}`.trim();
 }
 
 function persistGptMultiRun(patch = {}) {
@@ -270,7 +692,7 @@ function persistGptQueue() {
 }
 
 function isContinuousGptProductionArmed() {
-  return ["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))
+  return isContinuousGptMode()
     && localStorage.getItem(GPT_CONTINUOUS_RUN_STORAGE_KEY) === "true";
 }
 
@@ -283,8 +705,30 @@ function currentGptQueueIntegrityBlock() {
   const task = gptTestQueue[gptTestQueueIndex];
   if (!task || task._status === "completed") return null;
   const code = String(task._errorCode || "");
-  if (!["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "IMAGE_COUNT_UNCERTAIN", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(code)) return null;
+  if (!["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "UPLOAD_LIMIT_SIGNAL", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "IMAGE_COUNT_UNCERTAIN", "PLAN_PARSE_FAILED", "PLAN_NOT_COMPLETE", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(code)) return null;
   return task;
+}
+
+// A continuous window may safely retry transport/readiness failures, but it
+// must stop at an attachment conflict, an ambiguous reply, a low-output
+// quota signal, or a script-generated result.  Those boundaries require the
+// current reply/composer to be inspected instead of blindly sending again.
+function isTransientGptWindowFailure(errorOrResult = {}) {
+  const code = String(errorOrResult?.errorCode || errorOrResult?.code || "");
+  const message = String(errorOrResult?.message || errorOrResult?.detail || errorOrResult?.error || errorOrResult || "");
+  if (!code && !message) return false;
+  if ([
+    "LOCAL_BRIDGE_FETCH_FAILED",
+    "ATTACHMENT_UPLOAD_NOT_READY",
+    "WINDOW_STAGE_PENDING",
+    "WEB_RESPONSE_IN_FLIGHT",
+    "GPT_PAGE_NOT_READY",
+    "GPT_PAGE_LOAD_TIMEOUT",
+    "EXTENSION_NOT_READY",
+    "COMPOSER_NOT_READY"
+  ].includes(code)) return true;
+  if (/(?:网页尚未就绪|网页状态没有完成确认|本地工作台连接失败|连接失败|网络错误|Failed to fetch|fetch failed|暂时不可用|正在准备 GPT 网页|页面仍在加载|响应仍在生成|工作台桥接|扩展尚未就绪|GPT 网页刷新失败)/i.test(message)) return true;
+  return false;
 }
 
 function restoreGptQueue() {
@@ -329,10 +773,16 @@ function restoreGptQueue() {
         : task.autoOptions
     }));
     gptTestQueueIndex = Math.max(0, Math.min(saved.tasks.length, Number(saved.index || 0)));
+    const hadInterruptedTask = gptTestQueue.some((task) => task._status === "running");
     gptTestQueue.forEach((task) => {
       if (task._status === "running") task._status = "paused";
     });
-    gptQueuePaused = gptTestQueueIndex < gptTestQueue.length;
+    // A persisted pause is an explicit safety boundary. Do not let the
+    // continuous scheduler reinterpret it as permission to upload the next
+    // post during startup. A renderer that died mid-task is also paused until
+    // the operator resumes from its checkpoint, so the web page can never
+    // silently race ahead after an update/reload.
+    gptQueuePaused = Boolean(saved.paused || hadInterruptedTask);
     if (gptQueuePaused) {
       // Rehydrate the retry affordance as well as the queue itself.  After a
       // restart the old code restored the paused task but left
@@ -363,8 +813,13 @@ function loadGptAccounts() {
       quotaGroup: String(item.quotaGroup || item.id),
       hidden: Boolean(item.hidden),
       lastUrl: String(item.lastUrl || ""),
+      lastBrowserUrl: String(item.lastBrowserUrl || item.lastUrl || ""),
       lastOpenedAt: String(item.lastOpenedAt || ""),
-      createdAt: String(item.createdAt || "")
+      createdAt: String(item.createdAt || ""),
+      // Per-window production mode: each account window remembers its own
+      // mode (manual / automatic / single / rotate).  Undefined falls back
+      // to the global gptAutoSettings.mode for backward compatibility.
+      mode: item.mode ? normalizeGptProductionMode(item.mode) : undefined
     }));
   } catch {
     // Fall back to the first isolated account.
@@ -421,14 +876,20 @@ async function hydrateGptBrowserProfiles() {
         }).catch(() => {});
       }
     }
+    // Preserve per-window mode from localStorage when syncing Electron
+    // profiles.  The mode is a UI-only field; the native profile store does
+    // not carry it, so we merge it back from the previously saved accounts.
+    const previousModes = new Map(gptAccounts.map((item) => [item.id, item.mode]));
     gptAccounts = (state.profiles || []).map((profile, index) => ({
       id: String(profile.id),
       name: (/^浏览器\s*\d+$/i.test(String(profile.name || "")) ? `账号窗口 ${index + 1}` : String(profile.name || `账号窗口 ${index + 1}`)),
       quotaGroup: String(profile.quotaGroup || profile.id),
       hidden: Boolean(profile.hidden),
       lastUrl: String(profile.lastUrl || ""),
+      lastBrowserUrl: String(profile.lastBrowserUrl || profile.lastUrl || ""),
       lastOpenedAt: String(profile.lastOpenedAt || ""),
-      createdAt: String(profile.createdAt || "")
+      createdAt: String(profile.createdAt || ""),
+      mode: previousModes.has(String(profile.id)) ? previousModes.get(String(profile.id)) : undefined
     }));
     activeGptAccountId = gptAccounts.some((profile) => profile.id === state.activeId && !profile.hidden)
       ? state.activeId
@@ -485,7 +946,8 @@ function loadGptAutoSettings() {
     continuousAutoStart: true,
     continuousWorkHoursEnabled: true,
     continuousWorkStart: "07:00",
-    continuousWorkEnd: "02:00"
+    continuousWorkEnd: "02:00",
+    extraPromptRules: ""
   };
   try {
     const loaded = {
@@ -516,10 +978,8 @@ function renderGptAutoSettings() {
   values.mode = mode;
   applyGptModeProfile(mode);
   if ($("#gptProductionMode")) $("#gptProductionMode").value = mode;
-  if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = mode;
-  if ($("#gptAutoConfirmEnabled")) $("#gptAutoConfirmEnabled").checked = values.autoConfirm !== false;
-  if ($("#gptAutoCopyEnabled")) $("#gptAutoCopyEnabled").checked = values.autoCopy !== false;
-  if ($("#gptAutoPackageEnabled")) $("#gptAutoPackageEnabled").checked = values.autoPackage !== false;
+  const previewMode = gptSettingsPreviewMode || mode;
+  if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = previewMode;
   if ($("#gptAutoArchiveEnabled")) $("#gptAutoArchiveEnabled").checked = values.autoArchive !== false;
   if ($("#gptQuotaReminderEnabled")) $("#gptQuotaReminderEnabled").checked = values.quotaReminderEnabled !== false;
   if ($("#gptAutoMinDelay")) $("#gptAutoMinDelay").value = values.minDelaySeconds;
@@ -531,8 +991,6 @@ function renderGptAutoSettings() {
   if ($("#gptGenerationLimit")) $("#gptGenerationLimit").value = values.generationLimit;
   if ($("#gptQuotaWindowHours")) $("#gptQuotaWindowHours").value = values.windowHours;
   if ($("#gptMinimumImageCount")) $("#gptMinimumImageCount").value = values.minimumImageCount;
-  if ($("#gptConfirmText")) $("#gptConfirmText").value = values.confirmText;
-  if ($("#gptCopyPrompt")) $("#gptCopyPrompt").value = values.copyPrompt;
   if ($("#gptIdleUnloadMinutes")) $("#gptIdleUnloadMinutes").value = values.idleUnloadMinutes;
   if ($("#gptScheduledEnabled")) $("#gptScheduledEnabled").checked = Boolean(values.scheduledEnabled);
   if ($("#gptScheduledTime")) $("#gptScheduledTime").value = values.scheduledTime || "09:30";
@@ -547,6 +1005,11 @@ function renderGptAutoSettings() {
   if ($("#gptProductRoot")) $("#gptProductRoot").value = values.productRoot;
   if ($("#gptPromptLibraryEnabled")) $("#gptPromptLibraryEnabled").checked = values.promptLibraryEnabled !== false;
   if ($("#gptMessageDownloadsEnabled")) $("#gptMessageDownloadsEnabled").checked = values.messageDownloadsEnabled !== false;
+  // Show the hardcoded V3.6 master prompt in a read-only textarea so the user
+  // can see what gets auto-injected into new sessions.  The extra rules field
+  // is editable and persisted alongside the master prompt at injection time.
+  if ($("#gptMasterPromptRules")) $("#gptMasterPromptRules").value = GPT_V36_MASTER_PROMPT;
+  if ($("#gptExtraPromptRules")) $("#gptExtraPromptRules").value = values.extraPromptRules || "";
   renderGptModeProfile();
   renderGptBrowserManager();
 }
@@ -554,13 +1017,51 @@ function renderGptAutoSettings() {
 function saveGptAutoSettings() {
   const minDelay = Math.max(5, Number($("#gptAutoMinDelay")?.value || 25));
   const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
-  const selectedMode = activePageSettings === "gptAuto" ? $("#gptProductionModeSetting")?.value : $("#gptProductionMode")?.value;
-  const normalizedMode = normalizeGptProductionMode(selectedMode || gptAutoSettings.mode);
+  // Profile key = previewed mode (what the user is editing in settings panel);
+  // actualMode = real production mode (must NOT change just because user is previewing).
+  const profileKey = activeSettingsModeKey();
+  const actualMode = activeGptModeKey();
+  // ── Workflow steps are the single source of truth ──
+  // Read from the UI editor if the settings panel is open; otherwise keep stored steps.
+  const workflowDraft = readGptModeWorkflowFromUi();
+  const profileSteps = normalizeGptWorkflowSteps(workflowDraft.length
+    ? workflowDraft
+    : gptModeProfiles[profileKey]?.steps);
+  const confirmStep = profileSteps.find((s) => s.action === "send-confirm");
+  const copyStep = profileSteps.find((s) => s.action === "request-copy");
+  const waitCopyStep = profileSteps.find((s) => s.action === "wait-copy");
+  const packageStep = profileSteps.find((s) => s.action === "package-archive");
+  const derivedConfirmText = String(confirmStep?.text || "1").trim() || "1";
+  const derivedCopyPrompt = String(copyStep?.text || "给我一份小红书文案").trim() || "给我一份小红书文案";
+  // Only derive production flags from the ACTUAL mode's workflow, not the previewed mode
+  const actualSteps = normalizeGptWorkflowSteps(gptModeProfiles[actualMode]?.steps || defaultGptWorkflowSteps());
+  const actualConfirmStep = actualSteps.find((s) => s.action === "send-confirm");
+  const actualCopyStep = actualSteps.find((s) => s.action === "request-copy");
+  const actualWaitCopyStep = actualSteps.find((s) => s.action === "wait-copy");
+  const actualPackageStep = actualSteps.find((s) => s.action === "package-archive");
+  const derivedAutoConfirm = actualConfirmStep?.enabled !== false;
+  const derivedAutoCopy = actualCopyStep?.enabled !== false && actualWaitCopyStep?.enabled !== false;
+  const derivedAutoPackage = actualPackageStep?.enabled !== false;
+  // Read mode name and start behavior from the UI if available
+  const profileName = String($("#gptModeProfileName")?.value || "").trim();
+  const useCurrentSession = $("#gptModeStartBehavior")?.value !== "inject";
+  gptModeProfiles[profileKey] = {
+    ...(gptModeProfiles[profileKey] || {}),
+    ...(profileName ? { name: profileName } : {}),
+    useCurrentSession,
+    confirmText: derivedConfirmText,
+    copyPrompt: derivedCopyPrompt,
+    steps: profileSteps
+  };
+  saveGptModeProfiles();
+  const actualConfirmText = String(actualConfirmStep?.text || "1").trim() || "1";
+  const actualCopyPrompt = String(actualCopyStep?.text || "给我一份小红书文案").trim() || "给我一份小红书文案";
   gptAutoSettings = {
-    mode: normalizedMode,
-    autoConfirm: $("#gptAutoConfirmEnabled")?.checked !== false,
-    autoCopy: $("#gptAutoCopyEnabled")?.checked !== false,
-    autoPackage: $("#gptAutoPackageEnabled")?.checked !== false,
+    mode: actualMode,
+    autoConfirm: derivedAutoConfirm,
+    autoCopy: derivedAutoCopy,
+    autoPackage: derivedAutoPackage,
+    workflowSteps: actualSteps,
     pauseOnFailure: false,
     autoArchive: $("#gptAutoArchiveEnabled")?.checked !== false,
     quotaReminderEnabled: $("#gptQuotaReminderEnabled")?.checked !== false,
@@ -574,8 +1075,8 @@ function saveGptAutoSettings() {
     uploadLimit: Math.max(1, Number($("#gptUploadLimit")?.value || 80)),
     generationLimit: Math.max(1, Number($("#gptGenerationLimit")?.value || 50)),
     windowHours: Math.max(1, Number($("#gptQuotaWindowHours")?.value || 3)),
-    confirmText: String($("#gptConfirmText")?.value || "1").trim() || "1",
-    copyPrompt: String($("#gptCopyPrompt")?.value || "给我一份小红书文案").trim() || "给我一份小红书文案",
+    confirmText: actualConfirmText,
+    copyPrompt: actualCopyPrompt,
     minimumImageCount: Math.max(1, Number($("#gptMinimumImageCount")?.value || 4)),
     idleUnloadMinutes: Math.max(5, Number($("#gptIdleUnloadMinutes")?.value || 30)),
     downloadRoot: String($("#gptDownloadRoot")?.value || "D:\\Download").trim(),
@@ -590,15 +1091,10 @@ function saveGptAutoSettings() {
     continuousAutoStart: $("#gptContinuousAutoStart")?.checked !== false,
     continuousWorkHoursEnabled: $("#gptContinuousWorkHoursEnabled")?.checked !== false,
     continuousWorkStart: String($("#gptContinuousWorkStart")?.value || "07:00"),
-    continuousWorkEnd: String($("#gptContinuousWorkEnd")?.value || "02:00")
+    continuousWorkEnd: String($("#gptContinuousWorkEnd")?.value || "02:00"),
+    extraPromptRules: String($("#gptExtraPromptRules")?.value || "").trim()
   };
-  gptModeProfiles[normalizedMode] = {
-    ...(gptModeProfiles[normalizedMode] || {}),
-    confirmText: gptAutoSettings.confirmText,
-    copyPrompt: gptAutoSettings.copyPrompt
-  };
-  saveGptModeProfiles();
-  gptAutoSettings.mode = normalizedMode;
+  gptAutoSettings.mode = actualMode;
   localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
   window.gptWorkbench?.setLaunchAtLogin?.(gptAutoSettings.launchAtLogin !== false).catch(() => {});
   renderGptAutoSettings();
@@ -631,6 +1127,7 @@ let materialTreeInitialized = false;
 let materialTreeView = window.localStorage.getItem("materialTreeView") === "icons" ? "icons" : "list";
 let collectionViewMode = window.localStorage.getItem("collectionViewMode") === "grid" ? "grid" : "list";
 let activePageSettings = "";
+let gptSettingsPreviewMode = null;
 const notifiedTransferStates = new Map();
 const TRANSFER_TASK_VISIBLE_MS = 3 * 60 * 1000;
 const transferDismissTimers = new Map();
@@ -837,8 +1334,18 @@ function showContextMenu(x, y) {
   const isProductionMode = contextMenuTarget.kind === "gpt-production-mode";
   if ($("#contextOpenFolder")) $("#contextOpenFolder").hidden = isBrowserProfile || isProductionMode;
   if ($("#contextCopyPath")) $("#contextCopyPath").hidden = isBrowserProfile || isProductionMode;
-  if ($("#contextSetFolder")) $("#contextSetFolder").hidden = !isFolderBinding;
+  if ($("#contextSetFolder")) $("#contextSetFolder").hidden = !isFolderBinding || isBrowserProfile;
   if ($("#contextRename")) $("#contextRename").hidden = isFolderBinding;
+  const toggleDisableBtn = $("#contextToggleDisable");
+  if (toggleDisableBtn) {
+    toggleDisableBtn.hidden = !isBrowserProfile;
+    if (isBrowserProfile) {
+      const profile = gptAccounts.find((item) => item.id === contextMenuTarget.accountId);
+      toggleDisableBtn.textContent = profile?.disabled ? "启用账号窗口" : "暂时禁用";
+      toggleDisableBtn.classList.toggle("danger-action", !profile?.disabled);
+    }
+  }
+  if ($("#contextRemoveAccount")) $("#contextRemoveAccount").hidden = !isBrowserProfile;
   if ($("#contextTrashFolder")) $("#contextTrashFolder").hidden = !isEditableFolder;
   if ($("#contextModeSettings")) $("#contextModeSettings").hidden = !isProductionMode;
   if ($("#contextDeleteMode")) $("#contextDeleteMode").hidden = !isProductionMode;
@@ -846,10 +1353,29 @@ function showContextMenu(x, y) {
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
   menu.classList.add("show");
+  // WebContentsView 是独立合成层，DOM z-index 无法盖住它。GPT 视图活动时
+  // 先隐藏原生视图，否则右键菜单被 GPT 页面遮挡看不见。
+  const gptActive = $("#gptProductionTestView")?.classList.contains("active");
+  if (gptActive && window.gptWorkbench?.available && !contextMenuGptHidden) {
+    contextMenuGptHidden = true;
+    window.gptWorkbench.hide?.().catch(() => {});
+  }
 }
 
 function hideContextMenu() {
   $("#contextMenu")?.classList.remove("show");
+  if (contextMenuGptHidden) {
+    contextMenuGptHidden = false;
+    // 延迟恢复：如果紧接着打开了对话框（重命名/删除等），让对话框自己管理
+    // hide/restore；否则恢复 GPT 原生视图。延迟 120ms 让 click handler 有时间
+    // 触发 openSystemDialog（它会自己 hide GPT 视图）。
+    setTimeout(() => {
+      if (!document.querySelector(".system-dialog-backdrop")
+        && !$("#contextMenu")?.classList.contains("show")) {
+        restoreEmbeddedGptView();
+      }
+    }, 120);
+  }
 }
 
 function enhanceSelect(selectId) {
@@ -876,7 +1402,12 @@ function enhanceSelect(selectId) {
     trigger.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       const selected = select.selectedOptions[0] || select.options[0];
+      const isProductionMode = select.id === "gptProductionMode" || select.id === "gptProductionModeSetting";
       contextMenuTarget = {
+        ...(isProductionMode ? {
+          kind: "gpt-production-mode",
+          mode: normalizeGptProductionMode(selected?.value || "manual")
+        } : {}),
         label: selected?.textContent || "",
         path: selected?.dataset.path || selected?.value || "",
         selectId: select.id
@@ -1182,7 +1713,7 @@ async function savePageSettingsFromUi(section) {
   renderDistributionReserveAlert();
 }
 
-function openPageSettings(section) {
+async function openPageSettings(section) {
   activePageSettings = section;
   $("#pageSettingsTitle").textContent = section === "production"
     ? "内容制作设置"
@@ -1190,17 +1721,27 @@ function openPageSettings(section) {
   $("#productionPageSettings").hidden = section !== "production";
   $("#distributionPageSettings").hidden = section !== "distribution";
   if ($("#gptAutoPageSettings")) $("#gptAutoPageSettings").hidden = section !== "gptAuto";
+  // Hide the native GPT view BEFORE revealing the settings backdrop.  The
+  // WebContentsView is a native compositor layer that paints above all DOM;
+  // if we fire-and-forget the hide, the settings panel briefly appears
+  // underneath the still-visible GPT page.
+  if ($("#gptProductionTestView")?.classList.contains("active")) {
+    await window.gptWorkbench?.hide?.().catch(() => {});
+  }
   $("#pageSettingsBackdrop").hidden = false;
   document.body.classList.add("page-settings-open");
-  if ($("#gptProductionTestView")?.classList.contains("active")) window.gptWorkbench?.hide?.().catch(() => {});
   renderPageSettingsValues();
-  if (section === "gptAuto") renderGptAutoSettings();
+  if (section === "gptAuto") {
+    gptSettingsPreviewMode = normalizeGptProductionMode(gptAutoSettings.mode);
+    renderGptAutoSettings();
+  }
 }
 
 function closePageSettings() {
   $("#pageSettingsBackdrop").hidden = true;
   document.body.classList.remove("page-settings-open");
   activePageSettings = "";
+  gptSettingsPreviewMode = null;
   if ($("#gptProductionTestView")?.classList.contains("active")) restoreEmbeddedGptView();
 }
 
@@ -2064,7 +2605,7 @@ async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8
 }
 
 async function prepareAllDayGptQueue() {
-  if (!["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)) || gptAutoRunning) return false;
+  if (!isContinuousGptMode() || gptAutoRunning) return false;
   return prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "全天自动");
 }
 
@@ -2103,6 +2644,11 @@ function getGptContinuousWorkWindow(now = new Date()) {
 function scheduleContinuousGptProduction(delayMs = 2500) {
   if (gptContinuousLaunchTimer) return;
   if (!isContinuousGptProductionArmed() || gptAutoRunning || gptAutoPaused) return;
+  if (gptWindowIsUserStopped(activeGptAccountId) || gptWindowIsUserPaused(activeGptAccountId)) return;
+  // A persisted pause is an explicit operator boundary.  The scheduler must
+  // never reinterpret an unfinished queue as permission to upload the next
+  // post, especially after a renderer/Electron restart.
+  if (gptQueuePaused) return;
   const integrityBlock = currentGptQueueIntegrityBlock();
   if (integrityBlock) {
     gptQueuePaused = true;
@@ -2122,7 +2668,7 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
     return;
   }
 
-  const candidateAccounts = (normalizeGptProductionMode(gptAutoSettings.mode) === "multi"
+  const candidateAccounts = (isRotatingGptMode()
     ? availableMultiWindowAccounts()
     : gptAccounts.filter((item) => item.id === activeGptAccountId));
   const cycleStates = candidateAccounts.map((account) => ({
@@ -2143,6 +2689,7 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
   gptContinuousLaunchTimer = setTimeout(async () => {
     gptContinuousLaunchTimer = null;
     if (!isContinuousGptProductionArmed() || gptAutoRunning || gptAutoPaused) return;
+    if (gptWindowIsUserStopped(activeGptAccountId) || gptWindowIsUserPaused(activeGptAccountId)) return;
     // The queue index is only a display cursor. A multi-window run advances
     // workers independently, so pending status—not the cursor—decides whether
     // another batch is needed after a restart or quota pause.
@@ -2194,11 +2741,12 @@ async function uploadSingleItemToCurrentGpt(task, successMessage) {
     accountId: account?.id || activeGptAccountId || "account-1",
     quotaAccountId: account?.quotaGroup || account?.id || activeGptAccountId || "account-1",
     autoRun: false,
+    forceUpload: true,
     autoOptions: gptAutoSettings
   };
   showWorkbenchAssistantBubble(`正在上传：${task.name}`, { duration: 0 });
   const result = await window.gptWorkbench.sendTask(payload);
-  if (!result?.ok) throw new Error(result?.error || "GPT 没有确认附件上传完成");
+  if (!result?.ok) throw new Error(result?.detail || result?.error || "GPT 没有确认附件上传完成");
   showWorkbenchAssistantBubble(successMessage, { duration: 4200 });
   return result;
 }
@@ -2228,17 +2776,27 @@ function buildGptTestTask(entry, template = null) {
   // the material attachment.  The explicit “inject” choice carries the
   // compact V3.6 rules even when no physical template folder is selected.
   const useCurrentSession = gptAutoSettings.useCurrentSession !== false && !template;
-  const prompt = useCurrentSession ? "" : [
-    template?.kind === "online"
-      ? `继续使用当前链接会话中已经沉淀好的「${template.name}」母版。`
-      : template
-        ? `继续使用当前会话刚初始化的「${template.name}」母版。`
-        : GPT_V36_MASTER_PROMPT,
-    "本次附件全部是待迁移素材和 TXT 参考内容，不是新模板。",
-    `当前素材文件夹：${entry.item.name}`,
-    "请读取全部附件，不要省略 TXT。先严格按既定格式输出逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。",
-    extra ? `本次补充要求：\n${extra}` : ""
-  ].filter(Boolean).join("\n\n");
+  const extraRules = String(gptAutoSettings?.extraPromptRules || "").trim();
+  const masterWithExtra = extraRules
+    ? `${GPT_V36_MASTER_PROMPT}\n\n${extraRules}`
+    : GPT_V36_MASTER_PROMPT;
+  // Check if the upload-material workflow step has a custom prompt configured
+  const activeProfile = gptModeProfiles[activeGptModeKey()] || gptModeProfiles.manual;
+  const uploadStep = (activeProfile.steps || []).find((step) => step.action === "upload-material");
+  const uploadPromptText = String(uploadStep?.text || "").trim();
+  const prompt = uploadPromptText
+    ? uploadPromptText
+    : useCurrentSession ? "" : [
+        template?.kind === "online"
+          ? `继续使用当前链接会话中已经沉淀好的「${template.name}」母版。`
+          : template
+            ? `继续使用当前会话刚初始化的「${template.name}」母版。`
+            : masterWithExtra,
+        "本次附件全部是待迁移素材和 TXT 参考内容，不是新模板。",
+        `当前素材文件夹：${entry.item.name}`,
+        "请读取全部附件，不要省略 TXT。先严格按既定格式输出逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。",
+        extra ? `本次补充要求：\n${extra}` : ""
+      ].filter(Boolean).join("\n\n");
   return {
     requestId: `gpt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     taskType: "material",
@@ -2288,26 +2846,95 @@ function updateGptAssistantBubble(message = "") {
   const materials = gptTestSelectedMaterials.size;
   const templates = gptTestSelectedTemplates.size;
   const works = gptProductionWorkCount();
-  const imageUploads = selectedGptTestEntries().reduce((total, entry) => total + Number(entry.item.imageCount || 0), 0)
-    * Math.max(1, templates)
-    + selectedGptTestTemplates().reduce((total, template) => total + Number(template.imageCount || 0), 0);
-  const quota = gptQuotaSnapshot?.status;
-  const globalMessage = message || `已选 ${materials} 个素材、${templates} 个模板，预计 ${works} 个作品`;
-  const quotaMessage = `预计上传 ${imageUploads} 张图${quota ? ` · 近${quota.settings?.windowHours || 3}小时上传 ${quota.uploaded}/${quota.settings?.uploadLimit || 80}，生成 ${quota.generated}/${quota.settings?.generationLimit || 50}` : ""}`;
-  const combinedMessage = `${globalMessage} · ${quotaMessage}`;
+  const account = gptAccounts.find((item) => item.id === String(activeGptAccountId));
+  const quota = (gptQuotaSnapshots.get(String(activeGptAccountId)) || gptQuotaSnapshot)?.status;
+  const runtime = readGptWindowRuntime(activeGptAccountId);
+  const globalMessage = message || (materials || templates
+    ? `已选 ${materials} 个素材、${templates} 个模板，预计 ${works} 个作品`
+    : "");
+  const setNumber = Number(runtime.currentSetNumber || 0);
+  const stage = String(runtime.currentStage || "").trim();
+  const windowMessage = quota
+    ? `${account?.name || "当前账号窗口"}：近${quota.settings?.windowHours || 3}小时上传 ${quota.uploaded || 0} 张、已生图 ${quota.generated || 0} 张`
+    : `${account?.name || "当前账号窗口"}：近3小时用量等待同步`;
+  // Continuous mode status: show armed state, next probe time and work window
+  let continuousStatus = "";
+  if (isContinuousGptMode()) {
+    const armed = isContinuousGptProductionArmed();
+    const workWindow = getGptContinuousWorkWindow();
+    const inWindow = workWindow.allowed;
+    const workStart = gptAutoSettings.continuousWorkStart || "07:00";
+    const workEnd = gptAutoSettings.continuousWorkEnd || "02:00";
+    const nextProbe = Number(runtime.nextProbeAt || 0);
+    if (runtime.status === "waiting-quota" && nextProbe > 0) {
+      const waitMs = Math.max(0, nextProbe - Date.now());
+      const waitMin = Math.ceil(waitMs / 60_000);
+      const waitText = waitMin >= 60 ? `${Math.floor(waitMin / 60)}小时${waitMin % 60 || ""}分钟` : `${waitMin}分钟`;
+      continuousStatus = ` · 等待额度恢复（约${waitText}后自动探测）`;
+    } else if (!inWindow) {
+      continuousStatus = ` · 工作时段外（${workStart}-${workEnd}自动开始）`;
+    } else if (armed && runtime.status === "idle") {
+      continuousStatus = " · 永不停歇已就绪，等待启动";
+    } else if (armed) {
+      continuousStatus = " · 永不停歇运行中";
+    } else {
+      continuousStatus = " · 永不停歇未启动";
+    }
+  }
+  const taskMessage = setNumber > 0
+    ? ` · 当前第 ${setNumber} 套${stage ? ` · ${stage}` : ""}${/等待.*图|生图/i.test(stage) && runtime.expectedImages
+      ? ` · 正在等待第 ${Math.min(runtime.expectedImages, Number(runtime.generatedImages || 0) + 1)} 张/${runtime.expectedImages} 张`
+      : runtime.generatedImages ? ` · 本套已生成 ${runtime.generatedImages} 张` : ""}${continuousStatus}`
+    : continuousStatus;
+  // Do not keep the old "预计上传 N 张" estimate in the persistent cat
+  // message.  It describes a selection, not the account's actual usage.
+  const combinedMessage = [globalMessage, windowMessage + taskMessage].filter(Boolean).join(" · ");
   if (combinedMessage !== lastAssistantBubbleMessage) {
     lastAssistantBubbleMessage = combinedMessage;
     showWorkbenchAssistantBubble(combinedMessage, message ? { persistent: true } : { transient: true, duration: 3600 });
   }
 }
 
-async function refreshGptQuota(accountId = activeGptAccountId) {
-  try {
-    const result = await api(`/api/gpt-production/quota?account=${encodeURIComponent(accountId)}`);
-    gptQuotaSnapshot = { status: result?.quota || result };
-  } catch {
-    gptQuotaSnapshot = null;
+async function refreshGptQuota(accountId = activeGptAccountId, options = {}) {
+  const key = String(accountId || activeGptAccountId);
+  const syncBrowser = options.syncBrowser !== false;
+  const quotaKey = String(gptAccounts.find((item) => item.id === key)?.quotaGroup || key);
+  // Switches must paint the selected account's snapshot immediately.  Never
+  // leave the previous account's quota object as a fallback while the local
+  // endpoint is being refreshed; that is what made a newly selected window
+  // appear to have blank/zero usage.
+  if (key === String(activeGptAccountId)) {
+    gptQuotaSnapshot = gptQuotaSnapshots.get(key) || null;
   }
+  try {
+    const result = await api(`/api/gpt-production/quota?account=${encodeURIComponent(quotaKey)}`);
+    const snapshot = { status: result?.quota || result, accountId: key };
+    gptQuotaSnapshots.set(key, snapshot);
+    if (key === String(activeGptAccountId)) gptQuotaSnapshot = snapshot;
+  } catch {
+    if (key === String(activeGptAccountId)) gptQuotaSnapshot = null;
+  }
+  if (key === String(activeGptAccountId) && syncBrowser && window.gptWorkbench?.available) {
+    const browserState = await window.gptWorkbench.status(key).catch(() => null);
+    if (browserState) {
+      syncGptBrowserAddress(browserState.url);
+      $("#gptBrowserBackBtn")?.toggleAttribute("disabled", !browserState.canGoBack);
+      $("#gptBrowserForwardBtn")?.toggleAttribute("disabled", !browserState.canGoForward);
+    }
+  }
+  if (key === String(activeGptAccountId)) updateGptAssistantBubble();
+}
+
+// Extension quota events are written after the real attachment preview or
+// generated-image detection.  Polling the local ledger keeps the visible cat
+// in sync even when the embedded page is busy generating and cannot deliver a
+// renderer callback.  This is deliberately lightweight and account-scoped.
+function startGptQuotaUsageRefresh() {
+  if (window.__tbGptQuotaRefreshTimer) return;
+  window.__tbGptQuotaRefreshTimer = window.setInterval(() => {
+    if (!activeGptAccountId || document.hidden) return;
+    refreshGptQuota(activeGptAccountId, { syncBrowser: false }).catch(() => {});
+  }, 4_000);
 }
 
 async function ensureGptTaskQuota(task, quotaAccountId = activeGptAccountId, options = {}) {
@@ -2339,8 +2966,16 @@ async function ensureGptTaskQuota(task, quotaAccountId = activeGptAccountId, opt
 }
 
 function isActualGptLimitMessage(message = "") {
-  return /(达到|已达|超出|没有更多|用完|不足|稍后再试|请在.*后|try again later|rate limit|upload limit|generation limit|too many requests)/i.test(String(message || ""))
+  return /(达到|已达|超出|没有更多|用完|不足|上限|上传未完整|附件尚未全部就绪|稍后再试|请在.*后|try again later|rate limit|upload limit|generation limit|too many requests)/i.test(String(message || ""))
     && /(额度|限制|上传|生成|图片|请求|limit|quota|rate)/i.test(String(message || ""));
+}
+
+function isGptRetryLimitSignal(message = "", task = {}) {
+  const text = String(message || "");
+  if (!/(出了点问题|请重试|something went wrong|try again)/i.test(text)) return false;
+  if (/(网络|断网|连接失败|超时|timeout|network|offline|验证码|验证|登录)/i.test(text)) return false;
+  const context = `${task?._stage || ""} ${task?.stage || ""} ${text}`;
+  return task?.taskType === "material" || /(等待计划|等待图片|生成图片|生图|出图|图片|等待文案|生成)/i.test(context);
 }
 
 // A low image count is the first reliable local symptom we have seen when the
@@ -2370,6 +3005,19 @@ function recordGptQuotaConsumption(task, accountId = activeGptAccountId, kind = 
   if (!task || task.taskType !== "material") return;
   const now = Date.now();
   const state = readGptCycleState(accountId);
+  const windowMs = Math.max(1, Number(gptAutoSettings.windowHours || 3)) * 60 * 60 * 1000;
+  const knownStarts = [state.uploadCycleStartAt, state.generationCycleStartAt]
+    .map((value) => Number(value || 0)).filter(Boolean);
+  // A rolling window starts a new local production round once both previous
+  // anchors have expired.  Without this reset, the cat would keep saying
+  // "第 19 套" forever even after the account had fully cooled down.
+  if (knownStarts.length && Math.max(...knownStarts) + windowMs <= now) {
+    delete state.uploadCycleStartAt;
+    delete state.generationCycleStartAt;
+    delete state.nextUploadProbeAt;
+    delete state.nextGenerationProbeAt;
+    delete state.nextProbeAt;
+  }
   if (kind === "generation") state.generationCycleStartAt ||= now;
   else if ((task.attachments || []).some((filePath) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(filePath))) {
     state.uploadCycleStartAt ||= now;
@@ -2387,11 +3035,20 @@ function recordActualGptLimit(message, accountId = activeGptAccountId, kind = "u
   const uploadCycleStartAt = Number(previous.uploadCycleStartAt || (kind === "upload" ? now : 0)) || null;
   const generationCycleStartAt = Number(previous.generationCycleStartAt || (kind === "generation" ? now : 0)) || null;
   const windowMs = Math.max(1, Number(gptAutoSettings.windowHours || 3)) * 60 * 60 * 1000;
-  const nextUploadProbeAt = uploadCycleStartAt ? uploadCycleStartAt + windowMs : null;
-  const nextGenerationProbeAt = generationCycleStartAt ? generationCycleStartAt + windowMs : null;
+  const isRetryAfterProbe = Number(previous.probeAttempts || 0) > 0 && Number(previous.probeStartedAt || 0) > 0;
+  const retryDelayMs = (10 + Math.floor(Math.random() * 11)) * 60 * 1000;
+  const nextUploadProbeAt = isRetryAfterProbe
+    ? now + retryDelayMs
+    : uploadCycleStartAt ? uploadCycleStartAt + windowMs : null;
+  const nextGenerationProbeAt = isRetryAfterProbe
+    ? now + retryDelayMs
+    : generationCycleStartAt ? generationCycleStartAt + windowMs : null;
   const probeTimes = [nextUploadProbeAt, nextGenerationProbeAt].filter((value) => Number.isFinite(value));
   const nextProbeAt = probeTimes.length ? Math.max(...probeTimes) : null;
   const startTimes = [uploadCycleStartAt, generationCycleStartAt].filter((value) => Number.isFinite(value));
+  const accountName = gptAccounts.find((item) => item.id === accountId || item.quotaGroup === accountId)?.name || "当前账号窗口";
+  const quotaKindLabel = kind === "upload" ? "上传" : kind === "generation" ? "生图" : "上传/生图";
+  const probeText = formatGptQuotaProbeTime(nextProbeAt);
   const state = {
     ...previous,
     firstAt: Number(previous.firstAt || (startTimes.length ? Math.min(...startTimes) : now)),
@@ -2400,17 +3057,145 @@ function recordActualGptLimit(message, accountId = activeGptAccountId, kind = "u
     nextUploadProbeAt,
     nextGenerationProbeAt,
     nextProbeAt,
+    retryAfterProbe: isRetryAfterProbe,
     lastAt: now,
     message: String(message || "").slice(0, 500)
   };
   try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* private mode */ }
+  writeGptWindowRuntime(accountId, {
+    status: "waiting-quota",
+    nextProbeAt,
+    currentStage: kind === "upload" ? "上传受限" : kind === "generation" ? "生图受限" : "额度/低产出受限"
+  });
   const lowOutputSignal = isLowOutputGptLimitMessage(message);
+  const retryLimitSignal = isGptRetryLimitSignal(message, { _stage: kind === "generation" ? "生成图片" : "" });
+  const signalLabel = retryLimitSignal
+    ? "GPT 网页在出图阶段返回“出了点问题，请重试”，按触顶信号处理"
+    : lowOutputSignal
+      ? "本轮图片低于安全线，判定为触顶/降级征兆"
+      : "GPT 网页返回了真实限额提示";
+    gptQuotaPauseStatus = `${accountName}已触发${quotaKindLabel}额度/低产出上限；当前批次已安全停住，${probeText}自动重新探测（等待真实消耗后计算）。`;
   showWorkbenchAssistantBubble(
-    `${lowOutputSignal ? "本轮图片低于安全线，判定为触顶/降级征兆" : "GPT 网页返回了真实限额提示"}，已暂停当前批次，不再盲目重试。上传本轮起点：${uploadCycleStartAt ? new Date(uploadCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}；生图本轮起点：${generationCycleStartAt ? new Date(generationCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}；最晚检查：${nextProbeAt ? new Date(nextProbeAt).toLocaleString("zh-CN", { hour12: false }) : "等待真实消耗后计算"}。`,
+    `${signalLabel}：${gptQuotaPauseStatus} 上传本轮起点：${uploadCycleStartAt ? new Date(uploadCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}；生图本轮起点：${generationCycleStartAt ? new Date(generationCycleStartAt).toLocaleTimeString("zh-CN", { hour12: false }) : "尚未记录"}。`,
     { duration: 0, persistent: true, tone: "warning" }
   );
   if (nextProbeAt) scheduleGptQuotaReminder(new Date(nextProbeAt).toISOString(), accountId);
   return state;
+}
+
+function formatGptQuotaProbeTime(nextProbeAt) {
+  const timestamp = Number(nextProbeAt || 0);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "下一次探测时间待网页记录，";
+  const waitMs = Math.max(0, timestamp - Date.now());
+  const totalMinutes = Math.max(1, Math.ceil(waitMs / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const waitText = hours ? `${hours}小时${minutes ? `${minutes}分钟` : ""}` : `${minutes}分钟`;
+  const at = new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+  return `最早 ${at}（约 ${waitText} 后）`;
+}
+
+function readGptTemporaryCacheState() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(GPT_TEMPORARY_CACHE_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeGptTemporaryCacheState(state) {
+  try { localStorage.setItem(GPT_TEMPORARY_CACHE_STORAGE_KEY, JSON.stringify(state || {})); } catch { /* private mode */ }
+}
+
+function gptTemporaryCacheIntervalMs() {
+  return GPT_TEMPORARY_CACHE_INTERVAL_MS;
+}
+
+function scheduleGptTemporaryCacheMaintenance(accountId = activeGptAccountId, baseAt = Date.now()) {
+  const key = String(accountId || activeGptAccountId);
+  const state = readGptTemporaryCacheState();
+  const accountState = state[key] && typeof state[key] === "object" ? state[key] : {};
+  const now = Date.now();
+  const interval = gptTemporaryCacheIntervalMs();
+  const requestedNextAt = Number(accountState.nextAt || 0);
+  const nextAt = requestedNextAt > now ? requestedNextAt : Math.max(now + 1000, Number(baseAt || now) + interval);
+  state[key] = { ...accountState, accountId: key, nextAt, intervalMs: interval, updatedAt: now };
+  writeGptTemporaryCacheState(state);
+  clearTimeout(gptTemporaryCacheMaintenanceTimers.get(key));
+  const delay = Math.max(1000, Math.min(nextAt - now, 2_147_000_000));
+  gptTemporaryCacheMaintenanceTimers.set(key, setTimeout(() => {
+    gptTemporaryCacheMaintenanceTimers.delete(key);
+    runGptTemporaryCacheMaintenance(key).catch((error) => {
+      showWorkbenchAssistantBubble(`${gptAccounts.find((account) => account.id === key)?.name || "当前账号窗口"} 临时缓存清理失败：${error?.message || "未知错误"}`, { duration: 0, tone: "warning" });
+      scheduleGptTemporaryCacheMaintenance(key, Date.now());
+    });
+  }, delay));
+  return nextAt;
+}
+
+async function refreshGptAfterProduction(accountId = activeGptAccountId, reason = "production-complete") {
+  const key = String(accountId || activeGptAccountId);
+  if (!window.gptWorkbench?.maintenance) {
+    scheduleGptTemporaryCacheMaintenance(key, Date.now());
+    return { ok: false, accountId: key, error: "桌面 GPT 维护入口不可用" };
+  }
+  if (gptAccountRefreshPromises.has(key)) return gptAccountRefreshPromises.get(key);
+  const promise = window.gptWorkbench.maintenance({ accountId: key, clearTemporaryCache: false, reason })
+    .then((result) => {
+      scheduleGptTemporaryCacheMaintenance(key, Date.now());
+      if (!result?.ok) throw new Error(result?.detail || result?.error || "GPT 网页刷新失败");
+      return result;
+    })
+    .finally(() => gptAccountRefreshPromises.delete(key));
+  gptAccountRefreshPromises.set(key, promise);
+  return promise;
+}
+
+async function runGptTemporaryCacheMaintenance(accountId = activeGptAccountId) {
+  const key = String(accountId || activeGptAccountId);
+  const state = readGptTemporaryCacheState();
+  const accountState = state[key] && typeof state[key] === "object" ? state[key] : {};
+  // Never reload a window in the middle of an upload, generation, copy or
+  // package operation. The timer stays due and runs immediately after the
+  // current post is safely finished.
+  if (gptAutoRunning) {
+    state[key] = { ...accountState, pending: true, nextAt: Date.now() + 30_000, updatedAt: Date.now() };
+    writeGptTemporaryCacheState(state);
+    scheduleGptTemporaryCacheMaintenance(key, Date.now());
+    return { ok: false, deferred: true, accountId: key };
+  }
+  if (!window.gptWorkbench?.maintenance) throw new Error("桌面 GPT 维护入口不可用");
+  const result = await window.gptWorkbench.maintenance({
+    accountId: key,
+    clearTemporaryCache: true,
+    reason: "3h-temporary-cache"
+  });
+  if (!result?.ok) throw new Error(result?.detail || result?.error || "GPT 临时缓存清理后刷新失败");
+  const now = Date.now();
+  const nextState = {
+    ...accountState,
+    accountId: key,
+    lastClearedAt: now,
+    nextAt: now + gptTemporaryCacheIntervalMs(),
+    pending: false,
+    updatedAt: now
+  };
+  state[key] = nextState;
+  writeGptTemporaryCacheState(state);
+  scheduleGptTemporaryCacheMaintenance(key, now);
+  showWorkbenchAssistantBubble(`${gptAccounts.find((account) => account.id === key)?.name || "当前账号窗口"} 已完成 3 小时临时缓存清理并刷新网页；登录状态和 Cookie 未动。`, { duration: 5200, tone: "info" });
+  return result;
+}
+
+function restoreGptTemporaryCacheMaintenanceTimers() {
+  const state = readGptTemporaryCacheState();
+  const accountIds = new Set(gptAccounts.map((account) => account.id));
+  accountIds.add(activeGptAccountId);
+  accountIds.forEach((accountId) => {
+    const nextAt = Number(state[String(accountId)]?.nextAt || 0);
+    if (nextAt > 0) scheduleGptTemporaryCacheMaintenance(accountId, nextAt - gptTemporaryCacheIntervalMs());
+  });
 }
 
 const gptQuotaReminderTimers = new Map();
@@ -2431,10 +3216,12 @@ function resetGptCycleForAutomaticProbe(accountId, expectedProbeAt) {
     nextGenerationProbeAt: null,
     nextProbeAt: null,
     probeStartedAt: Date.now(),
+    probeAttempts: Number(state.probeAttempts || 0) + 1,
     autoResumePending: false,
     updatedAt: Date.now()
   };
   try { localStorage.setItem(gptCycleStateKey(key), JSON.stringify(nextState)); } catch { /* private mode */ }
+  writeGptWindowRuntime(key, { status: "probing", nextProbeAt: null, currentStage: "额度探测" });
   return true;
 }
 
@@ -2442,8 +3229,14 @@ async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
   const key = String(accountId || activeGptAccountId);
   const state = readGptCycleState(key);
   if (Number(state.nextProbeAt || 0) !== Number(expectedProbeAt || 0)) return;
+  const runtime = readGptWindowRuntime(gptAccounts.find((item) => item.id === key || item.quotaGroup === key)?.id || key);
+  if (runtime.stoppedByUser || runtime.pausedByUser) {
+    writeGptWindowRuntime(runtime.accountId, { status: runtime.stoppedByUser ? "stopped" : "paused", nextProbeAt: expectedProbeAt });
+    showWorkbenchAssistantBubble(`${gptAccounts.find((item) => item.id === runtime.accountId)?.name || "当前账号窗口"} 已由你${runtime.stoppedByUser ? "停止" : "暂停"}，额度已恢复但不会自动启动。`, { duration: 0 });
+    return;
+  }
   if (gptAutoSettings.mode === "manual") return;
-  if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) {
+  if (isContinuousGptMode()) {
     if (!isContinuousGptProductionArmed()) return;
     const workWindow = getGptContinuousWorkWindow();
     if (!workWindow.allowed) {
@@ -2460,7 +3253,7 @@ async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
   }
 
   let hasPendingQueue = gptTestQueueIndex < gptTestQueue.length;
-  if (!hasPendingQueue && (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)))) {
+  if (!hasPendingQueue && isContinuousGptMode()) {
     hasPendingQueue = Boolean(await prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "额度恢复自动探测"));
   }
   if (!hasPendingQueue) {
@@ -2468,13 +3261,21 @@ async function resumeGptQueueAfterQuotaProbe(accountId, expectedProbeAt) {
     return;
   }
   if (!resetGptCycleForAutomaticProbe(key, expectedProbeAt)) return;
+  gptQuotaPauseStatus = "";
+  // Keep the queue marked as a resume checkpoint so the current task is
+  // reattached safely; the send routine clears this flag once it starts.
   gptQueuePaused = true;
   gptAutoPaused = false;
+  const account = gptAccounts.find((item) => item.id === key || item.quotaGroup === key);
+  if (account && account.id !== activeGptAccountId && isRotatingGptMode()) {
+    await switchGptAccount(account.id, { silent: true, resumeWindow: false });
+  }
   persistGptQueue();
   showWorkbenchAssistantBubble("已到下一次额度探测时间，正在用下一条素材自动试跑；若仍只生成 1–3 张，会再次停止。", { duration: 0, tone: "info" });
   await sendNextGptTestTask({
     quotaProbe: true,
-    allowedAccountIds: normalizeGptProductionMode(gptAutoSettings.mode) === "multi" ? [String(accountId)] : undefined
+    accountId: account?.id || activeGptAccountId,
+    allowedAccountIds: isRotatingGptMode() ? [account?.id || String(accountId)] : undefined
   });
 }
 
@@ -2523,7 +3324,7 @@ async function checkScheduledGptProduction() {
     const target = new Date(now);
     target.setHours(hour, minute, 0, 0);
     if (now < target || now.getTime() - target.getTime() > 65_000) continue;
-    if ((["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
+    if (isContinuousGptMode() && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
       gptScheduledLaunchKeys.add(launchKey);
       gptScheduledDayKey = dayKey;
       const prepared = await prepareAutoGptQueue(plan.count, "永不停歇");
@@ -2560,16 +3361,29 @@ function updateGptTestQueueStatus(message = "") {
   if (!node || !button) return;
   const selectedCount = gptTestSelectedMaterials.size;
   const canResumeQueue = gptQueuePaused && gptTestQueue.length > 0 && gptTestQueueIndex < gptTestQueue.length;
-  const mode = GPT_MODE_DEFINITIONS[activeGptModeKey()]?.label || "手动模式";
+  const mode = GPT_MODE_DEFINITIONS[activeGptModeKey()]?.label || "人工控制";
   if (message) node.textContent = message;
+  else if (gptQuotaPauseStatus && gptQueuePaused) node.textContent = gptQuotaPauseStatus;
   else if (canResumeQueue) node.textContent = `已恢复未完成队列，还有 ${gptTestQueue.length - gptTestQueueIndex} 个步骤待处理`;
   else if (!selectedCount) node.textContent = "请至少选择一个素材文件夹；模板可以不选";
   else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) node.textContent = `还有 ${gptTestQueue.length - gptTestQueueIndex} 个队列步骤待处理`;
   else node.textContent = `${mode}模式 · ${selectedCount} 个素材 × ${Math.max(1, gptTestSelectedTemplates.size)} 个母版 = ${gptProductionWorkCount()} 个作品`;
   button.disabled = (!selectedCount && !canResumeQueue) || !window.gptWorkbench?.available;
   if (gptAutoRunning) button.disabled = true;
+  // In manual mode, once a task is uploaded and waiting for the user to
+  // send the prompt in GPT, the send button must not trigger a duplicate
+  // upload.  The "完成当前，上传下一套" button is the only way forward.
+  if (gptCurrentManualTask) button.disabled = true;
+  // In semi-auto mode, once the plan is generated and waiting for user
+  // confirmation, the send button must not start a new task.  The
+  // "确认继续出图" button is the only way forward.
+  if (gptSemiAutoPendingTask) button.disabled = true;
   button.textContent = gptAutoRunning
     ? `${mode}处理中 ${Math.min(gptTestQueueIndex + 1, gptTestQueue.length)}/${gptTestQueue.length}`
+    : gptCurrentManualTask
+      ? "等待手动发送（见上方提示）"
+    : gptSemiAutoPendingTask
+      ? "等待确认计划（见下方按钮）"
     : gptQueuePaused && gptTestQueueIndex < gptTestQueue.length
       ? `继续自动生产 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
     : gptTestQueue.length && gptTestQueueIndex > 0 && gptTestQueueIndex < gptTestQueue.length
@@ -2577,18 +3391,39 @@ function updateGptTestQueueStatus(message = "") {
       : gptAutoSettings.mode === "manual" ? "准备并上传当前一套" : "开始自动生产";
   const pauseButton = $("#gptPauseQueueBtn");
   if (pauseButton) {
-    pauseButton.hidden = !gptAutoRunning && !gptQueuePaused;
+    const runtime = readGptWindowRuntime(activeGptAccountId);
+    const hasWork = gptAutoRunning || gptQueuePaused || gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
+    pauseButton.hidden = !hasWork;
     pauseButton.disabled = false;
-    pauseButton.textContent = gptAutoPaused || (!gptAutoRunning && gptQueuePaused) ? "继续" : "暂停";
+    const quotaWaiting = Boolean((gptQuotaPauseStatus || runtime.status === "waiting-quota") && !gptAutoRunning && gptQueuePaused);
+    pauseButton.textContent = runtime.pausedByUser || gptAutoPaused || (!gptAutoRunning && gptQueuePaused) ? "继续" : "暂停";
+    if (quotaWaiting) pauseButton.textContent = "继续（等额度）";
+    pauseButton.title = quotaWaiting
+      ? "已触达额度或低产出上限；到探测时间会自动试跑，也可以手动继续强制尝试"
+      : gptAutoRunning ? "暂停当前工作流，当前帖子会停在安全检查点" : "继续当前工作流";
+  }
+  const stopButton = $("#gptStopQueueBtn");
+  if (stopButton) {
+    const runtime = readGptWindowRuntime(activeGptAccountId);
+    const hasWork = gptAutoRunning || gptQueuePaused || gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
+    stopButton.hidden = !hasWork && !runtime.stoppedByUser;
+    stopButton.textContent = runtime.stoppedByUser ? "启动" : "停止";
+    stopButton.title = runtime.stoppedByUser
+      ? "重新启动当前账号窗口的生产模式"
+      : "彻底停止当前账号窗口的本轮生产，不会删除队列或登录状态";
   }
   $("#gptSkipTaskBtn")?.toggleAttribute("disabled", gptAutoRunning || !gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length);
   $("#gptManualNextBtn")?.toggleAttribute("hidden", gptAutoSettings.mode !== "manual" || !gptCurrentManualTask);
+  $("#gptSemiAutoResumeBtn")?.toggleAttribute("hidden", !gptSemiAutoPendingTask);
   $("#gptRetryTaskBtn")?.toggleAttribute("hidden", !gptLastFailedTask || gptAutoRunning);
   updateGptAssistantBubble(message);
 }
 
 function blockGptSelectionDuringRun() {
-  if (!gptAutoRunning) return false;
+  // Pausing keeps gptAutoRunning true (the current post winds down to a safe
+  // checkpoint) but must release the material/template lock so the operator
+  // can queue the next batch.  Only a live, unpaused run blocks selection.
+  if (!gptAutoRunning || gptAutoPaused) return false;
   showWorkbenchAssistantBubble("自动生产正在进行中，已锁定素材和模板选择；请先暂停，再调整队列。", { duration: 5200 });
   return true;
 }
@@ -2608,12 +3443,13 @@ function gptHostBounds() {
 function renderGptAccountTabs() {
   const host = $("#gptAccountTabs");
   if (!host) return;
+  // disabled 账号窗口附加 .gpt-account-tab.disabled 样式（见 styles.css），自动化模式会跳过此窗口。
   host.innerHTML = gptAccounts.filter((account) => !account.hidden).map((account) => `
-    <button class="gpt-account-tab${account.id === activeGptAccountId ? " active" : ""}"
+    <button class="gpt-account-tab${account.id === activeGptAccountId ? " active" : ""}${account.disabled ? " disabled" : ""}"
       type="button" data-gpt-account="${escapeHtml(account.id)}"
       draggable="true"
-      title="${escapeHtml(account.name)} · 独立登录状态">
-      <span>${escapeHtml(account.name)}</span>
+      title="${escapeHtml(account.name)} · 独立登录状态${account.mode ? ` · ${GPT_MODE_DEFINITIONS[account.mode]?.label || account.mode}` : ""}${account.disabled ? " · 已禁用（自动化跳过）" : ""}">
+      <span>${escapeHtml(account.name)}</span>${account.mode ? `<small class="gpt-account-mode-tag">${escapeHtml(GPT_MODE_DEFINITIONS[account.mode]?.label?.replace(/模式$/, "") || account.mode)}</small>` : ""}
     </button>
   `).join("");
 }
@@ -2621,9 +3457,15 @@ function renderGptAccountTabs() {
 async function renameGptAccount(accountId) {
   const account = gptAccounts.find((item) => item.id === accountId);
   if (!account) return;
-  const nextName = window.prompt("输入这个账号窗口的新名称", account.name);
-  if (nextName === null) return;
-  const cleanName = String(nextName || "").trim().slice(0, 24);
+  const result = await openSystemDialog({
+    eyebrow: "账号窗口",
+    title: "重命名账号窗口",
+    description: "为这个账号窗口输入一个新名称（最多 24 个字符）。",
+    input: { label: "新名称", value: account.name, maxLength: 24 },
+    confirmLabel: "保存",
+    cancelLabel: "取消"
+  });
+  const cleanName = String(result || "").trim().slice(0, 24);
   if (!cleanName || cleanName === account.name) return;
   account.name = cleanName;
   if (window.gptWorkbench?.saveProfile) {
@@ -2634,6 +3476,20 @@ async function renameGptAccount(accountId) {
   renderGptAccountTabs();
   renderGptBrowserManager();
   showWorkbenchAssistantBubble(`账号窗口已重命名为“${cleanName}”。`);
+}
+
+async function toggleGptAccountDisabled(accountId) {
+  const account = gptAccounts.find((item) => item.id === accountId);
+  if (!account) return;
+  account.disabled = !account.disabled;
+  saveGptAccounts();
+  renderGptAccountTabs();
+  renderGptBrowserManager();
+  if (account.disabled) {
+    showWorkbenchAssistantBubble(`账号窗口“${account.name}”已暂时禁用。自动化模式将跳过此窗口，窗口仍可手动查看。`, { duration: 4200, tone: "warning" });
+  } else {
+    showWorkbenchAssistantBubble(`账号窗口“${account.name}”已启用，自动化模式可正常驱动。`, { duration: 3000 });
+  }
 }
 
 async function reorderGptAccounts(sourceId, targetId) {
@@ -2657,9 +3513,10 @@ function renderGptBrowserManager() {
   const host = $("#gptBrowserManager");
   if (!host) return;
   host.innerHTML = gptAccounts.map((account) => `
-    <section class="gpt-browser-manager-row" data-browser-profile="${escapeHtml(account.id)}">
+    <section class="gpt-browser-manager-row${account.disabled ? " disabled" : ""}" data-browser-profile="${escapeHtml(account.id)}">
       <input type="text" value="${escapeHtml(account.name)}" data-browser-name="${escapeHtml(account.id)}" aria-label="账号窗口名称" />
       <input type="text" value="${escapeHtml(account.quotaGroup || account.id)}" data-browser-quota-group="${escapeHtml(account.id)}" aria-label="额度组" />
+      <button type="button" data-browser-toggle-disable="${escapeHtml(account.id)}">${account.disabled ? "启用" : "禁用"}</button>
       <button type="button" data-browser-toggle="${escapeHtml(account.id)}">${account.hidden ? "重新打开" : "隐藏标签"}</button>
       <button type="button" data-browser-recovery="${escapeHtml(account.id)}">创建恢复点</button>
       ${gptAccounts.length > 1 ? `<button type="button" class="danger-text-button" data-browser-remove="${escapeHtml(account.id)}">移除记录</button>` : ""}
@@ -2668,7 +3525,44 @@ function renderGptBrowserManager() {
   `).join("");
 }
 
-async function switchGptAccount(accountId) {
+async function reconcileGptWindow(accountId = activeGptAccountId, options = {}) {
+  const key = String(accountId || activeGptAccountId);
+  const mode = normalizeGptProductionMode(gptAutoSettings.mode);
+  const runtime = readGptWindowRuntime(key);
+  if (!isContinuousGptMode(mode) || gptAutoRunning) return false;
+  // Disabled accounts are invisible to continuous automation.
+  const account = gptAccounts.find((item) => item.id === key);
+  if (account?.disabled) return false;
+  if (runtime.stoppedByUser && !options.force) return false;
+  if (runtime.pausedByUser && !options.force) return false;
+  if (!options.force && !isContinuousGptProductionArmed()) return false;
+  const quotaState = readGptCycleState(gptAccounts.find((item) => item.id === key)?.quotaGroup || key);
+  if (!options.force && Number(quotaState.nextProbeAt || 0) > Date.now()) {
+    scheduleGptQuotaReminder(new Date(Number(quotaState.nextProbeAt)).toISOString(), quotaState.accountId || key);
+    writeGptWindowRuntime(key, { status: "waiting-quota", nextProbeAt: Number(quotaState.nextProbeAt), currentStage: "等待额度恢复" });
+    updateGptTestQueueStatus(`${gptAccounts.find((item) => item.id === key)?.name || "当前账号窗口"} 等待额度恢复；到时间会自动探测。`);
+    return false;
+  }
+  let hasPending = gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
+  if (!hasPending) {
+    hasPending = Boolean(await prepareAllDayGptQueue());
+  }
+  if (!hasPending) {
+    showWorkbenchAssistantBubble(`${gptAccounts.find((item) => item.id === key)?.name || "当前账号窗口"} 暂无可生产素材，等待下一次扫描。`, { duration: 0 });
+    return false;
+  }
+  gptQueuePaused = gptTestQueueIndex < gptTestQueue.length;
+  persistGptQueue();
+  await sendNextGptTestTask({ accountId: key, allowWindowSwitch: true, automaticResume: true });
+  const stillPending = gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
+  const afterRuntime = readGptWindowRuntime(key);
+  if (stillPending && !gptAutoRunning && afterRuntime.status !== "waiting-quota" && !afterRuntime.stoppedByUser && !afterRuntime.pausedByUser) {
+    scheduleGptWindowRetry(key, 15_000, "网页状态没有完成确认");
+  }
+  return true;
+}
+
+async function switchGptAccount(accountId, options = {}) {
   const account = gptAccounts.find((item) => item.id === accountId);
   if (!account) return;
   // The renderer can restore an active tab from local settings while the
@@ -2681,22 +3575,49 @@ async function switchGptAccount(accountId) {
   activeGptAccountId = account.id;
   window.gptWorkbench?.saveProfile?.({ ...account, active: true, lastOpenedAt: new Date().toISOString() }).catch(() => {});
   const accountSettings = dashboard?.workspaceSettings?.pageSettings?.gptAuto?.accounts?.find((item) => item.id === account.id);
-  if (accountChanged && accountSettings) {
-    gptAutoSettings = {
-      ...gptAutoSettings,
-      uploadLimit: accountSettings.uploadLimit,
-      generationLimit: accountSettings.generationLimit,
-      windowHours: accountSettings.windowHours
-    };
+  if (accountChanged) {
+    // Clear the manual task from the previous account window.  A manual task
+    // is owned by the account it was uploaded to; switching to another window
+    // must not let the old task's "完成当前" button advance the new window.
+    gptCurrentManualTask = null;
+    gptSemiAutoPendingTask = null;
+    // Per-window mode: restore this account's own production mode.  Each
+    // window can be independently set to manual / automatic / continuous.
+    const accountMode = account.mode ? normalizeGptProductionMode(account.mode) : "";
+    if (accountMode && accountMode !== normalizeGptProductionMode(gptAutoSettings.mode)) {
+      gptAutoSettings.mode = accountMode;
+      applyGptModeProfile(accountMode);
+      if ($("#gptProductionMode")) $("#gptProductionMode").value = accountMode;
+      if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = accountMode;
+    }
+    if (accountSettings) {
+      gptAutoSettings = {
+        ...gptAutoSettings,
+        uploadLimit: accountSettings.uploadLimit,
+        generationLimit: accountSettings.generationLimit,
+        windowHours: accountSettings.windowHours
+      };
+    }
     renderGptAutoSettings();
   }
   saveGptAccounts();
   renderGptAccountTabs();
   gptLastShowSignature = "";
   await showEmbeddedGptView();
-  refreshGptQuota();
-  if (gptAutoRunning) {
+  // Refresh the selected account before painting its assistant summary. The
+  // profiles are isolated; do not briefly reuse the previous account's
+  // quota snapshot while this view is being attached.
+  await refreshGptQuota(account.id);
+  writeGptWindowRuntime(account.id, { currentStage: readGptWindowRuntime(account.id).currentStage || "窗口已打开" });
+  updateGptAssistantBubble(`${account.name} 已切换：上传 ${readGptWindowRuntime(account.id).uploadedAttachments || 0} 张，本轮生图 ${readGptWindowRuntime(account.id).generatedImages || 0} 张`);
+  if (gptAutoRunning && !options.silent) {
     showWorkbenchAssistantBubble(`已切换查看 ${account.name}；正在运行的任务仍留在开始时的账号窗口，不会向当前窗口自动注入。`, { duration: 0 });
+  }
+  // In manual-window mode the selected account is the worker.  Switching the
+  // visible tab must therefore wake that account, but never hijack a running
+  // task owned by another account.
+  if (!gptAutoRunning && options.resumeWindow !== false) {
+    await reconcileGptWindow(account.id, { force: Boolean(options.forceResume) });
   }
 }
 
@@ -2724,6 +3645,9 @@ async function addGptAccount() {
   renderGptBrowserManager();
   gptLastShowSignature = "";
   await showEmbeddedGptView();
+  if (isContinuousGptMode() && isContinuousGptProductionArmed()) {
+    await reconcileGptWindow(account.id);
+  }
 }
 
 async function removeGptAccount(accountId) {
@@ -2732,8 +3656,33 @@ async function removeGptAccount(accountId) {
     return;
   }
   if (gptAccounts.length <= 1) return;
-  if (!window.confirm("移除后顶部不再显示，但不会删除 GPT 登录数据。确定移除这个账号窗口记录吗？")) return;
-  if (!window.confirm("再次确认：只移除记录，登录分区仍保留。")) return;
+  const account = gptAccounts.find((item) => item.id === accountId);
+  if (!account) return;
+  const confirmed = await openSystemDialog({
+    eyebrow: "危险操作",
+    tone: "danger",
+    title: `删除账号窗口“${account.name}”`,
+    description: "此操作会移除账号窗口记录，并清除对应的浏览器分区数据。",
+    details: [
+      { label: "包含数据", value: "Cookie、GPT 登录状态、Google 登录、扩展数据、缓存" },
+      { label: "不可恢复", value: "删除后需要重新登录所有相关账号" },
+      { label: "队列影响", value: "若该窗口有任务，会先终止当前任务" }
+    ],
+    warning: "删除将清除本机保存的 GPT/Google 登录状态，请确认。",
+    confirmLabel: "我确认删除",
+    cancelLabel: "取消"
+  });
+  if (!confirmed) return;
+  // 二次确认
+  const finalConfirm = await openSystemDialog({
+    eyebrow: "最后确认",
+    tone: "danger",
+    title: "再次确认删除",
+    description: `即将删除“${account.name}”及其全部登录数据，此操作不可撤销。`,
+    confirmLabel: "确认删除",
+    cancelLabel: "返回"
+  });
+  if (!finalConfirm) return;
   if (window.gptWorkbench?.removeProfile) {
     const state = await window.gptWorkbench.removeProfile(accountId);
     gptAccounts = state.profiles.map((profile) => ({ ...profile }));
@@ -2747,6 +3696,7 @@ async function removeGptAccount(accountId) {
   renderGptBrowserManager();
   gptLastShowSignature = "";
   await showEmbeddedGptView();
+  showWorkbenchAssistantBubble(`账号窗口“${account.name}”已删除，登录数据已清除。`, { tone: "warning", duration: 4000 });
 }
 
 async function deleteGptAccountLogin(accountId) {
@@ -2764,6 +3714,13 @@ async function deleteGptAccountLogin(accountId) {
   showSystemNotice("登录数据已清除", `${account.name} 的本机登录状态已删除，账号窗口档案仍保留。`, { tone: "success" });
 }
 
+function syncGptBrowserAddress(url = "") {
+  const input = $("#gptBrowserAddressInput");
+  if (!input || document.activeElement === input) return;
+  input.value = String(url || "");
+  input.title = String(url || "");
+}
+
 async function navigateEmbeddedGpt(action, targetUrl = "", accountId = activeGptAccountId) {
   if (!window.gptWorkbench?.available) return;
   const state = $("#gptEmbeddedState");
@@ -2775,6 +3732,10 @@ async function navigateEmbeddedGpt(action, targetUrl = "", accountId = activeGpt
     const result = await window.gptWorkbench.navigate(action, accountId, targetUrl);
     $("#gptBrowserBackBtn").disabled = !result.canGoBack;
     $("#gptBrowserForwardBtn").disabled = !result.canGoForward;
+    syncGptBrowserAddress(result.url);
+    if (action === "url" && result.url && !result.isChatGpt) {
+      showWorkbenchAssistantBubble("已在当前账号窗口打开网页；需要继续生产时点首页返回 GPT。", { duration: 3600 });
+    }
     if (/\/auth\/(?:login|signup)/i.test(result.url || "")) {
       showWorkbenchAssistantBubble("当前 GPT 账号窗口需要登录，登录完成后可继续生产。", { duration: 0 });
     }
@@ -2789,6 +3750,20 @@ async function navigateEmbeddedGpt(action, targetUrl = "", accountId = activeGpt
 }
 
 async function showEmbeddedGptView() {
+  // Guard: never show the native GPT view when the user has already switched
+  // to a different tab.  The WebContentsView is a native compositor layer
+  // that renders above all DOM regardless of z-index; showing it on a
+  // non-GPT tab makes it "float" on top of other pages.
+  if (!$("#gptProductionTestView")?.classList.contains("active")) return;
+  // Also bail out if a DOM overlay (settings, dialog, lightbox, assistant
+  // panel, history panel) is currently open — the native view must stay
+  // hidden until the overlay closes.
+  if (!$("#pageSettingsBackdrop")?.hidden) return;
+  if (document.querySelector(".system-dialog-backdrop")) return;
+  if (document.querySelector(".image-lightbox")) return;
+  if (!$("#workbenchAssistantPanel")?.hidden) return;
+  if (!$("#gptProductionHistoryPanel")?.hidden) return;
+  if ($("#contextMenu")?.classList.contains("show")) return;
   const state = $("#gptEmbeddedState");
   const host = $("#gptEmbeddedHost");
   if (!window.gptWorkbench?.available) {
@@ -2819,17 +3794,20 @@ async function showEmbeddedGptView() {
     const result = await window.gptWorkbench.show(bounds, activeGptAccountId);
     gptLastShowSignature = signature;
     host?.classList.add("is-native-visible");
+    syncGptBrowserAddress(result.url);
     if (state) {
       const needsLogin = /\/auth\/(?:login|signup)/i.test(result.url || "");
-      state.textContent = needsLogin
+      state.textContent = !result.isChatGpt
+        ? "浏览器网页已打开 · 返回 GPT 可继续生产"
+        : needsLogin
         ? `${gptAccounts.find((item) => item.id === activeGptAccountId)?.name || "当前账号"}：请先登录`
         : result.ready ? "GPT 已就绪 · 生产助手已接入" : "GPT 网页加载中（最长20秒）";
-      state.dataset.tone = needsLogin ? "warning" : result.ready ? "success" : "busy";
+      state.dataset.tone = !result.isChatGpt ? "success" : needsLogin ? "warning" : result.ready ? "success" : "busy";
       state.title = result.extensionError || "";
     }
     if ($("#gptBrowserBackBtn")) $("#gptBrowserBackBtn").disabled = !result.canGoBack;
     if ($("#gptBrowserForwardBtn")) $("#gptBrowserForwardBtn").disabled = !result.canGoForward;
-    if (!/\/auth\/(?:login|signup)/i.test(result.url || "") && !result.ready) {
+    if (result.isChatGpt && !/\/auth\/(?:login|signup)/i.test(result.url || "") && !result.ready) {
       const deadline = Date.now() + 20_000;
       let readiness = result;
       while (Date.now() < deadline && !readiness.ready) {
@@ -2878,13 +3856,22 @@ async function showEmbeddedGptView() {
 
 function restoreEmbeddedGptView() {
   if (!$("#gptProductionTestView")?.classList.contains("active")) return;
+  // Clear the signature so delayed calls re-show even if bounds unchanged.
   gptLastShowSignature = "";
-  window.requestAnimationFrame(() => showEmbeddedGptView().catch(() => {}));
+  window.requestAnimationFrame(() => {
+    // Re-check: user may have switched tabs or opened an overlay since the
+    // rAF was scheduled.  showEmbeddedGptView has its own guards, but the
+    // signature reset must not fire on a non-GPT tab.
+    if (!$("#gptProductionTestView")?.classList.contains("active")) return;
+    showEmbeddedGptView().catch(() => {});
+  });
   window.setTimeout(() => {
+    if (!$("#gptProductionTestView")?.classList.contains("active")) return;
     gptLastShowSignature = "";
     showEmbeddedGptView().catch(() => {});
   }, 180);
   window.setTimeout(() => {
+    if (!$("#gptProductionTestView")?.classList.contains("active")) return;
     gptLastShowSignature = "";
     showEmbeddedGptView().catch(() => {});
   }, 700);
@@ -2946,6 +3933,18 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   task.autoOptions = { ...gptAutoSettings, quotaAccountId: task.quotaAccountId };
   task._status = "running";
   task._startedAt ||= new Date().toISOString();
+  const uploadImages = (task.attachments || []).filter((filePath) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(String(filePath || ""))).length;
+  markGptWindowSetStarted(account.id);
+  writeGptWindowRuntime(account.id, {
+    status: "running",
+    currentTaskId: task.requestId,
+    currentStage: "上传附件",
+    currentPercent: 5,
+    expectedAttachments: uploadImages,
+    uploadedAttachments: 0,
+    stoppedByUser: false
+  });
+  showWorkbenchAssistantBubble(`${account.name} 已上传本帖 ${uploadImages} 张图片，等待 GPT 确认附件。`, { duration: 3600 });
   // Persist this before entering the bridge. A restart may safely resume from
   // the web stage only after this marker is true; it must never upload a
   // second copy of a post because the renderer disappeared mid-request.
@@ -2964,8 +3963,12 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   // permanent V3.6 guard before any material prompt. Existing conversation
   // windows keep their trained context and are not flooded with the prompt.
   if (task.taskType === "template-init" || gptAccountNeedsMasterPrompt(account)) {
+    const extraRules = String(gptAutoSettings?.extraPromptRules || "").trim();
+    const master = extraRules
+      ? `${GPT_V36_MASTER_PROMPT}\n\n${extraRules}`
+      : GPT_V36_MASTER_PROMPT;
     task.prompt = task.taskType === "template-init"
-      ? `${GPT_V36_MASTER_PROMPT}\n\n${task.prompt}`
+      ? `${master}\n\n${task.prompt}`
       : promptForNewGptSession(task.prompt, account);
     if (task.taskType === "material" && !task.templateId) {
       task.prompt += "\n\n当前账号窗口没有可确认的历史母版，也没有实体模板附件；请先提示用户提供模板，不要直接自由设计或出图。";
@@ -2978,6 +3981,15 @@ async function runGptTaskOnBrowser(task, account, tracker) {
       if (status?.requestId === task.requestId) {
         task._stage = String(status.stage || "");
         task._percent = Number(status.percent || 0);
+        writeGptWindowRuntime(account.id, {
+          status: "running",
+          currentTaskId: task.requestId,
+          currentStage: task._stage,
+          currentPercent: task._percent,
+          uploadedAttachments: Number(status.uploadedAttachments || readGptWindowRuntime(account.id).uploadedAttachments || 0),
+          expectedImages: Number(status.expectedImages || readGptWindowRuntime(account.id).expectedImages || 0),
+          generatedImages: Number(status.generatedImages || status.actualImages || readGptWindowRuntime(account.id).generatedImages || 0)
+        });
         if (/生成|图片|生图/i.test(task._stage)) recordGptQuotaConsumption(task, task.quotaAccountId, "generation");
         persistGptQueue();
         const overall = Math.round(((tracker.completed + tracker.failed + task._percent / 100) / tracker.total) * 100);
@@ -2996,16 +4008,39 @@ async function runGptTaskOnBrowser(task, account, tracker) {
     polling = false;
     await poll;
   }
+  if (result?.ok !== false) {
+    const confirmedUploads = Number(result?.fileCount || result?.uploadedFiles || uploadImages || 0);
+    writeGptWindowRuntime(account.id, {
+      uploadedAttachments: confirmedUploads,
+      expectedAttachments: uploadImages,
+      currentStage: "附件已确认，等待计划"
+    });
+    updateGptAssistantBubble();
+  }
   if (!result?.ok) {
     task._errorCode = String(result?.errorCode || "");
     task._error = result?.detail || result?.error || "自动生产没有完整结束";
     const lowOutput = isLowOutputGptLimitMessage(task._error);
-    const actualLimit = lowOutput || isActualGptLimitMessage(task._error);
+    const retryLimit = isGptRetryLimitSignal(task._error, task);
+    const actualLimit = lowOutput || isActualGptLimitMessage(task._error) || retryLimit;
     task._status = actualLimit ? (lowOutput ? "skipped" : "paused") : "failed";
     task._quotaLimit = actualLimit;
-    if (actualLimit) recordActualGptLimit(task._error, task.quotaAccountId, lowOutput ? "generation" : inferGptQuotaLimitKind(task, task._error));
+    writeGptWindowRuntime(account.id, {
+      status: actualLimit ? "waiting-quota" : "failed",
+      currentTaskId: task.requestId,
+      currentStage: task._stage || "任务失败",
+      currentPercent: Number(task._percent || 0),
+      generatedImages: Number(result?.detectedImages || result?.actualImages || readGptWindowRuntime(account.id).generatedImages || 0),
+      nextProbeAt: actualLimit ? Number(readGptCycleState(task.quotaAccountId || account.id).nextProbeAt || 0) || null : null
+    });
+    if (actualLimit) recordActualGptLimit(task._error, task.quotaAccountId, lowOutput || retryLimit ? "generation" : inferGptQuotaLimitKind(task, task._error));
     tracker.failed += actualLimit ? 0 : 1;
     appendGptProductionHistory(task, actualLimit ? "paused" : "failed", result, task._error);
+    if (actualLimit && task.taskType === "material") {
+      await refreshGptAfterProduction(task.quotaAccountId || account.id, "production-limit-signal").catch((error) => {
+        showWorkbenchAssistantBubble(`${account.name} 触顶后刷新 GPT 网页失败：${error?.message || "未知错误"}；已保留暂停状态。`, { duration: 0, tone: "warning" });
+      });
+    }
     persistGptQueue();
     const failure = new Error(`${account.name}：${task._error}`);
     failure.gptLimit = actualLimit;
@@ -3014,10 +4049,239 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   }
   task._status = "completed";
   task._percent = 100;
+  markGptWindowSetCompleted(account.id);
+  writeGptWindowRuntime(account.id, { status: "idle", currentTaskId: "", currentStage: "已完成", currentPercent: 100 });
   appendGptProductionHistory(task, "completed", result);
   tracker.completed += 1;
   persistGptQueue();
   return result;
+}
+
+function resetGptTaskForRotation(task, reason = "") {
+  if (!task) return;
+  const previousRequestId = String(task.requestId || "");
+  task.requestId = `gpt-rotate-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  task.retryOf = previousRequestId;
+  task._rotationAttempts = Number(task._rotationAttempts || 0) + 1;
+  task._rotationReason = String(reason || "").slice(0, 240);
+  task._status = "queued";
+  task._stage = "排队";
+  task._percent = 0;
+  task._error = "";
+  task._errorCode = "";
+  task._quotaLimit = false;
+  task._quotaSkipped = false;
+  task._submittedToGpt = false;
+  delete task._endedAt;
+  delete task._result;
+  delete task.retryFromStage;
+  delete task.retryFromPercent;
+}
+
+function rotationAccountReady(account, now = Date.now()) {
+  const state = readGptCycleState(account?.quotaGroup || account?.id);
+  return Number(state.nextProbeAt || 0) <= now;
+}
+
+function nextRotationAccount(accounts, cursor, blocked = new Set()) {
+  if (!accounts.length) return { account: null, cursor };
+  const now = Date.now();
+  for (let offset = 0; offset < accounts.length; offset += 1) {
+    const index = (cursor + offset) % accounts.length;
+    const account = accounts[index];
+    if (blocked.has(account.id)) continue;
+    if (!rotationAccountReady(account, now)) continue;
+    return { account, cursor: index };
+  }
+  return { account: null, cursor };
+}
+
+function persistGptRotationRun(patch = {}) {
+  return persistGptMultiRun({
+    mode: "rotate",
+    rotation: true,
+    ...patch
+  });
+}
+
+async function sendRotatingWindowGptTasks(options = {}) {
+  if (gptAutoRunning) return;
+  const groups = gptTaskGroupsForMultiWindow();
+  const pendingTasks = groups.flat();
+  if (!pendingTasks.length) return;
+  const accounts = availableMultiWindowAccounts();
+  if (!accounts.length) {
+    gptQueuePaused = true;
+    updateGptTestQueueStatus("轮换模式没有可用的账号窗口；请先保留至少一个可见账号窗口");
+    showWorkbenchAssistantBubble("单窗口多浏览器轮换模式没有可用账号窗口，未上传素材。", { duration: 0, tone: "warning" });
+    return;
+  }
+  const pendingFromQueue = gptQueuePaused && gptTestQueue.length
+    ? gptTestQueue.filter((task) => !["completed", "skipped"].includes(task._status))
+    : pendingTasks;
+  if (!gptQueuePaused || !gptTestQueue.length) {
+    gptTestQueue = pendingFromQueue;
+    gptTestQueueIndex = 0;
+  }
+  const tracker = {
+    completed: gptTestQueue.filter((task) => task._status === "completed").length,
+    failed: gptTestQueue.filter((task) => task._status === "failed").length,
+    total: Math.max(1, gptTestQueue.length)
+  };
+  const cursorStart = Math.max(0, accounts.findIndex((account) => account.id === activeGptAccountId));
+  let accountCursor = cursorStart;
+  const blockedAccounts = new Set();
+  const templateInitializers = new Map(gptTestQueue.filter((task) => task.taskType === "template-init").map((task) => [task.templateId, task]));
+  const onlineTemplates = new Map(selectedGptTestTemplates().filter((template) => template.kind === "online").map((template) => [template.id, template]));
+  const readyTemplates = new Set();
+  const workerState = Object.fromEntries(accounts.map((account) => [account.id, {
+    accountId: account.id,
+    accountName: account.name,
+    status: "queued",
+    currentTask: "",
+    completed: 0,
+    failed: 0,
+    nextProbeAt: null,
+    lastError: ""
+  }]));
+  const runId = String(gptMultiRunState?.runId || `gpt-rotate-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  gptAutoRunning = true;
+  gptAutoPaused = false;
+  gptQueuePaused = false;
+  gptQuotaPauseStatus = "";
+  persistGptRotationRun({
+    version: 1,
+    runId,
+    startedAt: gptMultiRunState?.startedAt || new Date().toISOString(),
+    status: "running",
+    accountIds: accounts.map((account) => account.id),
+    workerState,
+    currentAccountId: accounts[accountCursor]?.id || accounts[0].id,
+    pending: gptTestQueue.filter((task) => !["completed", "skipped"].includes(task._status)).map((task) => task.requestId)
+  });
+  window.gptWorkbench?.setProductionActive?.(true).catch(() => {});
+  persistGptQueue();
+  updateGptTestQueueStatus(`单窗口多浏览器轮换模式已启动 · ${accounts.length} 个账号窗口 · 一次只处理一帖`);
+
+  const runInitializerForAccount = async (materialTask, account) => {
+    if (!materialTask?.templateId) return;
+    const templateKey = `${account.id}:${materialTask.templateId}`;
+    if (readyTemplates.has(templateKey)) return;
+    const online = onlineTemplates.get(materialTask.templateId);
+    if (online?.url) {
+      materialTask.navigationUrl = online.url;
+      readyTemplates.add(templateKey);
+      return;
+    }
+    const initializer = templateInitializers.get(materialTask.templateId);
+    if (!initializer) return;
+    const copy = { ...initializer, attachments: [...(initializer.attachments || [])] };
+    resetGptTaskForRotation(copy, "为新账号窗口初始化模板");
+    copy.taskType = "template-init";
+    await runGptTaskOnBrowser(copy, account, tracker);
+    readyTemplates.add(templateKey);
+    showWorkbenchAssistantBubble(`${account.name} 已完成模板会话初始化，继续处理当前素材。`, { duration: 3600 });
+  };
+
+  try {
+    while (gptTestQueueIndex < gptTestQueue.length) {
+      if (gptAutoPaused) {
+        gptQueuePaused = true;
+        break;
+      }
+      const task = gptTestQueue[gptTestQueueIndex];
+      if (!task || ["completed", "skipped"].includes(task._status)) {
+        gptTestQueueIndex += 1;
+        continue;
+      }
+      const selected = nextRotationAccount(accounts, accountCursor, blockedAccounts);
+      if (!selected.account) {
+        gptQueuePaused = true;
+        const nextProbeAt = accounts.map((account) => Number(readGptCycleState(account.quotaGroup || account.id).nextProbeAt || 0)).filter(Boolean).sort((a, b) => a - b)[0] || 0;
+        updateGptTestQueueStatus(nextProbeAt
+          ? `所有账号窗口都在等待额度恢复；最早 ${new Date(nextProbeAt).toLocaleString("zh-CN", { hour12: false })} 再探测`
+          : "所有账号窗口暂时不可用；已安全暂停轮换，不会继续注入下一帖");
+        persistGptRotationRun({ status: "waiting-quota", nextProbeAt: nextProbeAt || null, workerState });
+        break;
+      }
+      accountCursor = selected.cursor;
+      const account = selected.account;
+      const state = workerState[account.id];
+      state.status = "running";
+      state.currentTask = task.name || task.requestId;
+      if (activeGptAccountId !== account.id) {
+        await switchGptAccount(account.id, { silent: true, resumeWindow: false });
+      }
+      persistGptRotationRun({ workerState, currentAccountId: account.id });
+      updateGptTestQueueStatus(`${account.name} 正在处理第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 帖：${task.name || "当前素材"}`);
+      try {
+        if (task.taskType === "material") await runInitializerForAccount(task, account);
+        await runGptTaskOnBrowser(task, account, tracker);
+        if (task.taskType === "material") {
+          await refreshGptAfterProduction(account.id, "rotation-production-complete").catch((error) => {
+            showWorkbenchAssistantBubble(`${account.name} 本轮已落盘，但 GPT 网页刷新失败：${error?.message || "未知错误"}；继续保留任务状态。`, { duration: 0, tone: "warning" });
+          });
+        }
+        if (task.taskType === "template-init" && task.templateId) readyTemplates.add(`${account.id}:${task.templateId}`);
+        if (task.taskType === "material" && task.templateId) readyTemplates.add(`${account.id}:${task.templateId}`);
+        state.completed += 1;
+        state.status = "running";
+        state.currentTask = "";
+        gptTestQueueIndex += 1;
+        // Rotation is quota-driven, not round-robin: keep using this account
+        // until the web page reports a real limit or low-output probe.
+        persistGptRotationRun({ workerState, currentAccountId: account.id });
+        persistGptQueue();
+      } catch (error) {
+        const message = String(task._error || error?.message || "未知错误");
+        state.lastError = message.slice(0, 500);
+        state.currentTask = "";
+        if (error?.gptLimit || isActualGptLimitMessage(message)) {
+          blockedAccounts.add(account.id);
+          const quotaState = readGptCycleState(task.quotaAccountId || account.quotaGroup || account.id);
+          state.status = "waiting-quota";
+          state.nextProbeAt = Number(quotaState.nextProbeAt || 0) || null;
+          resetGptTaskForRotation(task, message);
+          accountCursor = (accountCursor + 1) % accounts.length;
+          const next = nextRotationAccount(accounts, accountCursor, blockedAccounts);
+          if (next.account) {
+            showWorkbenchAssistantBubble(`${account.name} 已触达真实限额，切换到 ${next.account.name}；当前帖子不会丢失。`, { duration: 0, tone: "warning" });
+            persistGptRotationRun({ workerState, currentAccountId: next.account.id });
+            continue;
+          }
+          gptQueuePaused = true;
+          const nextProbeAt = accounts.map((item) => Number(readGptCycleState(item.quotaGroup || item.id).nextProbeAt || 0)).filter(Boolean).sort((a, b) => a - b)[0] || 0;
+          persistGptRotationRun({ status: "waiting-quota", nextProbeAt: nextProbeAt || null, workerState });
+          updateGptTestQueueStatus(nextProbeAt
+            ? `所有账号窗口已触顶；最早 ${new Date(nextProbeAt).toLocaleString("zh-CN", { hour12: false })} 自动探测`
+            : "所有账号窗口已触顶；轮换已暂停，等待下一次真实额度探测");
+          break;
+        }
+        state.status = "failed";
+        state.failed += 1;
+        task._status = "skipped";
+        gptTestQueueIndex += 1;
+        showWorkbenchAssistantBubble(`${task.name || "当前素材"} 失败，已跳过并继续轮换下一帖。`, { duration: 4200, tone: "warning" });
+        persistGptQueue();
+      }
+    }
+    const pending = gptTestQueue.filter((task) => !["completed", "skipped"].includes(task._status));
+    if (!gptAutoPaused && !pending.length) {
+      gptQueuePaused = false;
+      persistGptRotationRun({ status: "completed", completed: tracker.completed, failed: tracker.failed, workerState, finishedAt: new Date().toISOString(), pending: [] });
+      updateGptTestQueueStatus(`单窗口多浏览器轮换模式完成：成功 ${tracker.completed} 套，失败/跳过 ${tracker.failed} 套`);
+    } else if (gptAutoPaused) {
+      persistGptRotationRun({ status: "paused", workerState, pending: pending.map((task) => task.requestId) });
+    }
+  } finally {
+    gptAutoRunning = false;
+    window.gptWorkbench?.setProductionActive?.(false).catch(() => {});
+    persistGptQueue();
+    updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
+    refreshGptQuota();
+    if (isContinuousGptProductionArmed() && !gptAutoPaused && !gptQueuePaused) scheduleContinuousGptProduction();
+    clearGptMultiRunIfFinished();
+  }
 }
 
 async function sendMultiWindowGptTasks(options = {}) {
@@ -3067,7 +4331,7 @@ async function sendMultiWindowGptTasks(options = {}) {
   });
   window.gptWorkbench?.setProductionActive?.(true).catch(() => {});
   persistGptQueue();
-  updateGptTestQueueStatus(`多账号单模板·永不停歇已启动 · ${workers.length} 个账号窗口 · ${gptProductionWorkCount()} 个作品`);
+  updateGptTestQueueStatus(`多账号全自动已启动 · ${workers.length} 个账号窗口 · ${gptProductionWorkCount()} 个作品`);
   const runWorker = async (account) => {
     const state = workerState[account.id];
     while (!gptAutoPaused) {
@@ -3098,6 +4362,11 @@ async function sendMultiWindowGptTasks(options = {}) {
         persistGptMultiRun({ workerState });
         try {
           await runGptTaskOnBrowser(task, account, tracker);
+          if (task.taskType === "material") {
+            await refreshGptAfterProduction(account.id, "multi-production-complete").catch((error) => {
+              showWorkbenchAssistantBubble(`${account.name} 本轮已落盘，但 GPT 网页刷新失败：${error?.message || "未知错误"}；继续保留任务状态。`, { duration: 0, tone: "warning" });
+            });
+          }
           state.completed += 1;
           state.currentTask = "";
           const nextPending = gptTestQueue.findIndex((item) => !["completed", "skipped"].includes(item._status));
@@ -3113,7 +4382,7 @@ async function sendMultiWindowGptTasks(options = {}) {
           gptLastFailedPercent = task._percent || 0;
           state.lastError = String(task._error || error.message || "未知错误");
           state.currentTask = "";
-          if (error?.gptLimit || isActualGptLimitMessage(String(task._error || error.message || ""))) {
+        if (error?.gptLimit || isActualGptLimitMessage(String(task._error || error.message || "")) || isGptRetryLimitSignal(String(task._error || error.message || ""), task)) {
             const quotaState = readGptCycleState(task.quotaAccountId || account.quotaGroup || account.id);
             state.status = "waiting-quota";
             state.nextProbeAt = Number(quotaState.nextProbeAt || 0) || null;
@@ -3140,6 +4409,8 @@ async function sendMultiWindowGptTasks(options = {}) {
             "WINDOW_STAGE_PENDING",
             "WEB_RESPONSE_IN_FLIGHT",
             "IMAGE_COUNT_UNCERTAIN",
+            "PLAN_PARSE_FAILED",
+            "PLAN_NOT_COMPLETE",
             "GENERATION_LIMIT_SIGNAL",
             "SCRIPT_GENERATED_OUTPUT",
             "COPY_REQUIRED"
@@ -3175,10 +4446,10 @@ async function sendMultiWindowGptTasks(options = {}) {
     gptTestQueueIndex = gptTestQueue.findIndex((task) => !["completed", "skipped"].includes(task._status));
     if (gptTestQueueIndex < 0) gptTestQueueIndex = gptTestQueue.length;
     updateGptTestQueueStatus(gptAutoPaused
-      ? `多账号单模板·永不停歇队列已暂停 · 完成 ${tracker.completed} · 失败 ${tracker.failed}`
+      ? `多账号全自动队列已暂停 · 完成 ${tracker.completed} · 失败 ${tracker.failed}`
       : pending.length
-        ? `多账号单模板·永不停歇部分完成 · 成功 ${tracker.completed} · 等待 ${pending.length} 套`
-        : `多账号单模板·永不停歇队列完成 · 成功 ${tracker.completed} · 失败 ${tracker.failed}`);
+        ? `多账号全自动部分完成 · 成功 ${tracker.completed} · 等待 ${pending.length} 套`
+        : `多账号全自动队列完成 · 成功 ${tracker.completed} · 失败 ${tracker.failed}`);
     persistGptMultiRun({
       status: gptAutoPaused ? "paused" : pending.length ? "waiting-quota" : "completed",
       workerState,
@@ -3200,8 +4471,17 @@ async function sendMultiWindowGptTasks(options = {}) {
 
 async function sendNextGptTestTask(options = {}) {
   if (!window.gptWorkbench?.available || gptAutoRunning) return;
-  if (normalizeGptProductionMode(gptAutoSettings.mode) === "multi") return sendMultiWindowGptTasks(options);
-  if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)) && options.userInitiated) {
+  const requestedAccountId = String(options.accountId || activeGptAccountId);
+  // Block automation modes from driving disabled account windows. Manual and
+  // user-initiated semi-auto runs are still allowed on disabled accounts.
+  const runAccount = gptAccounts.find((item) => item.id === requestedAccountId);
+  if (runAccount?.disabled && isContinuousGptMode(normalizeGptProductionMode(gptAutoSettings.mode)) && !options.userInitiated) return;
+  if (gptWindowIsUserStopped(requestedAccountId) && !options.userInitiated) return;
+  if (gptWindowIsUserPaused(requestedAccountId) && !options.userInitiated && !options.quotaProbe) return;
+  if (isRotatingGptMode()) return sendRotatingWindowGptTasks(options);
+  // Legacy "multi" mode now normalized to "rotate"; multi-window dispatch
+  // is handled by sendRotatingWindowGptTasks above.
+  if (isContinuousGptMode() && options.userInitiated) {
     setContinuousGptProductionArmed(true);
   }
   if (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length) {
@@ -3211,7 +4491,8 @@ async function sendNextGptTestTask(options = {}) {
   }
   if (!gptTestQueue.length) return;
   const resuming = gptQueuePaused && gptTestQueueIndex < gptTestQueue.length;
-  const runAccountId = activeGptAccountId;
+  const runAccountId = requestedAccountId;
+  if (runAccountId !== activeGptAccountId && !options.allowWindowSwitch) return;
   const runAccountName = gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号窗口";
   const preflight = await window.gptWorkbench.status(runAccountId).catch(() => null);
   if (!preflight?.productionReady) {
@@ -3231,17 +4512,14 @@ async function sendNextGptTestTask(options = {}) {
   gptAutoRunning = true;
   gptAutoPaused = false;
   gptQueuePaused = false;
+  gptQuotaPauseStatus = "";
+  writeGptWindowRuntime(runAccountId, { status: "running", stoppedByUser: false, currentStage: "准备生产", currentPercent: 0 });
   window.gptWorkbench?.setProductionActive?.(true).catch(() => {});
   persistGptQueue();
   button.disabled = true;
-  const manualMode = gptAutoSettings.mode === "manual";
-    const runModeLabel = manualMode
-      ? "手动模式"
-      : gptAutoSettings.mode === "single"
-        ? "单账号单模板·永不停歇"
-        : gptAutoSettings.mode === "multi"
-          ? "多账号单模板·永不停歇"
-          : "手动模式";
+    const normalizedMode = normalizeGptProductionMode(gptAutoSettings.mode);
+    const manualMode = normalizedMode === "manual";
+    const runModeLabel = GPT_MODE_DEFINITIONS[normalizedMode]?.label || "人工控制";
     updateGptTestQueueStatus(`${runModeLabel} · ${runAccountName} · ${gptProductionWorkCount()} 个作品`);
   let completedThisRun = 0;
   let failedThisRun = 0;
@@ -3271,7 +4549,7 @@ async function sendNextGptTestTask(options = {}) {
       task.accountId = runAccountId;
       task.autoRun = !manualMode;
       task.autoOptions = { ...gptAutoSettings };
-      if (!manualMode) await ensureGptTaskQuota(task, activeGptAccountId, {
+      if (!manualMode) await ensureGptTaskQuota(task, runAccountId, {
         // Single-window production is intentionally user-driven: the local
         // quota ledger is a warning only. A real web limit still pauses in
         // the extension, while multi-window keeps its conservative gate.
@@ -3293,6 +4571,16 @@ async function sendNextGptTestTask(options = {}) {
             gptLastFailedPercent = Number(status.percent || 0);
             task._stage = gptLastFailedStage;
             task._percent = gptLastFailedPercent;
+            const runtime = readGptWindowRuntime(runAccountId);
+            writeGptWindowRuntime(runAccountId, {
+              status: "running",
+              currentTaskId: task.requestId,
+              currentStage: gptLastFailedStage,
+              currentPercent: gptLastFailedPercent,
+              uploadedAttachments: Number(status.uploadedAttachments || runtime.uploadedAttachments || 0),
+              expectedImages: Number(status.expectedImages || runtime.expectedImages || 0),
+              generatedImages: Number(status.generatedImages || status.actualImages || runtime.generatedImages || 0)
+            });
             if (/生成|图片|生图/i.test(task._stage)) recordGptQuotaConsumption(task, runAccountId, "generation");
             task._status = "running";
             persistGptQueue();
@@ -3307,24 +4595,79 @@ async function sendNextGptTestTask(options = {}) {
       let result;
       try {
         task._submittedToGpt = true;
+        const uploadImages = (task.attachments || []).filter((filePath) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(String(filePath || ""))).length;
         recordGptQuotaConsumption(task, runAccountId, "upload");
+        markGptWindowSetStarted(runAccountId);
+        writeGptWindowRuntime(runAccountId, {
+          status: "running",
+          currentTaskId: task.requestId,
+          currentStage: "上传附件",
+          currentPercent: 5,
+          expectedAttachments: uploadImages,
+          uploadedAttachments: 0
+        });
+        showWorkbenchAssistantBubble(`${runAccountName} 已上传本帖 ${uploadImages} 张图片，等待 GPT 出计划。`, { duration: 3600 });
         persistGptQueue();
+        // Semi-auto mode: pass autoConfirm=false so the extension stops after
+        // the plan is generated, waiting for the user to review and confirm.
+        if (isSemiAutoGptMode() && !task._semiAutoResume) {
+          task.autoOptions = { ...gptAutoSettings, autoConfirm: false };
+        } else {
+          task.autoOptions = { ...gptAutoSettings };
+        }
         result = await window.gptWorkbench.sendTask(task);
       } finally {
         polling = false;
         await pollingTask;
       }
+      if (result?.ok !== false) {
+        const confirmedUploads = Number(result?.fileCount || result?.uploadedFiles || uploadImages || 0);
+        writeGptWindowRuntime(runAccountId, {
+          uploadedAttachments: confirmedUploads,
+          expectedAttachments: uploadImages,
+          currentStage: "附件已确认，等待计划"
+        });
+        showWorkbenchAssistantBubble(`${runAccountName} 已确认收到 ${confirmedUploads}/${uploadImages} 张图片，正在等待计划。`, { duration: 3600 });
+      }
+      // Semi-auto: extension returned plannedOnly after generating the plan.
+      // Pause the queue and wait for the user to click "确认继续出图".
+      if (result?.plannedOnly && isSemiAutoGptMode() && !task._semiAutoResume) {
+        gptSemiAutoPendingTask = task;
+        task._status = "paused";
+        task._stage = "计划已完成，等待人工确认";
+        task._percent = 30;
+        gptQueuePaused = true;
+        gptAutoPaused = true;
+        writeGptWindowRuntime(runAccountId, {
+          status: "paused",
+          currentStage: "计划已完成，等待确认",
+          currentPercent: 30
+        });
+        persistGptQueue();
+        showWorkbenchAssistantBubble(`${task.name} 的迁移计划已完成。请审核计划，确认无误后点击"确认继续出图"继续自动出图、文案和打包。`, { duration: 0, persistent: true, tone: "info" });
+        updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 套 · 迁移计划已完成，请审核后点击"确认继续出图"`);
+        throw new Error("半自动：计划已完成，等待人工确认");
+      }
       if (!result?.ok) {
         gptLastFailedStage = String(result?.stage || gptLastFailedStage || "");
         gptLastFailedPercent = Number(result?.percent || gptLastFailedPercent || 0);
         const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
-        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "IMAGE_COUNT_UNCERTAIN", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(String(result?.errorCode || ""))
+        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "IMAGE_COUNT_UNCERTAIN", "PLAN_PARSE_FAILED", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(String(result?.errorCode || ""))
           || /未发送附件|未发送文字|重复粘贴提示词|没有接收到本轮提示词|输入框没有接收到|不属于当前帖子文件夹|混合上传|缺少帖子文件夹路径|上一帖仍在生成|已阻止下一帖注入|文案 TXT|代码解释器|脚本文件输出/.test(taskError.message);
         task._stage = gptLastFailedStage;
         task._percent = gptLastFailedPercent;
         task._error = taskError.message;
         const lowOutputLimit = isLowOutputGptLimitMessage(taskError.message);
-        const actualLimit = lowOutputLimit || isActualGptLimitMessage(taskError.message);
+        const retryLimit = isGptRetryLimitSignal(taskError.message, task);
+        const actualLimit = lowOutputLimit || isActualGptLimitMessage(taskError.message) || retryLimit;
+        writeGptWindowRuntime(runAccountId, {
+          status: actualLimit ? "waiting-quota" : "failed",
+          currentTaskId: task.requestId,
+          currentStage: gptLastFailedStage || task._stage || "任务失败",
+          currentPercent: gptLastFailedPercent,
+          generatedImages: Number(result?.detectedImages || result?.actualImages || readGptWindowRuntime(runAccountId).generatedImages || 0),
+          nextProbeAt: actualLimit ? Number(readGptCycleState(runAccountId).nextProbeAt || 0) || null : null
+        });
         task._status = actualLimit ? "paused" : "failed";
         appendGptProductionHistory(task, actualLimit ? "paused" : "failed", result, task._error);
         persistGptQueue();
@@ -3351,7 +4694,10 @@ async function sendNextGptTestTask(options = {}) {
           task._error = lowOutputLimit
             ? `${taskError.message}；已识别为触顶征兆，当前素材跳过，本批暂停，不继续发送后续素材`
             : taskError.message;
-          recordActualGptLimit(task._error, activeGptAccountId, lowOutputLimit ? "generation" : inferGptQuotaLimitKind(task, taskError.message));
+          recordActualGptLimit(task._error, runAccountId, lowOutputLimit || retryLimit ? "generation" : inferGptQuotaLimitKind(task, taskError.message));
+          await refreshGptAfterProduction(runAccountId, "production-limit-signal").catch((error) => {
+            showWorkbenchAssistantBubble(`触顶后刷新 GPT 网页失败：${error?.message || "未知错误"}；已保留暂停状态。`, { duration: 0, tone: "warning" });
+          });
           if (lowOutputLimit) gptTestQueueIndex += 1;
           persistGptQueue();
           const detectedLowOutputCount = Number(taskError.message.match(/(?:只检测到|完整回复只有)\s*(\d+)/)?.[1] || result?.detectedImages || 0);
@@ -3373,7 +4719,14 @@ async function sendNextGptTestTask(options = {}) {
       gptTestQueueIndex += 1;
       task._status = "completed";
       task._percent = 100;
+      markGptWindowSetCompleted(runAccountId);
+      writeGptWindowRuntime(runAccountId, { status: "idle", currentTaskId: "", currentStage: "已完成", currentPercent: 100 });
       appendGptProductionHistory(task, "completed", result);
+      if (task.taskType === "material") {
+        await refreshGptAfterProduction(runAccountId, "production-complete").catch((error) => {
+          showWorkbenchAssistantBubble(`本轮已落盘，但 GPT 网页刷新失败：${error?.message || "未知错误"}；已保留队列状态。`, { duration: 0, tone: "warning" });
+        });
+      }
       persistGptQueue();
       if (task.taskType === "material") completedThisRun += 1;
       if (progressBar) progressBar.style.width = `${Math.round(gptTestQueueIndex / gptTestQueue.length * 100)}%`;
@@ -3401,6 +4754,17 @@ async function sendNextGptTestTask(options = {}) {
       }
     }
   } catch (error) {
+    // Semi-auto pause is not a failure — the plan was generated successfully
+    // and the queue is waiting for the user to confirm.  Skip the failure
+    // path so no "自动生产已暂停" alarm or retry button appears.
+    const isSemiAutoPause = Boolean(gptSemiAutoPendingTask)
+      && /半自动.*等待人工确认/.test(String(error?.message || ""));
+    if (isSemiAutoPause) {
+      gptAutoRunning = false;
+      button.disabled = false;
+      updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 套 · 迁移计划已完成，请审核后点击"确认继续出图"`);
+      return;
+    }
     gptLastFailedTask = quotaPausedTask || gptTestQueue[gptTestQueueIndex] || null;
     gptQueuePaused = true;
     const failedTask = quotaPausedTask || gptTestQueue[gptTestQueueIndex];
@@ -3411,14 +4775,35 @@ async function sendNextGptTestTask(options = {}) {
       failedTask._status = "paused";
     }
     if (!quotaPausedTask && isActualGptLimitMessage(error?.message)) {
-      recordActualGptLimit(error.message, activeGptAccountId, inferGptQuotaLimitKind(failedTask, error?.message));
+      recordActualGptLimit(error.message, runAccountId, inferGptQuotaLimitKind(failedTask, error?.message));
     }
     persistGptQueue();
-    updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1} 套已暂停：${error.message}`);
+    if (quotaPausedTask) {
+      const quotaAccountId = quotaPausedTask.quotaAccountId || activeGptAccountId;
+      const quotaState = readGptCycleState(quotaAccountId);
+      const probeText = formatGptQuotaProbeTime(quotaState.nextProbeAt);
+      const accountName = gptAccounts.find((item) => item.id === quotaAccountId || item.quotaGroup === quotaAccountId)?.name || "当前账号窗口";
+      gptQuotaPauseStatus ||= `${accountName}已触发额度/低产出上限；当前批次已安全停住，${probeText}自动重新探测。`;
+      updateGptTestQueueStatus(gptQuotaPauseStatus);
+    } else {
+      updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1} 套已暂停：${error.message}`);
+    }
     if (String(error.message || "").includes("用户暂停") || resuming) {
       showWorkbenchAssistantBubble(`已暂停在第 ${gptTestQueueIndex + 1} 套；可以点击“继续自动生产”恢复。`);
     } else {
       showSystemNotice("自动生产已暂停", `${error.message}\n已完成的作品不会重复生成，处理当前问题后可继续。`, { tone: "danger" });
+      // In a continuous window, transient bridge/page readiness faults are
+      // operational interruptions, not material failures.  Keep the exact
+      // task checkpoint and retry it automatically.  Integrity, quota and
+      // low-output signals remain stopped for manual inspection/probing.
+      if (isContinuousGptMode()
+        && !currentGptQueueIntegrityBlock()
+        && isTransientGptWindowFailure(error?.message || gptLastFailedTask?._error || "")
+        && !gptWindowIsUserStopped(runAccountId)
+        && !gptWindowIsUserPaused(runAccountId)
+        && isContinuousGptProductionArmed()) {
+        scheduleGptWindowRetry(runAccountId, 15_000, "网页/桥接临时失败");
+      }
     }
   } finally {
     gptAutoRunning = false;
@@ -3428,6 +4813,10 @@ async function sendNextGptTestTask(options = {}) {
     persistGptQueue();
     updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
     refreshGptQuota();
+    const finalRuntime = readGptWindowRuntime(runAccountId);
+    if (!finalRuntime.stoppedByUser && !finalRuntime.pausedByUser && finalRuntime.status === "running") {
+      writeGptWindowRuntime(runAccountId, { status: gptQueuePaused ? "waiting-quota" : "idle" });
+    }
     if (isContinuousGptProductionArmed() && !gptQueuePaused && gptTestQueueIndex >= gptTestQueue.length) {
       scheduleContinuousGptProduction();
     }
@@ -3439,12 +4828,14 @@ function retryCurrentGptTask() {
   const failedTask = gptLastFailedTask;
   const previousRequestId = failedTask.requestId;
   const failureText = `${gptLastFailedStage || ""} ${failedTask._error || failedTask.error || ""}`;
+  const planParseBoundary = ["PLAN_PARSE_FAILED", "PLAN_NOT_COMPLETE"].includes(String(failedTask._errorCode || ""))
+    || /迁移计划已返回.*(?:解析|页数)/i.test(failureText);
   const requiresFreshUpload = /没有检测到新消息|发送按钮已出现|未发送附件|输入框仍有|没有接收到本轮提示词|输入框没有接收到|残留|上一帖|composer|COMPOSER|附件上传|附件尚未全部就绪|ATTACHMENT_UPLOAD_NOT_READY|Failed to fetch|本地工作台连接失败|LOCAL_BRIDGE_FETCH_FAILED|WEB_RESPONSE_IN_FLIGHT|WINDOW_STAGE_PENDING/i.test(failureText);
   failedTask.requestId = `gpt-retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   failedTask.retryOf = previousRequestId;
   failedTask.retryFromStage = gptLastFailedStage;
   failedTask.retryFromPercent = gptLastFailedPercent;
-  if (requiresFreshUpload) {
+  if (!planParseBoundary && requiresFreshUpload) {
     // A failed send/attachment boundary is not safely resumable. Reattach the
     // one-post payload from a clean composer instead of submitting an empty or
     // residual draft and pretending that the GPT turn advanced.
@@ -3453,6 +4844,16 @@ function retryCurrentGptTask() {
     failedTask.retryFromStage = "页面就绪";
     failedTask.retryFromPercent = 3;
     delete failedTask.workflow;
+  }
+  if (planParseBoundary) {
+    // The current assistant reply already contains the plan. Re-enter the
+    // same web stage so the fixed parser can read it and send exactly one
+    // confirmation. Uploading the material again here would create a second
+    // plan and can race the next queue item.
+    failedTask.forceUpload = false;
+    failedTask.retryFromStage = "等待迁移计划";
+    failedTask.retryFromPercent = Math.max(24, Number(failedTask._percent || 24));
+    failedTask._submittedToGpt = false;
   }
   delete failedTask._errorCode;
   gptLastFailedTask = null;
@@ -3469,6 +4870,30 @@ function completeCurrentManualGptTask() {
     return;
   }
   sendNextGptTestTask();
+}
+
+async function resumeSemiAutoGptTask() {
+  if (!gptSemiAutoPendingTask) return;
+  const task = gptSemiAutoPendingTask;
+  gptSemiAutoPendingTask = null;
+  // Mark the task as a semi-auto resume so the send loop does not pause again
+  // after the plan. The extension will pick up from the existing plan and
+  // proceed with confirm → images → copy → package.
+  task._semiAutoResume = true;
+  task.retryFromStage = "计划已完成";
+  task.retryFromPercent = 30;
+  task.forceUpload = false;
+  gptAutoPaused = false;
+  gptQueuePaused = false;
+  const accountId = String(task.accountId || activeGptAccountId);
+  writeGptWindowRuntime(accountId, { status: "running", currentStage: "确认继续出图", currentPercent: 35, pausedByUser: false });
+  showWorkbenchAssistantBubble(`已确认继续出图：${task.name}。将自动完成出图、文案和打包。`, { duration: 3600 });
+  updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 套 · 确认继续出图，自动处理中`);
+  try {
+    await sendNextGptTestTask({ accountId, userInitiated: true, allowWindowSwitch: true });
+  } catch (error) {
+    updateGptTestQueueStatus(`继续出图失败：${error?.message || "未知错误"}`);
+  }
 }
 
 function syncWorkbenchProductionSettings() {
@@ -4826,7 +6251,7 @@ function renderMaterialTree(container) {
               <span class="tree-file-icon">${item.imageCount || 0}<small>图</small></span>
               <span><strong>${escapeHtml(item.name)}</strong></span>
             </button>
-            <button class="tree-send-button" type="button" data-tree-send="${escapeHtml(item.id)}"><span>传 GPT</span><b aria-hidden="true">→</b></button>
+            <button class="tree-send-button" type="button" data-tree-send="${escapeHtml(item.id)}"><span>上传</span><b aria-hidden="true">→</b></button>
           </article>
         `).join("") || `<p class="tree-empty">当前分类没有匹配帖子</p>` : ""}
       </div>
@@ -5054,105 +6479,6 @@ async function showCollectionWorkPreview(previewPath, textPath, workPath) {
   dialog.showModal();
 }
 
-function renderDistributionLegacy() {
-  const data = dashboard?.distribution || { summary: {}, devices: [] };
-  const summary = data.summary || {};
-  const devices = DistributionUI.decorateDevices(
-    data.devices || [],
-    deviceCheckState.onlineDevices || []
-  );
-  const distributableCollections = (data.collections || []).filter((collection) =>
-    collection.dualPlatformEligible
-  );
-  const livePackageCounts = DistributionUI.countDistributablePackages(data.collections || []);
-  const stats = DistributionUI.phoneDistributionStats(summary, deviceCheckState, devices.length)
-    .map((stat) => livePackageCounts[stat.id] == null ? stat : { ...stat, value: livePackageCounts[stat.id] });
-  const packageCollections = distributableCollections.filter((collection) =>
-    collection.type === distributionSummaryFilter
-  );
-  const onlineDevices = devices.filter((device) => device.online);
-  const renderRefreshIcon = () => deviceCheckState.scanning
-    ? `<svg class="live-refresh-icon" viewBox="0 0 24 24" aria-label="正在刷新" role="img"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 8.3A7 7 0 0 1 18.7 7L20 12M4 12l1.3 5A7 7 0 0 0 17.9 15.7"/></svg>`
-    : "";
-  const renderDeviceRows = () => devices.map((device) => `
-    <article class="device-row ${device.online ? "is-online" : "is-offline"}" data-device-id="${escapeHtml(device.id)}">
-      ${renderDevicePlatformIcon(device)}
-      <div class="device-copy">
-        <button class="editable-device-name" type="button" data-edit-device-note="${escapeHtml(device.id)}" title="点击编辑设备名称或编号">${escapeHtml(cleanDeviceDisplayName(device.note || device.displayName))}</button>
-        <p>${escapeHtml(cleanDeviceDisplayName(device.displayName))} · ${escapeHtml(device.ownerGroup)} · ${escapeHtml((device.platforms || []).join(" + "))}${device.workCount == null ? "" : ` · 当前 ${device.workCount} 个作品`}</p>
-      </div>
-      <div class="badge-line device-status-badges">
-        ${renderDeviceTransportTags(device)}
-        <span class="state-badge">${device.platforms?.length === 1 ? "单平台设备" : "双平台设备"}</span>
-      </div>
-      <div class="device-actions">
-        <button type="button" data-device-action="traffic" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补泛流量</button>
-        <button type="button" data-device-action="conversion" data-device="${escapeHtml(device.aliases?.[0] || device.displayName)}" ${device.online ? "" : "disabled"}>补精准流量</button>
-        <button type="button" data-upload-other="${escapeHtml(device.id)}" ${device.online ? "" : "disabled"}>上传其他</button>
-      </div>
-      ${uploadChoiceDeviceId === device.id ? `<div class="upload-choice-panel">
-        <span>选择要发送给 ${escapeHtml(device.note || device.displayName)} 的内容</span>
-        <button type="button" data-generic-source="file" data-generic-device="${escapeHtml(device.id)}">选择文件</button>
-        <button type="button" data-generic-source="folder" data-generic-device="${escapeHtml(device.id)}">选择文件夹</button>
-        <button type="button" data-close-upload-choice>取消</button>
-      </div>` : ""}
-    </article>
-  `).join("");
-  const renderPackageRows = () => `
-    <div class="package-list">${packageCollections.length ? packageCollections.map((collection) => `
-      <article class="distribution-package-row ${selectedDistributionCollectionName === collection.name ? "active" : ""}" data-package-name="${escapeHtml(collection.name)}">
-        <button class="package-select" type="button" data-select-package="${escapeHtml(collection.name)}" aria-pressed="${selectedDistributionCollectionName === collection.name}">
-          <span class="package-radio" aria-hidden="true"></span>
-          <span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span>
-        </button>
-        <div class="badge-line">
-          <span class="state-badge good">小红书 + 抖音可用</span>
-          <span class="state-badge good">双平台可用</span>
-        </div>
-        <div class="device-actions">
-          <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品包</button>
-          <button type="button" data-send-package="${escapeHtml(collection.name)}">选择设备</button>
-        </div>
-      </article>
-    `).join("") : `<div class="empty-state"><strong>当前没有可用作品包</strong><p>已进入“已发送”或入口失效的作品包不会列在这里。</p></div>`}</div>
-    ${packageDevicePickerCollectionName ? `<div class="device-picker-backdrop" data-close-device-picker>
-      <section class="device-picker-dialog" role="dialog" aria-modal="true" aria-label="选择当前在线设备">
-        <header><div><strong>发送作品包</strong><span>${escapeHtml(packageDevicePickerCollectionName)}</span></div><button type="button" data-close-device-picker aria-label="关闭">×</button></header>
-        ${renderTransportGuide()}
-        <div class="device-picker-list">
-          ${onlineDevices.length ? onlineDevices.map((device) => `<button type="button" data-confirm-package-device="${escapeHtml(device.id)}">
-            ${renderDevicePlatformIcon(device, "picker-platform-icon")}
-            <strong>${escapeHtml(device.note || device.displayName)}</strong>
-            ${renderDeviceTransportTags(device, true)}
-          </button>`).join("") : `<div class="empty-state"><strong>当前没有在线设备</strong><p>后台会继续自动刷新设备状态。</p></div>`}
-        </div>
-      </section>
-    </div>` : ""}
-  `;
-  $("#distributionPhones").innerHTML = `
-    <div class="distribution-stats">
-      ${stats.map((stat) => `<button type="button" class="summary-card is-actionable ${distributionSummaryFilter === stat.id ? "active" : ""}" data-distribution-filter="${stat.id}"><span>${escapeHtml(stat.label)}</span><strong>${escapeHtml(stat.value)} <small>${escapeHtml(stat.unit)}</small>${stat.id === "devices" ? renderRefreshIcon() : ""}</strong></button>`).join("")}
-    </div>
-    ${renderTransferTasks()}
-    ${distributionSummaryFilter === "devices" ? `<div class="device-list">${renderDeviceRows()}</div>` : renderPackageRows()}
-  `;
-  const pending = data.collections?.filter((item) => item.officialAccount === "reserved_pending_upload") || [];
-  $("#distributionOfficial").innerHTML = `
-    <div class="distribution-stats">
-      ${[["公众号可用", summary.officialAvailable || 0], ["已打开过", summary.officialPending || 0], ["上传已完成", summary.officialConfirmed || 0]]
-        .map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${value}</strong></article>`).join("")}
-    </div>
-    <div class="official-launcher"><div><strong>公众号发布后台</strong><p>先打开官网上传作品，再回到这里确认结果。</p></div><button type="button" class="primary-button" data-open-official-site>打开公众号官网</button></div>
-    <div class="detail-warning">打开作品文件夹后会标记为“已打开过”；完成公众号上传后，点击“是否已上传？”确认即可。</div>
-    <div class="record-list">
-      ${pending.map((collection) => `<article class="official-card"><div class="device-number">开</div><div><h3>${escapeHtml(collection.name)}</h3><p>作品文件夹已经打开过，等待你完成电脑上传</p></div><span class="state-badge warn">已打开过</span><div class="device-actions"><button data-confirm-official="${escapeHtml(collection.name)}">是否已上传？</button></div></article>`).join("")}
-      <article class="official-card"><div class="device-number">${summary.officialAvailable || 0}</div><div><h3>打开一个公众号可用作品集</h3><p>打开文件夹并登记“已打开过”，上传完成后再确认</p></div><span class="state-badge good">公众号可用</span><div class="device-actions"><button data-official-action="execute">上传公众号</button></div></article>
-    </div>
-  `;
-  $("#distributionHistory").innerHTML = renderDistributionRecords(data.deviceHistory || [], "device");
-  showDistributionPanel(activeDistributionPanel);
-}
-
 function renderDistribution() {
   const data = dashboard?.distribution || { devices: [], collections: [] };
   const devices = DistributionUI.decorateDevices(data.devices || [], deviceCheckState.onlineDevices || []);
@@ -5204,7 +6530,7 @@ function renderDistribution() {
       </button>
     </div>
   `;
-  const classificationSelect = (collection) => `
+  const classificationSelect = (collection) => distributionCollectionTypeFilter === "unclassified" ? `
     <label class="classification-select">
       <select data-classify-collection="${escapeHtml(collection.name)}">
         <option value="traffic" ${collection.type === "traffic" ? "selected" : ""}>泛流量帖</option>
@@ -5212,7 +6538,7 @@ function renderDistribution() {
         <option value="unclassified" ${collection.type === "unclassified" ? "selected" : ""}>未分类</option>
       </select>
     </label>
-  `;
+  ` : "";
   const devicePicker = () => packageDevicePickerCollectionName ? `
     <div class="device-picker-backdrop" data-close-device-picker>
       <section class="device-picker-dialog" role="dialog" aria-modal="true" aria-label="选择当前在线设备">
@@ -5284,10 +6610,10 @@ function renderDistribution() {
             ? `<span class="state-badge warn">待分类</span>`
             : `<span class="state-badge warn">${escapeHtml(collection.exclusionReasons?.[0] || "当前不可发送")}</span>`;
       return `<article class="distribution-package-row ${selectedDistributionCollectionName === collection.name ? "active" : ""}" data-package-name="${escapeHtml(collection.name)}">
-        <button class="package-select" type="button" data-select-package="${escapeHtml(collection.name)}">
+        <div class="package-select">
           <span class="package-radio" aria-hidden="true"></span>
           <span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span>
-        </button>
+        </div>
         ${issueBadge ? `<div class="badge-line">${issueBadge}</div>` : ""}
         <div class="device-actions">
           <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品包</button>
@@ -5672,7 +6998,7 @@ function showWorkbenchAssistantBubble(message, options = {}) {
   if (content) content.textContent = entry.message;
   else bubble.textContent = entry.message;
   bubble.hidden = false;
-  window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: true }).catch(() => {});
+  window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: !assistantChatOpen }).catch(() => {});
   clearTimeout(assistantBubbleTimer);
   if (Number(options.duration || 0) > 0) {
     assistantBubbleTimer = window.setTimeout(() => {
@@ -5680,10 +7006,10 @@ function showWorkbenchAssistantBubble(message, options = {}) {
         const content = $("#workbenchAssistantBubbleContent");
         if (content) content.textContent = assistantPersistentMessage;
         bubble.hidden = false;
-        window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage, visible: true }).catch(() => {});
+        window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage, visible: !assistantChatOpen }).catch(() => {});
       } else if (options.transient === true && assistantPersistentMessage) {
         bubble.hidden = false;
-        window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage, visible: true }).catch(() => {});
+        window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage, visible: !assistantChatOpen }).catch(() => {});
       } else {
         bubble.hidden = true;
         window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: false }).catch(() => {});
@@ -5763,6 +7089,7 @@ function renderGptProductionHistory() {
       ${(item.planDurationMs || item.imageDurationMs || item.copyDurationMs) ? `<div class="gpt-production-history-timings"><span>计划 ${formatProductionDuration(item.planDurationMs)}</span><span>出图 ${formatProductionDuration(item.imageDurationMs)}</span><span>文案 ${formatProductionDuration(item.copyDurationMs)}</span></div>` : ""}
       ${(item.packagePath || item.productPath || item.downloadRoot) ? `<button class="gpt-production-open-path" type="button" data-open-production-path="${escapeHtml(item.packagePath || item.productPath || item.downloadRoot)}">${item.packagePath || item.productPath ? (item.packageValid === false ? "打开成品文件夹（待核对）" : "打开成品文件夹") : "打开图片暂存目录"}</button><p>${item.packagePath || item.productPath ? "成品" : "暂存"}：${escapeHtml(item.packagePath || item.productPath || item.downloadRoot)}</p>${item.packagePath && item.packageValid === false ? `<p class="muted">完整性：图片 ${Number(item.packageImageCount || 0)} 张，文案 TXT ${Number(item.packageTextCount || 0)} 个；未通过完整打包校验。</p>` : ""}` : ""}
       ${item.error ? `<p>原因：${escapeHtml(item.error)}</p>` : ""}
+      ${item.sourceMaterialPath ? `<p>原素材：${escapeHtml(item.sourceMaterialPath)}</p>` : ""}
       <p>${escapeHtml(new Date(item.finishedAt || item.updatedAt || Date.now()).toLocaleString("zh-CN", { hour12: false }))}</p>
     </article>`).join("") : '<div class="empty-state"><strong>暂无生产记录</strong><p>自动闭环完成、暂停或失败后会保留在这里。</p></div>';
   host.querySelectorAll("[data-open-production-path]").forEach((button) => button.addEventListener("click", async () => {
@@ -5782,6 +7109,11 @@ async function syncGptProductionHistory() {
     const existing = byRequestId.get(checkpoint.requestId);
     if (existing) {
       existing.stage ||= checkpoint.stage || "检查点";
+      existing.taskState ||= checkpoint.taskState || "";
+      existing.confirmSentAt ||= checkpoint.confirmSentAt || "";
+      existing.imageGenerationDetectedAt ||= checkpoint.imageGenerationDetectedAt || "";
+      existing.quotaDetectedAt ||= checkpoint.quotaDetectedAt || "";
+      existing.nextProbeAt ||= checkpoint.nextProbeAt || "";
       existing.percent = Math.max(Number(existing.percent || 0), Number(checkpoint.percent || 0));
       existing.packagePath ||= checkpoint.packagePath || "";
       existing.productPath ||= checkpoint.packagePath || "";
@@ -5861,6 +7193,7 @@ function openWorkbenchAssistantLog(open = true) {
   const { logPanel, panel } = assistantElements();
   if (!logPanel) return;
   if (open) {
+    assistantChatOpen = false;
     if (panel) panel.hidden = true;
     renderWorkbenchAssistantLog();
   }
@@ -5912,19 +7245,27 @@ function appendWorkbenchAssistantMessage(message, role = "assistant") {
   container.scrollTop = container.scrollHeight;
 }
 
-function toggleWorkbenchAssistant(open) {
+async function toggleWorkbenchAssistant(open) {
   const panel = $("#workbenchAssistantPanel");
   const launcher = $("#workbenchAssistantLauncher");
   if (!panel || !launcher) return;
   const shouldOpen = open ?? panel.hidden;
-  panel.hidden = !shouldOpen;
-  window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage || lastAssistantBubbleMessage, visible: !shouldOpen }).catch(() => {});
-  if (shouldOpen) openWorkbenchAssistantLog(false);
-  launcher.setAttribute("aria-expanded", String(shouldOpen));
-  if ($("#gptProductionTestView")?.classList.contains("active")) {
-    if (shouldOpen) window.gptWorkbench?.hide?.().catch(() => {});
-    else restoreEmbeddedGptView();
+  if (shouldOpen) {
+    assistantChatOpen = true;
+    // The GPT WebContentsView is a native layer and can briefly remain above
+    // the renderer after a synchronous DOM toggle. Hide it first, then reveal
+    // the chat panel so the panel cannot land underneath the webpage.
+    await window.gptWorkbench?.hide?.().catch(() => {});
+    panel.hidden = false;
+    const { logPanel } = assistantElements();
+    if (logPanel) logPanel.hidden = true;
+  } else {
+    assistantChatOpen = false;
+    panel.hidden = true;
+    window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage || lastAssistantBubbleMessage, visible: true }).catch(() => {});
   }
+  launcher.setAttribute("aria-expanded", String(shouldOpen));
+  if (!shouldOpen && $("#gptProductionTestView")?.classList.contains("active")) restoreEmbeddedGptView();
   if (shouldOpen) window.setTimeout(() => $("#workbenchAssistantCommand")?.focus(), 0);
 }
 
@@ -7949,11 +9290,6 @@ function bindEvents() {
       dismissTransferTask(dismissTransfer.dataset.dismissTransfer, dismissTransfer.dataset.transferKind);
       return;
     }
-    const selectPackage = event.target.closest("[data-select-package]");
-    if (selectPackage) {
-      selectedDistributionCollectionName = selectPackage.dataset.selectPackage;
-      renderDistribution();
-    }
     const sendPackage = event.target.closest("[data-send-package]");
     if (sendPackage) {
       selectedDistributionCollectionName = sendPackage.dataset.sendPackage;
@@ -8331,7 +9667,22 @@ function bindEvents() {
     updateGptTestQueueStatus();
   });
   $("#gptTestSendBtn")?.addEventListener("click", async () => {
-    if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) {
+    const accountId = activeGptAccountId;
+    // Guard: if a manual task is waiting for the user to send the prompt in
+    // GPT, do not start a new upload.  The button should be disabled already,
+    // but this prevents race conditions from keyboard shortcuts or rapid clicks.
+    if (gptCurrentManualTask) {
+      showWorkbenchAssistantBubble('当前已有手动任务等待发送；请在 GPT 中发送提示词后点「完成当前，上传下一套」。', { duration: 4200 });
+      return;
+    }
+    // Guard: if a semi-auto task is waiting for the user to confirm the plan,
+    // do not start a new upload.  The "确认继续出图" button is the only way forward.
+    if (gptSemiAutoPendingTask) {
+      showWorkbenchAssistantBubble('当前已有半自动任务等待确认；请审核计划后点「确认继续出图」。', { duration: 4200 });
+      return;
+    }
+    writeGptWindowRuntime(accountId, { stoppedByUser: false, pausedByUser: false, status: "idle" });
+    if (isContinuousGptMode()) {
       setContinuousGptProductionArmed(true);
       if (gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
         await prepareAllDayGptQueue();
@@ -8342,7 +9693,8 @@ function bindEvents() {
     if (allowQuotaOverride) {
       showWorkbenchAssistantBubble("已收到手动继续指令：本地额度提醒不再拦截本轮，网页真实返回限流时才停止。", { duration: 5200 });
     }
-    sendNextGptTestTask({ allowQuotaOverride, userInitiated: true });
+    gptQuotaPauseStatus = "";
+    sendNextGptTestTask({ accountId, allowQuotaOverride, userInitiated: true, allowWindowSwitch: true });
   });
   $("#gptProductionMode")?.addEventListener("contextmenu", (event) => {
     event.preventDefault();
@@ -8362,41 +9714,256 @@ function bindEvents() {
       return;
     }
     const key = normalizeGptProductionMode(event.target?.value);
+    // Clear any pending semi-auto task when switching modes.  A semi-auto
+    // pause is owned by the semi-auto mode; switching to another mode
+    // orphaned the pending task and left the "确认继续出图" button visible.
+    if (gptSemiAutoPendingTask && key !== "semi-auto") {
+      gptSemiAutoPendingTask = null;
+    }
     gptAutoSettings.mode = key;
     applyGptModeProfile(key);
     if ($("#gptProductionMode")) $("#gptProductionMode").value = key;
     if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = key;
+    // Per-window mode: persist this mode on the current account so switching
+    // to another window and back restores each window's own mode.
+    const currentAccount = gptAccounts.find((item) => item.id === activeGptAccountId);
+    if (currentAccount) {
+      currentAccount.mode = key;
+      saveGptAccounts();
+    }
     renderGptAutoSettings();
     showWorkbenchAssistantBubble(`已切换到“${gptModeProfiles[key]?.name || GPT_MODE_DEFINITIONS[key].defaultName}”。新任务会绑定当前账号窗口。`, { duration: 3600 });
   };
   $("#gptProductionMode")?.addEventListener("change", handleGptModeChange);
-  $("#gptProductionModeSetting")?.addEventListener("change", handleGptModeChange);
-  $("#gptSaveModeProfileBtn")?.addEventListener("click", saveGptModeProfileFromUi);
+  // Settings-panel mode dropdown: preview only, does NOT change the actual production mode
+  $("#gptProductionModeSetting")?.addEventListener("change", (event) => {
+    if (gptAutoRunning) {
+      renderGptAutoSettings();
+      showWorkbenchAssistantBubble("当前作品正在运行，不能切换生产模式；暂停或完成后再切换。", { duration: 4200 });
+      return;
+    }
+    const key = normalizeGptProductionMode(event.target?.value);
+    gptSettingsPreviewMode = key;
+    renderGptModeProfile();
+    updateModeQuickTabs(key);
+  });
+  $("#gptModeInfoBtn")?.addEventListener("click", () => {
+    const popover = $("#gptModeInfoPopover");
+    if (popover) popover.hidden = !popover.hidden;
+  });
+  //  // ── Mode quick-tabs: click to preview mode settings in the settings panel ──
+  document.querySelectorAll("#gptModeQuickTabs .mode-quick-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      if (gptAutoRunning) {
+        showWorkbenchAssistantBubble("当前作品正在运行，不能切换生产模式；暂停或完成后再切换。", { duration: 4200 });
+        updateModeQuickTabs();
+        return;
+      }
+      const key = normalizeGptProductionMode(tab.dataset.mode);
+      if (key === activeSettingsModeKey()) return;
+      gptSettingsPreviewMode = key;
+      if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = key;
+      renderGptModeProfile();
+      updateModeQuickTabs(key);
+    });
+  });
+  $("#gptAddModeWorkflowStepBtn")?.addEventListener("click", () => {
+    if (gptAutoRunning) {
+      showWorkbenchAssistantBubble("本批任务正在执行，流程不能在运行中修改；暂停或完成后再添加环节。", { duration: 4200 });
+      return;
+    }
+    const key = activeSettingsModeKey();
+    const steps = normalizeGptWorkflowSteps(readGptModeWorkflowFromUi());
+    steps.push({ action: "wait-plan", text: "", timeoutSeconds: 60, enabled: true, autoDetect: true });
+    gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps };
+    saveGptModeProfiles();
+    renderGptModeProfile();
+    toast("已添加环节并实时保存");
+  });
+  // ── Real-time save: any edit in the workflow editor immediately persists ──
+  $("#gptModeWorkflowEditor")?.addEventListener("input", () => {
+    if (gptAutoRunning) return;
+    const key = activeGptModeKey();
+    const draft = readGptModeWorkflowFromUi();
+    if (!draft.length) return;
+    const validation = validateGptWorkflowSteps(draft);
+    if (!validation.ok) return; // silent — let the user finish typing
+    gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps };
+    saveGptModeProfiles();
+    applyGptModeProfile(key);
+  });
+  $("#gptModeWorkflowEditor")?.addEventListener("change", (event) => {
+    if (gptAutoRunning) {
+      renderGptAutoSettings();
+      showWorkbenchAssistantBubble("本批任务正在执行，生产设置已锁定；暂停或完成后再修改。", { duration: 4200 });
+      return;
+    }
+    const key = activeGptModeKey();
+    const draft = readGptModeWorkflowFromUi();
+    if (!draft.length) return;
+    const validation = validateGptWorkflowSteps(draft);
+    if (!validation.ok) {
+      showWorkbenchAssistantBubble(`流程有误：${validation.error}`, { duration: 5200 });
+      return;
+    }
+    gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps };
+    saveGptModeProfiles();
+    applyGptModeProfile(key);
+    saveGptAutoSettings();
+    // If the action dropdown changed, re-render to show/hide correct input fields
+    if (event.target?.dataset?.workflowField === "action") {
+      renderGptModeWorkflow();
+    } else {
+      // Update auto-detect visual state without full re-render
+      const waitActions = new Set(["upload-material", "wait-plan", "wait-images", "wait-copy", "download-images", "save-text"]);
+      document.querySelectorAll("#gptModeWorkflowEditor .gpt-workflow-step").forEach((row) => {
+        const checkbox = row.querySelector('[data-workflow-field="autoDetect"]');
+        if (checkbox) {
+          const action = row.querySelector('[data-workflow-field="action"]')?.value || "";
+          row.classList.toggle("is-auto-wait", checkbox.checked && waitActions.has(action));
+        }
+      });
+    }
+  });
+  // ── Click handler: move up/down, delete, and drag-and-drop ──
+  $("#gptModeWorkflowEditor")?.addEventListener("click", (event) => {
+    const row = event.target.closest(".gpt-workflow-step");
+    if (!row || gptAutoRunning) return;
+    const move = event.target.closest("[data-workflow-move]")?.dataset.workflowMove;
+    const remove = event.target.closest("[data-workflow-remove]");
+    if (!move && !remove) return;
+    const steps = normalizeGptWorkflowSteps(readGptModeWorkflowFromUi());
+    const index = Number(row.dataset.workflowIndex);
+    if (!Number.isInteger(index) || !steps[index]) return;
+    if (remove) {
+      if (steps.length <= 1) return;
+      steps.splice(index, 1);
+    } else {
+      const nextIndex = move === "up" ? index - 1 : index + 1;
+      if (nextIndex < 0 || nextIndex >= steps.length) return;
+      [steps[index], steps[nextIndex]] = [steps[nextIndex], steps[index]];
+    }
+    const key = activeGptModeKey();
+    gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps };
+    saveGptModeProfiles();
+    applyGptModeProfile(key);
+    renderGptModeWorkflow();
+  });
+  // ── Drag-and-drop reordering ──
+  let gptWorkflowDragSrc = null;
+  $("#gptModeWorkflowEditor")?.addEventListener("dragstart", (event) => {
+    if (gptAutoRunning) { event.preventDefault(); return; }
+    // Don't start drag from inside inputs, selects, or textareas — let users select text
+    if (event.target.matches("input, select, textarea")) { event.preventDefault(); return; }
+    const row = event.target.closest(".gpt-workflow-step");
+    if (!row) return;
+    gptWorkflowDragSrc = row;
+    row.classList.add("dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", row.dataset.workflowIndex);
+  });
+  $("#gptModeWorkflowEditor")?.addEventListener("dragend", () => {
+    if (gptWorkflowDragSrc) gptWorkflowDragSrc.classList.remove("dragging");
+    gptWorkflowDragSrc = null;
+    document.querySelectorAll("#gptModeWorkflowEditor .gpt-workflow-step.drag-over").forEach((el) => el.classList.remove("drag-over"));
+  });
+  $("#gptModeWorkflowEditor")?.addEventListener("dragover", (event) => {
+    if (gptAutoRunning || !gptWorkflowDragSrc) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const row = event.target.closest(".gpt-workflow-step");
+    if (!row || row === gptWorkflowDragSrc) return;
+    document.querySelectorAll("#gptModeWorkflowEditor .gpt-workflow-step.drag-over").forEach((el) => el.classList.remove("drag-over"));
+    row.classList.add("drag-over");
+  });
+  $("#gptModeWorkflowEditor")?.addEventListener("drop", (event) => {
+    if (gptAutoRunning || !gptWorkflowDragSrc) return;
+    event.preventDefault();
+    const targetRow = event.target.closest(".gpt-workflow-step");
+    if (!targetRow || targetRow === gptWorkflowDragSrc) return;
+    const steps = normalizeGptWorkflowSteps(readGptModeWorkflowFromUi());
+    const fromIndex = Number(gptWorkflowDragSrc.dataset.workflowIndex);
+    const toIndex = Number(targetRow.dataset.workflowIndex);
+    if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex === toIndex) return;
+    const [moved] = steps.splice(fromIndex, 1);
+    steps.splice(toIndex, 0, moved);
+    const key = activeGptModeKey();
+    gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps };
+    saveGptModeProfiles();
+    applyGptModeProfile(key);
+    renderGptModeWorkflow();
+    toast("环节顺序已更新");
+  });
   $("#gptManualNextBtn")?.addEventListener("click", completeCurrentManualGptTask);
+  $("#gptSemiAutoResumeBtn")?.addEventListener("click", resumeSemiAutoGptTask);
   $("#gptPauseQueueBtn")?.addEventListener("click", () => {
+    const accountId = activeGptAccountId;
+    const runtime = readGptWindowRuntime(accountId);
     if (gptAutoRunning && gptAutoPaused) {
       // The current stage is already winding down.  A second click only
       // releases the pause flag; it never injects a new post into the page.
       gptAutoPaused = false;
+      writeGptWindowRuntime(accountId, { pausedByUser: false, status: "running", stoppedByUser: false });
       updateGptTestQueueStatus("已继续当前工作流；仍会先完成当前帖子再进入下一帖");
       showWorkbenchAssistantBubble("已继续当前工作流，当前帖子完成后才会处理下一帖。", { duration: 3600 });
       return;
     }
     if (!gptAutoRunning && gptQueuePaused) {
-      if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) setContinuousGptProductionArmed(true);
+      // Semi-auto pause: the queue is waiting for the user to confirm the
+      // plan, not for a generic resume.  The "确认继续出图" button is the
+      // only way forward; clicking "继续" here must not bypass it.
+      if (gptSemiAutoPendingTask) {
+        showWorkbenchAssistantBubble('当前正在等待你确认迁移计划。请审核计划后点「确认继续出图」继续出图。', { duration: 4200 });
+        return;
+      }
+      writeGptWindowRuntime(accountId, { pausedByUser: false, stoppedByUser: false, status: "probing", currentStage: "准备继续" });
+      if (isContinuousGptMode()) setContinuousGptProductionArmed(true);
       const pausedTaskError = String(gptLastFailedTask?._error || "");
       const allowQuotaOverride = /额度|限额|quota|rate limit|usage limit/i.test(pausedTaskError);
-      sendNextGptTestTask({ allowQuotaOverride, userInitiated: true });
+      gptQuotaPauseStatus = "";
+      sendNextGptTestTask({ accountId, allowQuotaOverride, userInitiated: true, allowWindowSwitch: true }).catch((error) => {
+        updateGptTestQueueStatus(`继续失败：${error?.message || "未知错误"}`);
+      });
       return;
     }
     if (!gptAutoRunning) return;
     setContinuousGptProductionArmed(false);
     clearTimeout(gptContinuousLaunchTimer);
     gptContinuousLaunchTimer = null;
+    clearTimeout(gptWindowRetryTimers.get(accountId));
+    gptWindowRetryTimers.delete(accountId);
     gptAutoPaused = true;
+    writeGptWindowRuntime(accountId, { pausedByUser: true, status: "paused", currentStage: "用户暂停" });
     persistGptQueue();
     updateGptTestQueueStatus("已暂停；当前阶段结束后停在安全检查点");
     showWorkbenchAssistantBubble("已暂停当前工作流；不会注入下一帖，按钮现在可点“继续”。", { duration: 4200 });
+  });
+  $("#gptStopQueueBtn")?.addEventListener("click", async () => {
+    const accountId = activeGptAccountId;
+    const runtime = readGptWindowRuntime(accountId);
+    if (runtime.stoppedByUser) {
+      writeGptWindowRuntime(accountId, { stoppedByUser: false, pausedByUser: false, status: "idle", currentStage: "等待启动" });
+      setContinuousGptProductionArmed(isContinuousGptMode());
+      updateGptTestQueueStatus("已启动当前账号窗口；正在恢复到上次安全检查点。");
+      reconcileGptWindow(accountId, { force: true }).catch((error) => updateGptTestQueueStatus(`启动失败：${error?.message || "未知错误"}`));
+      return;
+    }
+    if (!window.confirm("停止当前账号窗口的生产模式？未完成队列会保留，但不会继续上传或自动重试。")) return;
+    clearTimeout(gptContinuousLaunchTimer);
+    gptContinuousLaunchTimer = null;
+    clearTimeout(gptWindowRetryTimers.get(accountId));
+    gptWindowRetryTimers.delete(accountId);
+    setContinuousGptProductionArmed(false);
+    gptAutoPaused = true;
+    gptQueuePaused = true;
+    gptAutoRunning = false;
+    // Clear any pending semi-auto task so the "确认继续出图" button
+    // disappears when the user explicitly stops production.
+    gptSemiAutoPendingTask = null;
+    writeGptWindowRuntime(accountId, { stoppedByUser: true, pausedByUser: false, status: "stopped", currentStage: "已停止" });
+    persistGptQueue();
+    updateGptTestQueueStatus("当前账号窗口已停止；队列和登录状态已保留，点击“启动”可恢复。");
+    showWorkbenchAssistantBubble("已停止当前账号窗口；不会继续注入下一帖，也不会自动重试。", { duration: 0, tone: "warning" });
   });
   $("#gptRetryTaskBtn")?.addEventListener("click", retryCurrentGptTask);
   $("#gptSkipTaskBtn")?.addEventListener("click", () => {
@@ -8405,6 +9972,14 @@ function bindEvents() {
       return;
     }
     gptCurrentManualTask = null;
+    // If skipping while a semi-auto task is pending for confirmation, clear
+    // the pending state so the "确认继续出图" button disappears and the
+    // queue advances to the next material.
+    if (gptSemiAutoPendingTask) {
+      gptSemiAutoPendingTask = null;
+      gptAutoPaused = false;
+      gptQueuePaused = false;
+    }
     gptTestQueueIndex = Math.min(gptTestQueue.length, gptTestQueueIndex + 1);
     if (gptTestQueue[gptTestQueueIndex - 1]) gptTestQueue[gptTestQueueIndex - 1]._status = "skipped";
     persistGptQueue();
@@ -8416,6 +9991,39 @@ function bindEvents() {
   $("#gptBrowserForwardBtn")?.addEventListener("click", () => navigateEmbeddedGpt("forward"));
   $("#gptBrowserReloadBtn")?.addEventListener("click", () => navigateEmbeddedGpt("reload"));
   $("#gptBrowserHomeBtn")?.addEventListener("click", () => navigateEmbeddedGpt("home"));
+  function resolveGptBrowserInput(value = "") {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const url = new URL(candidate);
+      const hostLooksLikeAddress = Boolean(url.hostname)
+        && (url.hostname === "localhost"
+          || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(url.hostname)
+          || url.hostname.includes(".")
+          || url.hostname.startsWith("["));
+      if ((url.protocol === "http:" || url.protocol === "https:") && hostLooksLikeAddress) {
+        return url.href;
+      }
+    } catch {
+      // Plain text is intentionally handled as a search query below.
+    }
+    return `https://www.google.com/search?q=${encodeURIComponent(raw)}`;
+  }
+
+  const submitGptBrowserAddress = () => {
+    const input = $("#gptBrowserAddressInput");
+    const value = String(input?.value || "").trim();
+    if (!value) return;
+    const target = resolveGptBrowserInput(value);
+    navigateEmbeddedGpt("url", target).finally(() => input?.blur());
+  };
+  $("#gptBrowserGoBtn")?.addEventListener("click", submitGptBrowserAddress);
+  $("#gptBrowserAddressInput")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    submitGptBrowserAddress();
+  });
   $("#gptAddAccountBtn")?.addEventListener("click", () => addGptAccount());
   $("#exportLocalSettingsBtn")?.addEventListener("click", () => exportLocalWorkbenchSettings()
     .catch((error) => showSystemNotice("本地设置没有导出", error.message, { tone: "danger" })));
@@ -8446,12 +10054,13 @@ function bindEvents() {
     }
   });
   [
-    "#gptProductionMode", "#gptAutoConfirmEnabled", "#gptAutoCopyEnabled", "#gptAutoPackageEnabled", "#gptAutoPauseOnFailure",
+    "#gptProductionMode",
     "#gptProductionModeSetting", "#gptAutoArchiveEnabled", "#gptQuotaReminderEnabled", "#gptAutoMinDelay", "#gptAutoMaxDelay",
     "#gptAutoTaskTimeout", "#gptAutoAccountLimit", "#gptParallelWorkers", "#gptUploadLimit", "#gptGenerationLimit", "#gptQuotaWindowHours",
-    "#gptMinimumImageCount", "#gptConfirmText", "#gptCopyPrompt", "#gptIdleUnloadMinutes", "#gptDownloadRoot", "#gptProductRoot",
+    "#gptMinimumImageCount", "#gptIdleUnloadMinutes", "#gptDownloadRoot", "#gptProductRoot",
     "#gptPromptLibraryEnabled", "#gptMessageDownloadsEnabled", "#gptScheduledEnabled", "#gptScheduledTime", "#gptScheduledJitter",
-    "#gptLaunchAtLogin", "#gptContinuousAutoStart", "#gptContinuousWorkHoursEnabled", "#gptContinuousWorkStart", "#gptContinuousWorkEnd"
+    "#gptLaunchAtLogin", "#gptContinuousAutoStart", "#gptContinuousWorkHoursEnabled", "#gptContinuousWorkStart", "#gptContinuousWorkEnd",
+    "#gptExtraPromptRules", "#gptModeProfileName", "#gptModeStartBehavior"
   ].forEach((selector) => {
     $(selector)?.addEventListener("change", () => {
       if (gptAutoRunning) {
@@ -8460,12 +10069,15 @@ function bindEvents() {
         return;
       }
       saveGptAutoSettings();
-      if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)) && gptAutoSettings.continuousAutoStart !== false) {
+      if (isContinuousGptMode()
+        && gptAutoSettings.continuousAutoStart !== false
+        && !gptQueuePaused
+        && !currentGptQueueIntegrityBlock()) {
         setContinuousGptProductionArmed(true);
         clearTimeout(gptContinuousLaunchTimer);
         gptContinuousLaunchTimer = null;
         scheduleContinuousGptProduction();
-      } else if (!["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode))) {
+      } else if (!isContinuousGptMode()) {
         setContinuousGptProductionArmed(false);
         clearTimeout(gptContinuousLaunchTimer);
         gptContinuousLaunchTimer = null;
@@ -8541,10 +10153,12 @@ function bindEvents() {
     showWorkbenchAssistantBubble(`${account.name} 已保存；额度组为 ${account.quotaGroup}。`);
   });
   $("#gptBrowserManager")?.addEventListener("click", async (event) => {
+    const toggleDisable = event.target.closest("[data-browser-toggle-disable]");
     const toggle = event.target.closest("[data-browser-toggle]");
     const recovery = event.target.closest("[data-browser-recovery]");
     const remove = event.target.closest("[data-browser-remove]");
     const deleteLogin = event.target.closest("[data-browser-delete-login]");
+    if (toggleDisable) return toggleGptAccountDisabled(toggleDisable.dataset.browserToggleDisable);
     if (deleteLogin) return deleteGptAccountLogin(deleteLogin.dataset.browserDeleteLogin);
     if (remove) return removeGptAccount(remove.dataset.browserRemove);
     if (recovery) {
@@ -8820,10 +10434,22 @@ function bindEvents() {
     }
     await renamePath(target?.path, target?.label);
   });
+  $("#contextToggleDisable")?.addEventListener("click", () => {
+    const target = contextMenuTarget;
+    hideContextMenu();
+    if (target?.kind !== "gpt-browser-profile") return;
+    toggleGptAccountDisabled(target.accountId);
+  });
+  $("#contextRemoveAccount")?.addEventListener("click", () => {
+    const target = contextMenuTarget;
+    hideContextMenu();
+    if (target?.kind !== "gpt-browser-profile") return;
+    removeGptAccount(target.accountId);
+  });
   $("#contextModeSettings")?.addEventListener("click", () => {
     const target = contextMenuTarget;
     hideContextMenu();
-    if (target?.kind !== "gpt-production-mode") return;
+  if (target?.kind !== "gpt-production-mode") return;
     const key = activeGptModeKey(target.mode);
     if ($("#gptProductionMode")) $("#gptProductionMode").value = key;
     if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = key;
@@ -8842,7 +10468,8 @@ function bindEvents() {
       name: GPT_MODE_DEFINITIONS[key].defaultName,
       useCurrentSession: true,
       confirmText: "1",
-      copyPrompt: "给我一份小红书文案"
+      copyPrompt: "给我一份小红书文案",
+      steps: defaultGptWorkflowSteps()
     };
     saveGptModeProfiles();
     applyGptModeProfile(key);
@@ -8882,6 +10509,15 @@ function bindEvents() {
 
 bindEvents();
 if (window.gptWorkbench?.assistantOverlay) document.body.classList.add("native-assistant-overlay");
+// Keep the lightweight address bar in sync with navigation that happens
+// inside the embedded WebContentsView. Clicking a GPT conversation or an
+// online template does not call navigateEmbeddedGpt(), so polling only on tab
+// switches would leave the old URL visible until the next refresh.
+window.gptWorkbench?.onUrlChanged?.((input = {}) => {
+  const accountId = String(input.accountId || "");
+  if (accountId && accountId !== activeGptAccountId) return;
+  syncGptBrowserAddress(String(input.url || ""));
+});
 window.gptWorkbench?.onAssistantAction?.((input = {}) => {
   if (input.type === "chat") toggleWorkbenchAssistant();
   if (input.type === "mute") muteWorkbenchAssistant(Number(input.minutes || 1));
@@ -8899,6 +10535,20 @@ window.gptWorkbench?.onWindowRestored?.(() => {
 bindPaneResizers();
 prepareEmbeddedConversionApp();
 window.addEventListener("message", (event) => {
+  if (event.origin === window.location.origin && event.data?.type === "tb-workbench-quota-updated") {
+    const quotaId = String(event.data.accountId || "");
+    const accountId = String(gptAccounts.find((item) => item.id === quotaId || item.quotaGroup === quotaId)?.id || quotaId);
+    const quota = event.data.quota;
+    if (accountId && quota) {
+      const snapshot = { accountId, status: quota };
+      gptQuotaSnapshots.set(accountId, snapshot);
+      if (accountId === String(activeGptAccountId)) {
+        gptQuotaSnapshot = snapshot;
+        updateGptAssistantBubble();
+      }
+    }
+    return;
+  }
   if (event.origin !== window.location.origin || event.data?.type !== "jianghu-theme-ready") return;
   const frame = $("#conversionAppFrame");
   if (frame) frame.dataset.themeSynced = document.body.dataset.theme || "neo";
@@ -8907,7 +10557,7 @@ window.addEventListener("message", (event) => {
 window.addEventListener("desktop-gpt-transfer-result", (event) => {
   const result = event.detail || {};
   if (!result.ok) {
-    showSystemNotice("素材没有放入 ChatGPT", result.error || "请打开一个 ChatGPT 对话后重试", { tone: "danger" });
+    showSystemNotice("素材没有放入 ChatGPT", result.detail || result.error || "请打开一个 ChatGPT 对话后重试", { tone: "danger" });
     return;
   }
   toast(result.filesAttached
@@ -8955,9 +10605,15 @@ loadDashboard()
     window.setInterval(checkScheduledGptProduction, 30_000);
     checkScheduledGptProduction();
     restoreGptQuotaProbeTimers();
-    if (["single", "multi"].includes(normalizeGptProductionMode(gptAutoSettings.mode)) && gptAutoSettings.continuousAutoStart !== false) {
+    restoreGptTemporaryCacheMaintenanceTimers();
+    if (isContinuousGptMode()
+      && gptAutoSettings.continuousAutoStart !== false
+      && !gptQueuePaused
+      && !currentGptQueueIntegrityBlock()) {
       setContinuousGptProductionArmed(true);
       scheduleContinuousGptProduction(1800);
+    } else if (gptQueuePaused) {
+      showWorkbenchAssistantBubble("发现未完成的单帖队列，已停在安全检查点；点击“继续”后才会恢复，不会自动上传下一帖。", { duration: 0, tone: "warning" });
     }
     window.gptWorkbench?.setLaunchAtLogin?.(gptAutoSettings.launchAtLogin !== false).catch(() => {});
     window.addEventListener("online", () => {
@@ -8972,6 +10628,7 @@ loadDashboard()
       }
     }, 60_000);
     window.setInterval(() => refreshExpandedGptMaterialTrees().catch(() => {}), 15_000);
+    startGptQuotaUsageRefresh();
     window.setInterval(() => {
       window.gptWorkbench?.releaseIdle?.(gptAutoSettings.idleUnloadMinutes || 30).catch(() => {});
     }, 5 * 60_000);

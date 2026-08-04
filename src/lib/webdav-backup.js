@@ -32,8 +32,16 @@ const dpapiUnprotectScript = [
   "[Convert]::ToBase64String($plain)"
 ].join("; ");
 
+const POWERSHELL_EXE = (() => {
+  // powershell.exe is not always in PATH (e.g. when spawned from Node test
+  // runner or Electron).  Resolve the full path from the System32 location.
+  const sysRoot = process.env.SystemRoot || "C:\\Windows";
+  const full = path.join(sysRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  return fs.existsSync(full) ? full : "powershell.exe";
+})();
+
 function powershellWithInput(script, input) {
-  const result = childProcess.spawnSync("powershell.exe", [
+  const result = childProcess.spawnSync(POWERSHELL_EXE, [
     "-NoProfile",
     "-NonInteractive",
     "-Command",
@@ -44,7 +52,10 @@ function powershellWithInput(script, input) {
     windowsHide: true,
     maxBuffer: 1024 * 1024
   });
-  if (result.status !== 0) throw new Error("Windows 安全存储不可用");
+  if (result.status !== 0) {
+    const detail = String(result.stderr || "").trim();
+    throw new Error(`Windows 安全存储不可用${detail ? `：${detail}` : ""}`);
+  }
   return String(result.stdout || "").trim();
 }
 
