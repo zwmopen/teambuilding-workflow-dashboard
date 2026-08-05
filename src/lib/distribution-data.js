@@ -2,6 +2,35 @@ const fs = require("node:fs");
 const path = require("node:path");
 const childProcess = require("node:child_process");
 
+// Windows 上 tar.exe 不一定在 PATH 中（Electron 环境 PATH 可能缺失 System32），需解析完整路径
+let _tarExe = null;
+function tarExe() {
+  if (_tarExe) return _tarExe;
+  const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  const candidates = [
+    path.join(systemRoot, "System32", "tar.exe"),
+    "tar.exe",
+  ];
+  for (const candidate of candidates) {
+    try {
+      const result = childProcess.spawnSync(candidate, ["--version"], {
+        windowsHide: true,
+        timeout: 5000,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      if (result.status === 0 && /bsdtar|tar/i.test(result.stdout || result.stderr || "")) {
+        _tarExe = candidate;
+        return candidate;
+      }
+    } catch {
+      // 继续尝试下一个候选
+    }
+  }
+  _tarExe = "tar.exe";
+  return _tarExe;
+}
+
 const PLATFORM_DIRS = {
   xhs: "小红书",
   douyin: "抖音",
@@ -330,7 +359,7 @@ function archiveAndRemoveCollection(sourcePath, archiveRoot, collection) {
   }
   try {
     childProcess.execFileSync(
-      "tar.exe",
+      tarExe(),
       ["-a", "-c", "-f", temporaryPath, "-C", path.dirname(sourcePath), path.basename(sourcePath)],
       { windowsHide: true, stdio: "pipe" }
     );

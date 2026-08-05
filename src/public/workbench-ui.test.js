@@ -99,7 +99,7 @@ test("GPT production exposes explicit material refresh and multi-slot scheduled 
   assert.match(html, /id="gptScheduledEnabled"/);
   assert.match(html, /id="gptSchedulePlan"/);
   assert.match(html, /gptMinimumImageCount[^>]*value="4"/);
-  assert.match(html, /1–3 张时视为额度触顶/);
+  assert.match(app, /1.3 张/);
   assert.match(app, /function parseGptSchedulePlan/);
   assert.match(app, /prepareAutoGptQueue/);
   assert.match(app, /gptTestMaterialRefreshBtn/);
@@ -170,8 +170,7 @@ test("GPT 自动生产 uses isolated accounts, browser controls, real serial com
   assert.match(html, /id="gptBrowserReloadBtn"/);
   assert.match(html, /id="gptBrowserHomeBtn"/);
   assert.match(html, /id="gptAccountTabs"/);
-  assert.match(html, /id="gptAutoMinDelay"/);
-  assert.match(html, /id="gptAutoMaxDelay"/);
+  // 0.14.31: delay inputs moved into workflow steps as「随机等待」modules
   assert.match(app, /Math\.random\(\) \* \(maxDelay - minDelay\)/);
   assert.match(app, /await window\.gptWorkbench\.sendTask\(task\)/);
   assert.match(app, /gptAutoSettings\.accountTaskLimit/);
@@ -228,7 +227,7 @@ test("GPT 自动生产 downloads and packages only the current verified batch", 
 
 test("GPT automatic production exposes safe retry, quota and real archive controls", () => {
   assert.match(html, /id="gptRetryTaskBtn"/);
-  assert.match(html, /id="gptAutoArchiveEnabled"/);
+  // 0.14.31: archive checkbox moved into workflow as「移动到成品库」step
   assert.match(html, /id="gptUploadLimit"/);
   assert.match(html, /id="gptGenerationLimit"/);
   assert.match(app, /retryFromStage/);
@@ -483,7 +482,7 @@ test("GPT production keeps a recoverable queue and supports multiple permanent a
   assert.match(app, /当前账号窗口打开在线模板/);
   assert.match(app, /name: `账号窗口 \${index \+ 1}`/);
   assert.match(app, /单账号全自动/);
-  assert.match(app, /单窗口多浏览器轮换模式已启动/);
+  assert.match(app, /多账号全自动已启动/);
   assert.match(html, /账号窗口/);
   assert.match(desktopMain, /gpt-browser-profiles\.json/);
   assert.match(desktopMain, /desktop:gpt-profile-save/);
@@ -808,7 +807,8 @@ test("GPT template panel supports local folders and persistent online conversati
 test("material and template rows expose the same manual upload action without starting automation", () => {
   assert.match(app, /data-gpt-upload-post/);
   assert.match(app, /data-gpt-upload-template/);
-  assert.match(app, />上传<\/button>/);
+  assert.match(app, />上传素材<\/button>/);
+  assert.match(app, />上传模板<\/button>/);
   assert.match(app, /uploadMaterialToCurrentGpt/);
   assert.match(app, /uploadTemplateToCurrentGpt/);
   assert.match(app, /autoRun:\s*false/);
@@ -931,8 +931,74 @@ test("automatic mode is a one-shot batch that never refills or schedules endless
   // automatic 模式 autoRun = true（非 manual 走全自动）
   assert.match(app, /const manualMode = normalizedMode === "manual"/);
   assert.match(app, /task\.autoRun = !manualMode/);
-  // manual 模式按钮"准备并上传当前一套"，其他模式（含 automatic）"开始自动生产"
-  assert.match(app, /gptAutoSettings\.mode === "manual" \? "准备并上传当前一套" : "开始自动生产"/);
+  // manual 模式主按钮必须说清楚：只上传到输入框，不会自动发送；automatic 仍是一轮自动生产
+  assert.match(app, /modeKey === "manual"[\s\S]*?button\.textContent = "📤 上传素材到输入框"/);
+  assert.match(app, /button\.textContent = `🚀 开始\$\{shortMode\}生产`/);
+});
+
+test("GPT production UI labels clarify upload actions, live status and optional extra prompt", () => {
+  assert.match(html, /id="gptStatusBadge"/);
+  assert.match(html, /class="gpt-extra-prompt-fold"/);
+  assert.match(html, /补充要求（可留空）/);
+  assert.match(app, /data-gpt-upload-post/);
+  assert.match(app, />上传素材<\/button>/);
+  assert.match(app, /data-gpt-upload-template/);
+  assert.match(app, />上传模板<\/button>/);
+  assert.match(app, /只把这个帖子的图片和 TXT 上传到当前 GPT 输入框，不自动发送/);
+  assert.match(app, /只把这个模板的图片和规则上传到当前 GPT 输入框，不自动发送/);
+  assert.match(app, /badgeText = "待发送"/);
+  assert.match(css, /\.gpt-status-badge\.badge-running/);
+  assert.match(css, /\.gpt-status-badge\.badge-pending/);
+  assert.match(css, /\.gpt-status-badge\.badge-quota/);
+  assert.match(css, /\.gpt-extra-prompt-fold/);
+});
+
+test("GPT production UI makes mode and template choices visible at a glance", () => {
+  assert.match(html, /class="gpt-template-mode-switch"/);
+  assert.match(css, /\.gpt-template-mode-switch button\.active/);
+  assert.match(css, /\.gpt-mode-hint/);
+  assert.match(app, /gpt-account-mode-tag/);
+  assert.match(css, /\.gpt-account-mode-tag/);
+  assert.match(app, /pauseButton\.hidden = !hasActiveWork/);
+  assert.match(app, /skipBtn\.hidden = gptAutoRunning \? false : \(!gptTestQueue\.length \|\| gptTestQueueIndex >= gptTestQueue\.length\)/);
+});
+
+test("mode quick-tabs use shortNames consistent with GPT_MODE_DEFINITIONS and dropdown", () => {
+  assert.match(html, /data-mode="manual"[^>]*role="tab"><span>人工<\/span>/);
+  assert.match(html, /data-mode="automatic"[^>]*role="tab"><span>选材后<\/span>/);
+  assert.match(html, /data-mode="single"[^>]*role="tab"><span>单账号<\/span>/);
+  assert.match(html, /data-mode="rotate"[^>]*role="tab"><span>多账号<\/span>/);
+  assert.match(html, /data-mode="patrol"[^>]*role="tab"><span>巡检<\/span>/);
+  assert.doesNotMatch(html, /data-mode="semi-auto"[^>]*class="mode-quick-tab"/);
+  assert.match(app, /shortName: "人工"/);
+  assert.match(app, /shortName: "选材后"/);
+  assert.match(app, /shortName: "单账号"/);
+  assert.match(app, /shortName: "多账号"/);
+  assert.match(app, /shortName: "巡检"/);
+});
+
+test("status badge uses English CSS class keys via BADGE_CLASS_KEY mapping", () => {
+  assert.match(app, /BADGE_CLASS_KEY/);
+  assert.match(app, /badge-\$\{BADGE_CLASS_KEY\[badgeText\] \|\| "idle"\}/);
+  assert.match(css, /\.gpt-status-badge\.badge-running/);
+  assert.match(css, /\.gpt-status-badge\.badge-ready/);
+  assert.match(css, /\.gpt-status-badge\.badge-pending/);
+  assert.match(css, /\.gpt-status-badge\.badge-confirm/);
+  assert.match(css, /\.gpt-status-badge\.badge-paused/);
+  assert.match(css, /\.gpt-status-badge\.badge-quota/);
+  assert.match(css, /\.gpt-status-badge\.badge-restored/);
+  assert.doesNotMatch(css, /badge-运行中/);
+  assert.doesNotMatch(css, /badge-待发送/);
+  assert.doesNotMatch(css, /badge-暂停中/);
+});
+
+test("production history button lives in heading actions not queue actions", () => {
+  const headingMatch = html.match(/gpt-production-test-actions[\s\S]*?<\/div>/);
+  assert.ok(headingMatch, "heading actions area must exist");
+  assert.match(headingMatch[0], /id="gptProductionHistoryBtn"/);
+  const queueMatch = html.match(/class="gpt-queue-actions"[\s\S]*?<\/div>/);
+  assert.ok(queueMatch, "queue actions area must exist");
+  assert.doesNotMatch(queueMatch[0], /gptProductionHistoryBtn/);
 });
 
 test("automatic mode resumes only the remaining queue after a quota probe, never refills new material", () => {

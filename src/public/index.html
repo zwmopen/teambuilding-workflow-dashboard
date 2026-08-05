@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.14.27" />
+    <link rel="stylesheet" href="/styles.css?v=0.14.34" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -339,11 +339,10 @@
         <section class="gpt-production-test-shell">
           <header class="gpt-production-test-heading">
             <div>
-              <p class="label">网页额度自动生产</p>
-              <h2>本地素材与模板 × GPT 自动生产</h2>
-              <p>选择一个或多个帖子后按顺序上传、生成、下载文案与图片，并打包到本地成品目录。</p>
+              <h2>素材与模板 × GPT 自动生产</h2>
             </div>
             <div class="gpt-production-test-actions">
+              <button id="gptProductionHistoryBtn" class="secondary-button" type="button" title="查看生产记录">生产记录</button>
               <button class="page-settings-button" type="button" data-open-page-settings="gptAuto" title="自动生产设置" aria-label="打开自动生产设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button>
             </div>
           </header>
@@ -376,9 +375,13 @@
                 <nav id="gptTestTemplateList" class="workbench-folder-list gpt-test-template-list" aria-label="GPT测试模板区"></nav>
               </section>
 
-              <section class="gpt-test-send-dock">
-                <div class="gpt-mode-row">
-                  <label for="gptProductionMode">生产模式</label>
+              <section class="workbench-card gpt-test-send-dock">
+                <header class="workbench-card-head">
+                  <div><span class="workbench-step">03</span><strong>发送区</strong><small id="gptTestSendHint">选好素材和模板后开始生产</small></div>
+                </header>
+                <div class="gpt-test-send-body">
+                  <div class="gpt-mode-row">
+                    <label for="gptProductionMode">生产模式</label>
                     <select id="gptProductionMode" title="右键打开当前生产模式设置">
                       <option value="manual">人工控制</option>
                       <option value="automatic">选材后自动</option>
@@ -388,26 +391,32 @@
                       <option value="patrol">单账号多对话巡检</option>
                       <option value="semi-auto" hidden>半自动（兼容）</option>
                       <option value="multi" hidden>多账号全自动（旧版）</option>
-                      <!-- Legacy selector markers keep persisted 0.14.x test/config readers compatible. -->
-                  </select>
+                    </select>
+                  </div>
+                  <p class="gpt-mode-hint" id="gptModeHint" aria-live="polite"></p>
+                  <div class="gpt-action-row">
+                    <button id="gptTestSendBtn" class="primary-button" type="button">开始自动生产</button>
+                    <button id="gptManualNextBtn" class="secondary-button" type="button" hidden>完成当前，上传下一套</button>
+                    <button id="gptSemiAutoResumeBtn" class="secondary-button" type="button" hidden>确认继续出图</button>
+                  </div>
+                  <div class="gpt-queue-actions">
+                    <button id="gptPauseQueueBtn" type="button" hidden>暂停</button>
+                    <button id="gptStopQueueBtn" type="button" class="danger-text-button" hidden>停止</button>
+                    <button id="gptRetryTaskBtn" type="button" hidden>重试当前任务</button>
+                    <button id="gptSkipTaskBtn" type="button" hidden>跳过当前</button>
+                  </div>
+                  <div class="gpt-auto-progress" aria-label="自动生产进度" hidden>
+                    <span id="gptAutoProgressBar"></span>
+                  </div>
+                  <div class="gpt-status-bar" id="gptStatusBar" aria-live="polite">
+                    <span class="gpt-status-badge" id="gptStatusBadge">待机</span>
+                    <span class="gpt-status-msg" id="gptTestQueueStatus">请至少选择一个素材文件夹；模板可以不选</span>
+                  </div>
+                  <details class="gpt-extra-prompt-fold">
+                    <summary>补充要求（可留空）</summary>
+                    <textarea id="gptTestExtraPrompt" rows="3" placeholder="本次额外要求会追加到模板规则之后；不填则仅使用模板自带规则和素材 TXT"></textarea>
+                  </details>
                 </div>
-                <p class="gpt-mode-hint" id="gptModeHint" aria-live="polite"></p>
-                <label for="gptTestExtraPrompt">本次补充要求</label>
-                <textarea id="gptTestExtraPrompt" rows="3" placeholder="可留空；模板规则和素材 TXT 会自动带入"></textarea>
-                <button id="gptTestSendBtn" class="primary-button" type="button">开始自动生产</button>
-                <button id="gptManualNextBtn" class="secondary-button" type="button" hidden>完成当前，上传下一套</button>
-                <button id="gptSemiAutoResumeBtn" class="secondary-button" type="button" hidden>确认继续出图</button>
-                <div class="gpt-queue-actions">
-                  <button id="gptPauseQueueBtn" type="button">暂停</button>
-                  <button id="gptStopQueueBtn" type="button" class="danger-text-button" hidden>停止</button>
-                  <button id="gptRetryTaskBtn" type="button" hidden>重试当前任务</button>
-                  <button id="gptSkipTaskBtn" type="button">跳过当前</button>
-                  <button id="gptProductionHistoryBtn" type="button">查看生产记录</button>
-                </div>
-                <div class="gpt-auto-progress" aria-label="自动生产进度">
-                  <span id="gptAutoProgressBar"></span>
-                </div>
-                <p id="gptTestQueueStatus">请至少选择一个素材文件夹；模板可以不选</p>
               </section>
             </aside>
 
@@ -712,68 +721,88 @@
           <p class="settings-footnote">已登记并标记 confirmed 的现有设备已自动加入白名单。新设备第一次出现只会显示“陌生设备”，确认前不能发送。</p>
         </section>
         <section id="gptAutoPageSettings" class="page-settings-section" hidden>
-          <div class="mode-quick-tabs" id="gptModeQuickTabs" role="tablist" aria-label="生产模式快速切换">
-            <button type="button" class="mode-quick-tab" data-mode="manual" role="tab"><span>手动</span><small>上传不自动发</small></button>
-            <button type="button" class="mode-quick-tab" data-mode="automatic" role="tab"><span>自动</span><small>全流程无人值守</small></button>
-            <button type="button" class="mode-quick-tab" data-mode="semi-auto" role="tab"><span>半自动</span><small>计划后人工确认</small></button>
-            <button type="button" class="mode-quick-tab" data-mode="single" role="tab"><span>永不停歇</span><small>单账号连续</small></button>
-            <button type="button" class="mode-quick-tab" data-mode="rotate" role="tab"><span>轮换</span><small>多账号自动切</small></button>
+          <div class="mode-quick-tabs-wrapper">
+            <div class="mode-quick-tabs" id="gptModeQuickTabs" role="tablist" aria-label="生产模式快速切换">
+              <button type="button" class="mode-quick-tab" data-mode="manual" role="tab"><span>人工</span><small>上传不自动发</small></button>
+              <button type="button" class="mode-quick-tab" data-mode="automatic" role="tab"><span>选材后</span><small>全流程自动</small></button>
+              <button type="button" class="mode-quick-tab" data-mode="single" role="tab"><span>单账号</span><small>连续不停</small></button>
+              <button type="button" class="mode-quick-tab" data-mode="rotate" role="tab"><span>多账号</span><small>账号轮换</small></button>
+              <button type="button" class="mode-quick-tab" data-mode="patrol" role="tab"><span>巡检</span><small>多对话并行</small></button>
+            </div>
+            <div class="mode-quick-tabs-actions">
+              <button type="button" id="gptAddModeBtn" class="mode-tab-action" title="新增自定义模式" aria-label="新增模式">+</button>
+              <button type="button" id="gptDeleteModeBtn" class="mode-tab-action danger" title="删除当前模式配置" aria-label="删除模式">−</button>
+            </div>
           </div>
           <div class="mode-setting-row">
             <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="manual">人工控制</option><option value="automatic">选材后自动</option><option value="single">单账号全自动</option><option value="scheduled">定时单账号全自动</option><option value="rotate">多账号全自动</option><option value="patrol">单账号多对话巡检</option><option value="semi-auto" hidden>半自动（兼容）</option><option value="multi" hidden>多账号全自动（旧版）</option></select></label>
             <button type="button" class="mode-info-button" id="gptModeInfoBtn" title="查看模式说明" aria-label="查看当前模式说明">?</button>
           </div>
           <div class="mode-info-popover" id="gptModeInfoPopover" hidden></div>
-          <div class="settings-group">
-            <h3>生产工作流</h3>
+          <div class="settings-group mode-specific-group">
+            <h3>模式配置 <small class="scope-tag">本模式专属</small></h3>
             <div class="settings-group mode-profile-editor" id="gptModeProfileEditor">
               <p class="settings-note" id="gptModeProfileLabel">当前模式设置</p>
               <label><span>模式名称</span><input id="gptModeProfileName" type="text" maxlength="40" /></label>
               <div class="gpt-mode-workflow-block">
-                <div class="settings-inline-heading"><strong>工作流环节</strong><small>拖动排序、勾选启用；环节内文字即为发送内容。修改实时生效，运行中的批次冻结当前快照。</small></div>
+                <div class="settings-inline-heading"><strong>工作流环节</strong><small>每个环节是独立模块，可拖动排序、勾选启用、自由增删。提示词输入框右侧 ✍/📋 可切换自定义/默认。生产间隔已整合为「随机等待」步骤，归档已整合为最后一步「移动到成品库」。修改实时生效，运行中的批次冻结当前快照。</small></div>
                 <div id="gptModeWorkflowEditor" class="gpt-mode-workflow-editor" aria-label="本模式工作流环节"></div>
                 <button id="gptAddModeWorkflowStepBtn" type="button" class="secondary-button">＋ 添加环节</button>
               </div>
-              <div class="settings-sub-group">
-                <div class="settings-inline-heading"><strong>母版迁移器规则</strong><small>新账号窗口或无模板时自动注入这段 V3.6 母版规则。已训练过模板的会话不会重复注入。</small></div>
-                <textarea id="gptMasterPromptRules" rows="6" readonly placeholder="加载中…"></textarea>
-                <label><span>自定义额外规则（可选）</span><textarea id="gptExtraPromptRules" rows="3" placeholder="追加在母版规则之后的额外约束，留空则只使用母版规则"></textarea></label>
-              </div>
+              <input type="hidden" id="gptMasterPromptRules" />
+              <input type="hidden" id="gptExtraPromptRules" />
             </div>
           </div>
-          <div class="settings-group">
-            <h3>运行选项</h3>
-            <label class="switch-setting"><span><b>成功后归档原素材</b><small>仅在图片、TXT 和作品包全部校验成功后移动到素材库根目录下对应的数字目录（1、2、3、4…）</small></span><input id="gptAutoArchiveEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>显示账号额度提醒</b><small>按本地滚动账本估算，网页实际限流优先</small></span><input id="gptQuotaReminderEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>网页内提示词库</b><small>在 GPT 输入区显示可点击的提示词入口</small></span><input id="gptPromptLibraryEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>网页内下载与打包按钮</b><small>按当前回复绑定下载本组和下载并打包</small></span><input id="gptMessageDownloadsEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>Windows 登录后启动工作台</b><small>启动后会退到后台并按全天自动设置恢复，不会清理 GPT 登录状态。</small></span><input id="gptLaunchAtLogin" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>打开工作台后自动继续</b><small>仅对连续等待循环模式生效；开机、联网或合盖唤醒后会从对应账号窗口的检查点继续。</small></span><input id="gptContinuousAutoStart" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>仅在工作时段启动新任务</b><small>默认北京时间 07:00 至次日 02:00；休息时段保持等待，不消耗上传或生图额度。</small></span><input id="gptContinuousWorkHoursEnabled" type="checkbox" checked /></label>
-            <label class="switch-setting"><span><b>定时启动</b><small>全天自动模式会在到点扫描素材库，优先选择使用次数低的素材；名称以"."开头的隐藏文件夹不会读取。</small></span><input id="gptScheduledEnabled" type="checkbox" /></label>
-          </div>
-          <div class="settings-group">
-            <h3>限速与额度</h3>
+          <div class="settings-group mode-specific-group">
+            <h3>模式运行参数 <small class="scope-tag">本模式专属</small></h3>
             <div class="settings-two-columns">
-              <label><span>生产间隔最短（秒）</span><input id="gptAutoMinDelay" type="number" min="5" max="600" value="25" /></label>
-              <label><span>生产间隔最长（秒）</span><input id="gptAutoMaxDelay" type="number" min="5" max="900" value="55" /></label>
-              <label><span>单帖最长等待（分钟）</span><input id="gptAutoTaskTimeout" type="number" min="5" max="60" value="30" /></label>
               <label><span>每轮最多生产（套）</span><input id="gptAutoAccountLimit" type="number" min="1" max="30" value="8" /></label>
-            <label><span>并行账号窗口</span><input id="gptParallelWorkers" type="number" min="1" max="5" value="3" /></label>
+              <label><span>单帖最长等待（分钟）</span><input id="gptAutoTaskTimeout" type="number" min="5" max="60" value="30" /></label>
+              <label><span>并行账号窗口</span><input id="gptParallelWorkers" type="number" min="1" max="5" value="3" /></label>
+              <label><span>闲置网页释放（分钟）</span><input id="gptIdleUnloadMinutes" type="number" min="5" max="240" value="30" /></label>
+            </div>
+            <p class="settings-footnote">生产间隔已移入工作流的「随机等待」步骤——在工作流环节中直接设置每步的随机等待秒数。归档行为由最后一步「移动到成品库」环节控制（勾选启用即可归档，取消勾选则跳过）。</p>
+          </div>
+          <div class="settings-group global-specific-group">
+            <h3>工作时段与额度 <small class="scope-tag">所有模式共享</small></h3>
+            <div class="settings-two-columns">
+              <label><span>工作开始时间</span><input id="gptContinuousWorkStart" type="time" value="07:00" /></label>
+              <label><span>工作停止时间</span><input id="gptContinuousWorkEnd" type="time" value="02:00" /><small>北京时间，支持跨午夜</small></label>
               <label><span>3小时上传上限（图）</span><input id="gptUploadLimit" type="number" min="1" max="500" value="80" /></label>
               <label><span>3小时生成上限（图）</span><input id="gptGenerationLimit" type="number" min="1" max="500" value="50" /></label>
               <label><span>滚动窗口（小时）</span><input id="gptQuotaWindowHours" type="number" min="1" max="24" value="3" /></label>
-              <label><span>最低完整图片数（低于此数停止）</span><input id="gptMinimumImageCount" type="number" min="1" max="30" value="4" /><small>默认 4 张：本轮只生成 1–3 张时视为额度触顶/生成不完整，立即停止本帖，不请求文案、不下载、不打包、不归档，跳过到下一帖。</small></label>
-              <label><span>闲置网页释放（分钟）</span><input id="gptIdleUnloadMinutes" type="number" min="5" max="240" value="30" /></label>
+              <label><span>最低完整图片数</span><input id="gptMinimumImageCount" type="number" min="1" max="30" value="4" /><small>低于此数停止本帖</small></label>
+            </div>
+            <label class="switch-setting"><span><b>仅在工作时段启动新任务</b><small>到点后不再启动新作品，当前作品会安全完成</small></span><input id="gptContinuousWorkHoursEnabled" type="checkbox" checked /></label>
+            <label class="switch-setting"><span><b>打开工作台后自动继续</b><small>仅对连续模式生效；开机或唤醒后从检查点继续</small></span><input id="gptContinuousAutoStart" type="checkbox" checked /></label>
+          </div>
+          <div class="settings-group global-specific-group">
+            <h3>定时计划 <small class="scope-tag">所有模式共享</small></h3>
+            <div class="settings-two-columns">
               <label><span>定时启动时间</span><input id="gptScheduledTime" type="time" value="09:30" /></label>
               <label><span>启动延迟范围（分钟）</span><input id="gptScheduledJitter" type="number" min="0" max="60" value="10" /></label>
-              <label class="settings-wide-field"><span>定时启动计划</span><textarea id="gptSchedulePlan" rows="3" placeholder="09:00,5\n14:00,5">09:30,8</textarea><small>每行一个时间点：时间,帖子数；定时启动模式会优先选择使用次数较低的素材。</small></label>
-              <label><span>永不停歇开始时间</span><input id="gptContinuousWorkStart" type="time" value="07:00" /></label>
-              <label><span>永不停歇停止时间</span><input id="gptContinuousWorkEnd" type="time" value="02:00" /><small>北京时间，支持跨午夜；到点后不再启动新作品，当前作品会安全完成。</small></label>
-                  <label><span>下载暂存目录</span><div class="inline-setting-control"><input id="gptDownloadRoot" type="text" value="D:\Download" /><button id="chooseGptDownloadRootBtn" type="button">选择</button></div></label>
-                  <label><span>成品库目录</span><div class="inline-setting-control"><input id="gptProductRoot" type="text" value="D:\AICode\项目推进\projects\江湖有旅人\主项目\成品库（GPT+本地脚本制作）" /><button id="chooseGptProductRootBtn" type="button">选择</button></div></label>
             </div>
-            <p class="settings-footnote">每套完成后会在最短与最长时间之间随机等待，让任务节奏更稳定；遇到登录验证、限流或异常提示会显示具体原因与下一次探测时间。</p>
+            <label class="switch-setting"><span><b>启用定时启动</b><small>到点扫描素材库，优先选择使用次数低的素材</small></span><input id="gptScheduledEnabled" type="checkbox" /></label>
+            <label class="settings-wide-field"><span>定时启动计划</span><textarea id="gptSchedulePlan" rows="3" placeholder="09:00,5
+14:00,5">09:30,8</textarea><small>每行一个时间点：时间,帖子数</small></label>
+          </div>
+          <div class="settings-group global-specific-group">
+            <h3>全局设置 <small class="scope-tag">所有模式共享</small></h3>
+            <div class="settings-sub-group">
+              <div class="settings-inline-heading"><strong>目录路径</strong></div>
+              <label class="settings-wide-field"><span>下载暂存目录</span><div class="inline-setting-control"><input id="gptDownloadRoot" type="text" value="D:\Download" /><button id="chooseGptDownloadRootBtn" type="button">选择</button></div></label>
+              <label class="settings-wide-field"><span>成品库目录</span><div class="inline-setting-control"><input id="gptProductRoot" type="text" value="D:\AICode\项目推进\projects\江湖有旅人\主项目\成品库（GPT+本地脚本制作）" /><button id="chooseGptProductRootBtn" type="button">选择</button></div></label>
+            </div>
+            <div class="settings-sub-group">
+              <div class="settings-inline-heading"><strong>网页功能</strong></div>
+              <label class="switch-setting"><span><b>网页内提示词库</b><small>在 GPT 输入区显示可点击的提示词入口</small></span><input id="gptPromptLibraryEnabled" type="checkbox" checked /></label>
+              <label class="switch-setting"><span><b>网页内下载与打包按钮</b><small>按当前回复绑定下载本组和下载并打包</small></span><input id="gptMessageDownloadsEnabled" type="checkbox" checked /></label>
+            </div>
+            <div class="settings-sub-group">
+              <div class="settings-inline-heading"><strong>系统行为</strong></div>
+              <label class="switch-setting"><span><b>Windows 登录后启动工作台</b><small>启动后退到后台并按自动设置恢复</small></span><input id="gptLaunchAtLogin" type="checkbox" checked /></label>
+              <label class="switch-setting"><span><b>显示账号额度提醒</b><small>按本地滚动账本估算，网页实际限流优先</small></span><input id="gptQuotaReminderEnabled" type="checkbox" checked /></label>
+            </div>
           </div>
           <div class="settings-group">
             <h3>账号窗口</h3>
@@ -824,8 +853,8 @@
       <button id="contextDeleteMode" type="button" class="danger-action">删除模式配置</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.14.27"></script>
-    <script src="/material-workspace.js?v=0.14.27"></script>
-    <script src="/app.js?v=0.14.27"></script>
+    <script src="/distribution-ui.js?v=0.14.33"></script>
+    <script src="/material-workspace.js?v=0.14.33"></script>
+    <script src="/app.js?v=0.14.33"></script>
   </body>
 </html>

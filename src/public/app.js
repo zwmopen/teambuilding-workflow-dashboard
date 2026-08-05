@@ -26,6 +26,12 @@ let selectedDistributionCollectionName = "";
 let selectedDistributionDeviceId = "";
 let packageDevicePickerCollectionName = "";
 let uploadChoiceDeviceId = "";
+// 微信公众号草稿发布器状态
+let wechatDraftSelectedCollection = "";
+let wechatDraftSelectedPost = null;
+let wechatDraftPosts = [];
+let wechatDraftSettings = null;
+let wechatDraftCreating = false;
 const genericTransferUiTasks = new Map();
 const distributionTransferUiTasks = new Map();
 let transferPollTimer = null;
@@ -234,38 +240,164 @@ const GPT_MODE_DEFINITIONS = Object.freeze({
 const GPT_MODULE_CATEGORIES = Object.freeze({
   action: { label: "执行", color: "#4a9eff", icon: "▶" },
   wait: { label: "等待", color: "#f5a623", icon: "⏳" },
+  detect: { label: "检测", color: "#9b59b6", icon: "🔍" },
   time: { label: "时间", color: "#27ae60", icon: "🕐" },
   flow: { label: "流程", color: "#e74c3c", icon: "🔀" }
 });
+
+// 每个模块的 rule 字段是用户可见的判断规则说明
+// params 字段定义可调参数（key=参数名, label=显示标签, min/max/default=范围）
 const GPT_WORKFLOW_MODULES = Object.freeze({
-  // ── 执行模块 ── (hasRetry: 发送提示词后检测到失败可自动重试1次)
-  "upload-material": { label: "上传当前帖子", category: "action", hasText: true, hasTimeout: true, hasAutoDetect: true, hasRetry: true },
-  "send-text": { label: "发送文字", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: true },
-  "insert-prompt": { label: "插入提示词", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: false },
-  "send-confirm": { label: "发送确认(扣1)", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: true },
-  "request-copy": { label: "请求小红书文案", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: true },
-  "download-images": { label: "下载图片到成品库", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: true },
-  "save-text": { label: "保存文案到TXT", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: true },
-  "move-archive": { label: "移动到成品库文件夹", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: false },
-  "clipboard-copy": { label: "复制到剪贴板", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
-  "package-archive": { label: "合并打包(复制+下载+归档)", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: false },
-  // ── 等待模块 ──
-  "wait-reply": { label: "等待回复完成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true },
-  "wait-plan": { label: "等待迁移计划", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true },
-  "wait-images": { label: "等待图片生成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true },
-  "wait-copy": { label: "等待文案生成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true },
-  "wait-fixed": { label: "固定等待", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: false },
-  "wait-random": { label: "随机等待", category: "wait", hasText: false, hasTimeout: false, hasAutoDetect: false, hasRandomRange: true },
+  // ── 执行模块 ──
+  "upload-material": {
+    label: "上传当前帖子", category: "action", hasText: true, hasTimeout: true, hasAutoDetect: true, hasRetry: true,
+    rule: "上传素材文件到GPT并填充提示词到输入框，然后等待GPT开始回复",
+    params: {}
+  },
+  "send-text": {
+    label: "发送文字", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: true,
+    rule: "替换输入框文字并提交发送",
+    params: {}
+  },
+  "insert-prompt": {
+    label: "插入提示词", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: false,
+    rule: "替换输入框文字但不自动提交，等待用户手动发送",
+    params: {}
+  },
+  "send-confirm": {
+    label: "发送确认(扣1)", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: true,
+    rule: "发送指定确认文字（如\"1\"），通知GPT继续执行",
+    params: {}
+  },
+  "request-copy": {
+    label: "请求小红书文案", category: "action", hasText: true, hasTimeout: false, hasAutoDetect: false, hasRetry: true,
+    rule: "发送文案请求提示词，请求GPT生成小红书文案",
+    params: {}
+  },
+  "download-images": {
+    label: "下载图片到成品库", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: true,
+    rule: "下载当前轮GPT生成的图片到本地成品库文件夹",
+    params: {}
+  },
+  "save-text": {
+    label: "保存文案到TXT", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: true,
+    rule: "提取GPT回复中的文案并保存为TXT文件",
+    params: {}
+  },
+  "move-archive": {
+    label: "移动到成品库文件夹", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: false,
+    rule: "将当前帖子的图片和文案移动到成品库对应文件夹",
+    params: {}
+  },
+  "clipboard-copy": {
+    label: "复制到剪贴板", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false,
+    rule: "将文案复制到系统剪贴板",
+    params: {}
+  },
+  "package-archive": {
+    label: "合并打包(复制+下载+归档)", category: "action", hasText: false, hasTimeout: true, hasAutoDetect: false,
+    rule: "一步完成：复制文案 + 下载图片 + 移动到成品库",
+    params: {}
+  },
+
+  // ── 等待模块 ── (autoDetect开启时=条件检测，关闭时=纯超时)
+  "wait-reply": {
+    label: "等待回复完成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true,
+    rule: "等待GPT回复完成。开启「自动」时检测4个条件全部满足才继续：①回复内容签名稳定（连续2次轮询hash相同）②GPT已停止生成（停止按钮消失）③回复出现完成动作（复制/下载按钮）④以上条件稳定保持≥静默秒数。关闭「自动」时纯等待到超时。",
+    params: {
+      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 3, desc: "回复内容连续不变多少秒才算\"写完了\"" }
+    }
+  },
+  "wait-plan": {
+    label: "等待迁移计划", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true,
+    rule: "等待GPT输出迁移计划。开启「自动」时检测：①回复内容签名稳定 ②GPT已停止生成 ③回复文本匹配\"迁移计划|逐页|P1\" ④稳定保持≥静默秒数。关闭时纯等待到超时。",
+    params: {
+      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 8, desc: "计划内容连续不变多少秒才算\"输出完成\"" }
+    }
+  },
+  "wait-images": {
+    label: "等待图片生成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true,
+    rule: "等待GPT生成图片。开启「自动」时检测：①图片数量≥最小张数 ②图片数量停止增长 ③GPT已停止生成 ④稳定保持≥静默秒数。关闭时纯等待到超时。",
+    params: {
+      minImages: { label: "最小张数", min: 1, max: 20, default: 4, desc: "至少检测到多少张图片才算生成完成" },
+      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 3, desc: "图片数量连续不变多少秒才算\"生成完成\"" }
+    }
+  },
+  "wait-copy": {
+    label: "等待文案生成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true,
+    rule: "等待GPT生成小红书文案。开启「自动」时检测：①回复内容签名稳定 ②GPT已停止生成 ③文案通过isLikelyPublishCopy检测（长度≥300字+含关键词）④稳定保持≥静默秒数。关闭时纯等待到超时。",
+    params: {
+      minCopyLength: { label: "最小字数", min: 50, max: 2000, default: 300, desc: "文案至少多少字才算有效文案" },
+      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 3, desc: "文案内容连续不变多少秒才算\"写完了\"" }
+    }
+  },
+  "wait-fixed": {
+    label: "固定等待", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: false,
+    rule: "固定等待指定秒数后继续下一步，不做任何检测",
+    params: {}
+  },
+  "wait-random": {
+    label: "随机等待", category: "wait", hasText: false, hasTimeout: false, hasAutoDetect: false, hasRandomRange: true,
+    rule: "在最小~最大秒数范围内随机等待，用于生产间隔冷却",
+    params: {}
+  },
+
   // ── 检测模块（瞬间检测，不等待；等待请用「随机等待」组合） ──
-  "detect-plan": { label: "检测·计划完成", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
-  "detect-images": { label: "检测·图片已生成", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
-  "detect-copy": { label: "检测·文案已生成", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
-  "detect-state": { label: "检测·会话状态", category: "action", hasText: false, hasTimeout: false, hasAutoDetect: false },
+  "detect-plan": {
+    label: "检测·计划完成", category: "detect", hasText: false, hasTimeout: false, hasAutoDetect: false,
+    rule: "瞬间检测当前回复是否包含迁移计划。匹配规则：正则 /迁移计划|逐页|P\\s*1/i",
+    params: {
+      pattern: { label: "匹配正则", type: "text", default: "迁移计划|逐页|P\\s*1", desc: "检测回复文本是否匹配此正则" }
+    }
+  },
+  "detect-images": {
+    label: "检测·图片已生成", category: "detect", hasText: false, hasTimeout: false, hasAutoDetect: false,
+    rule: "瞬间检测当前回复中图片数量是否≥阈值",
+    params: {
+      minImages: { label: "最小张数", min: 1, max: 20, default: 1, desc: "至少多少张图片才算检测到" }
+    }
+  },
+  "detect-copy": {
+    label: "检测·文案已生成", category: "detect", hasText: false, hasTimeout: false, hasAutoDetect: false,
+    rule: "瞬间检测当前回复是否包含有效文案。检测规则：文案长度≥最小字数 且 包含小红书关键词",
+    params: {
+      minCopyLength: { label: "最小字数", min: 50, max: 2000, default: 300, desc: "文案至少多少字才算有效" }
+    }
+  },
+  "detect-state": {
+    label: "检测·会话状态", category: "detect", hasText: false, hasTimeout: false, hasAutoDetect: false,
+    rule: "瞬间检测当前会话状态。读取页面快照判断：unknown(未知) / plan-ready(计划就绪) / images-ready(图片就绪) / completed-copy-pending-package(文案完成待打包)",
+    params: {}
+  },
+  "detect-generating": {
+    label: "检测·GPT正在生成", category: "detect", hasText: false, hasTimeout: false, hasAutoDetect: false,
+    rule: "瞬间检测GPT是否正在生成回复。检测规则：页面存在可见的\"停止生成\"按钮 或 存在流式标记[data-is-streaming=true]",
+    params: {}
+  },
+  "detect-limit": {
+    label: "检测·额度限制", category: "detect", hasText: false, hasTimeout: false, hasAutoDetect: false,
+    rule: "瞬间检测是否触发额度/限制信号。检测规则：回复包含重试/限制/低产出关键词",
+    params: {}
+  },
+
   // ── 时间控制模块 ──
-  "time-window": { label: "时间窗口(开始/结束)", category: "time", hasText: false, hasTimeout: false, hasAutoDetect: false, hasTimeWindow: true },
-  "loop-daily": { label: "每日定时循环", category: "time", hasText: false, hasTimeout: false, hasAutoDetect: false, hasDailyTime: true },
+  "time-window": {
+    label: "时间窗口(开始/结束)", category: "time", hasText: false, hasTimeout: false, hasAutoDetect: false, hasTimeWindow: true,
+    rule: "仅在指定时间段内执行后续步骤，时间窗口外暂停",
+    params: {}
+  },
+  "loop-daily": {
+    label: "每日定时循环", category: "time", hasText: false, hasTimeout: false, hasAutoDetect: false, hasDailyTime: true,
+    rule: "每天在指定时间触发一次工作流",
+    params: {}
+  },
+
   // ── 流程控制模块 ──
-  "retry": { label: "失败重试", category: "flow", hasText: false, hasTimeout: true, hasAutoDetect: false }
+  "retry": {
+    label: "失败重试", category: "flow", hasText: false, hasTimeout: true, hasAutoDetect: false,
+    rule: "前一步骤失败时，等待指定秒数后自动重试1次",
+    params: {}
+  }
 });
 // 兼容旧代码：保留 GPT_WORKFLOW_ACTIONS 名称
 const GPT_WORKFLOW_ACTIONS = GPT_WORKFLOW_MODULES;
@@ -277,7 +409,7 @@ function moduleHasProp(action, prop) {
 }
 function defaultGptWorkflowSteps() {
   return [
-    { action: "upload-material", text: "", timeoutSeconds: 120, enabled: true, autoDetect: true },
+    { action: "upload-material", text: "请读取全部附件，不要省略 TXT。先严格按既定格式输出逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。", timeoutSeconds: 120, enabled: true, autoDetect: true },
     { action: "wait-random", text: "", enabled: true, minSeconds: 1, maxSeconds: 5 },
     { action: "wait-plan", text: "", timeoutSeconds: 480, enabled: true, autoDetect: true },
     { action: "send-confirm", text: "1", timeoutSeconds: 20, enabled: true, autoDetect: false },
@@ -293,13 +425,37 @@ function defaultGptWorkflowSteps() {
 }
 function normalizeGptWorkflowSteps(value) {
   const source = Array.isArray(value) ? value : defaultGptWorkflowSteps();
+  const defaults = defaultGptWorkflowSteps();
+  const defaultMap = new Map(defaults.map((s) => [s.action, s]));
   const steps = source.map((step) => {
     const action = String(step?.action || "");
     const isValid = Object.prototype.hasOwnProperty.call(GPT_WORKFLOW_MODULES, action);
+    // For steps that have a default text value, backfill it when the stored
+    // config has an empty string. This ensures already-saved profiles pick up
+    // new defaults without requiring the user to manually re-enter them.
+    const defaultStep = defaultMap.get(action);
+    const rawText = String(step?.text ?? "").trim();
+    const text = (!rawText && defaultStep?.text) ? defaultStep.text : rawText;
+    // 从模块定义读取可调参数的默认值
+    const moduleDef = GPT_WORKFLOW_MODULES[action];
+    const moduleParams = moduleDef?.params || {};
+    const paramValues = {};
+    if (moduleParams && typeof moduleParams === "object") {
+      for (const [pk, pdef] of Object.entries(moduleParams)) {
+        if (pdef.type === "text") {
+          paramValues[pk] = String(step?.[pk] ?? pdef.default ?? "");
+        } else {
+          const min = Number(pdef.min ?? 0);
+          const max = Number(pdef.max ?? 9999);
+          const def = Number(pdef.default ?? 0);
+          paramValues[pk] = Math.max(min, Math.min(max, Number(step?.[pk] ?? def)));
+        }
+      }
+    }
     return {
       action: isValid ? action : "",
-      text: String(step?.text || "").trim(),
-      timeoutSeconds: Math.max(5, Math.min(3600, Number(step?.timeoutSeconds || 60))),
+      text,
+      timeoutSeconds: Math.max(5, Math.min(3600, Number(step?.timeoutSeconds || defaultStep?.timeoutSeconds || 60))),
       enabled: step?.enabled !== false,
       autoDetect: moduleHasProp(action, "hasAutoDetect") ? step?.autoDetect !== false : false,
       minSeconds: Math.max(1, Math.min(3600, Number(step?.minSeconds || 5))),
@@ -312,10 +468,11 @@ function normalizeGptWorkflowSteps(value) {
       detectDelayMax: Math.max(1, Math.min(60, Number(step?.detectDelayMax ?? 3))),
       retryEnabled: moduleHasProp(action, "hasRetry") ? step?.retryEnabled === true : false,
       retryDelayMin: Math.max(30, Math.min(600, Number(step?.retryDelayMin ?? 120))),
-      retryDelayMax: Math.max(60, Math.min(900, Number(step?.retryDelayMax ?? 300)))
+      retryDelayMax: Math.max(60, Math.min(900, Number(step?.retryDelayMax ?? 300))),
+      ...paramValues
     };
   }).filter((step) => step.action).slice(0, 20);
-  return steps.length ? steps : defaultGptWorkflowSteps();
+  return steps.length ? steps : defaults;
 }
 function workflowStepOrder(steps) {
   return new Map(normalizeGptWorkflowSteps(steps).map((step, index) => [step.action, { ...step, index }]));
@@ -350,6 +507,8 @@ function validateGptWorkflowSteps(value) {
 }
 function normalizeGptProductionMode(value) {
   const mode = String(value || "").trim();
+  // 自定义模式 key 直接透传
+  if (mode.startsWith("custom-")) return mode;
   if (mode === "manual") return "manual";
   if (mode === "automatic" || mode === "auto") return "automatic";
   if (mode === "semi-auto" || mode === "semiauto" || mode === "semi") return "semi-auto";
@@ -383,7 +542,7 @@ function loadGptModeProfiles() {
   };
   try {
     const saved = JSON.parse(localStorage.getItem(GPT_MODE_PROFILES_STORAGE_KEY) || "{}");
-    return Object.fromEntries(Object.keys(defaults).map((key) => {
+    const builtIn = Object.fromEntries(Object.keys(defaults).map((key) => {
       const merged = { ...defaults[key], ...(saved?.[key] || {}) };
       // 迁移旧名：如果 localStorage 里存的是旧名，强制覆盖为新 defaultName
       const migratedName = LEGACY_MODE_NAME_MAP[merged.name];
@@ -394,11 +553,41 @@ function loadGptModeProfiles() {
       } else if (!merged.name || Object.keys(LEGACY_MODE_NAME_MAP).includes(merged.name)) {
         merged.name = defaults[key].name;
       }
+      // 在加载时就 normalize steps，确保旧 localStorage 数据中的空提示词
+      // 被默认值回填，避免设置面板显示空白输入框
+      merged.steps = normalizeGptWorkflowSteps(merged.steps);
       return [key, merged];
     }));
+    // 加载自定义模式（key 以 custom- 开头）
+    const customModes = {};
+    for (const [key, profile] of Object.entries(saved || {})) {
+      if (key.startsWith("custom-") && profile?.name) {
+        customModes[key] = {
+          ...profile,
+          steps: normalizeGptWorkflowSteps(profile.steps),
+          isCustom: true
+        };
+      }
+    }
+    return { ...builtIn, ...customModes };
   } catch { return defaults; }
 }
 let gptModeProfiles = loadGptModeProfiles();
+// 0.14.31: 强制回填默认提示词并持久化，修复旧 localStorage 中空提示词的问题
+(() => {
+  let needsSave = false;
+  for (const [key, profile] of Object.entries(gptModeProfiles)) {
+    const normalized = normalizeGptWorkflowSteps(profile.steps);
+    const uploadStep = normalized.find((s) => s.action === "upload-material");
+    if (uploadStep && !uploadStep.text) {
+      // normalizeGptWorkflowSteps should have already backfilled this,
+      // but double-check and flag for save if it was empty before
+      needsSave = true;
+    }
+    profile.steps = normalized;
+  }
+  if (needsSave) saveGptModeProfiles();
+})();
 function activeGptModeKey(value = gptAutoSettings?.mode) {
   return normalizeGptProductionMode(value);
 }
@@ -454,16 +643,19 @@ function renderGptModeWorkflow() {
   const startBehavior = profile.useCurrentSession === false ? "inject" : "current";
   const initRow = `
     <div class="gpt-workflow-step gpt-workflow-step-init" data-workflow-fixed="true" draggable="true">
-      <span class="gpt-workflow-drag-handle" title="拖动排序" aria-label="拖动排序">⠿</span>
-      <span class="gpt-workflow-order">1</span>
-      <select disabled aria-label="固定环节"><option selected>初始化会话</option></select>
-      <select id="gptModeStartBehavior" aria-label="起始行为" data-workflow-field="startBehavior"><option value="current"${startBehavior === "current" ? " selected" : ""}>继续使用当前会话</option><option value="inject"${startBehavior === "inject" ? " selected" : ""}>注入模板提示词</option></select>
-      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
-      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
-      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
-      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
-      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
-      <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+      <div class="gpt-workflow-main">
+        <span class="gpt-workflow-drag-handle" title="拖动排序" aria-label="拖动排序">⠿</span>
+        <span class="gpt-workflow-order">1</span>
+        <span class="gpt-workflow-cat" style="color:${GPT_MODULE_CATEGORIES.action.color}" title="执行">▶</span>
+        <select disabled aria-label="固定环节"><option selected>初始化会话</option></select>
+        <select id="gptModeStartBehavior" aria-label="起始行为" data-workflow-field="startBehavior"><option value="current"${startBehavior === "current" ? " selected" : ""}>继续使用当前会话</option><option value="inject"${startBehavior === "inject" ? " selected" : ""}>注入模板提示词</option></select>
+        <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+        <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+        <label class="gpt-workflow-enabled" style="opacity:.5"><input type="checkbox" checked disabled />启用</label>
+        <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+        <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+        <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
+      </div>
     </div>`;
   container.innerHTML = initRow + steps.map((step, index) => {
     const cat = moduleCategory(step.action);
@@ -476,29 +668,55 @@ function renderGptModeWorkflow() {
     const hasDailyTime = moduleHasProp(step.action, "hasDailyTime");
     const hasDetectDelay = moduleHasProp(step.action, "hasDetectDelay");
     const hasRetry = moduleHasProp(step.action, "hasRetry");
+    // 获取当前 action 的默认提示词，用于下拉选择器
+    const defaultsList = defaultGptWorkflowSteps();
+    const defaultText = defaultsList.find((s) => s.action === step.action)?.text || "";
+    const hasDefaultPrompt = Boolean(defaultText);
+    // 判断当前值是否等于默认值
+    const isUsingDefault = hasDefaultPrompt && step.text === defaultText;
+    // 获取模块的规则说明和可调参数
+    const moduleDef = GPT_WORKFLOW_MODULES[step.action];
+    const moduleRule = moduleDef?.rule || "";
+    const moduleParams = moduleDef?.params || {};
+    const moduleParamEntries = Object.entries(moduleParams);
+    const hasModuleParams = moduleParamEntries.length > 0;
+    const moduleParamFields = moduleParamEntries.map(([pk, pdef]) => {
+      const val = step[pk] ?? pdef.default;
+      if (pdef.type === "text") {
+        return `<label class="gpt-workflow-param" title="${escapeHtml(pdef.desc || "")}"><span>${escapeHtml(pdef.label)}</span><input type="text" data-workflow-field="${pk}" value="${escapeHtml(String(val))}" aria-label="${escapeHtml(pdef.label)}" /></label>`;
+      }
+      return `<label class="gpt-workflow-param" title="${escapeHtml(pdef.desc || "")}"><span>${escapeHtml(pdef.label)}</span><input type="number" data-workflow-field="${pk}" min="${pdef.min ?? 0}" max="${pdef.max ?? 9999}" value="${val}" aria-label="${escapeHtml(pdef.label)}" /></label>`;
+    }).join("");
     return `
     <div class="gpt-workflow-step gpt-workflow-step-${cat}" data-workflow-index="${index}" draggable="true">
-      <span class="gpt-workflow-drag-handle" title="拖动排序" aria-label="拖动排序">⠿</span>
-      <span class="gpt-workflow-order">${index + 2}</span>
-      <span class="gpt-workflow-cat" style="color:${catInfo.color}" title="${catInfo.label}">${catInfo.icon}</span>
-      <select data-workflow-field="action" aria-label="第${index + 2}个环节">${buildModuleOptions(step.action)}</select>
-      ${hasText ? `<input type="text" data-workflow-field="text" value="${escapeHtml(step.text)}" placeholder="${step.action === "upload-material" ? "上传提示词（可留空）" : "发送文字内容"}" aria-label="第${index + 2}个环节${step.action === "upload-material" ? "上传提示词" : "发送文字"}" />` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
-      ${hasTimeout ? `<label class="gpt-workflow-timeout"><span>${hasDetectDelay ? "轮询" : "等待"}</span><input type="number" data-workflow-field="timeoutSeconds" min="5" max="3600" value="${step.timeoutSeconds}" aria-label="第${index + 2}个环节等待秒数" /><span>秒</span></label>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
-      ${hasAutoDetect ? `<label class="gpt-workflow-autodetect" title="开启后检测到完成就继续，等待时间仅作为上限"><input type="checkbox" data-workflow-field="autoDetect"${step.autoDetect ? " checked" : ""} />自动</label>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
-      ${hasRandomRange ? `<label class="gpt-workflow-random"><span>随机</span><input type="number" data-workflow-field="minSeconds" min="1" max="3600" value="${step.minSeconds}" aria-label="最小秒数" />~<input type="number" data-workflow-field="maxSeconds" min="5" max="3600" value="${step.maxSeconds}" aria-label="最大秒数" /><span>秒</span></label>` : ``}
-      ${hasDetectDelay ? `<label class="gpt-workflow-detectdelay" title="检测到目标完成后，等待此范围随机秒数再继续下一步"><span>检测后延迟</span><input type="number" data-workflow-field="detectDelayMin" min="0" max="30" value="${step.detectDelayMin}" aria-label="检测后最小延迟秒" />~<input type="number" data-workflow-field="detectDelayMax" min="1" max="60" value="${step.detectDelayMax}" aria-label="检测后最大延迟秒" /><span>秒</span></label>` : ``}
-      ${hasRetry ? `<label class="gpt-workflow-retry" title="发送后检测到失败(如出图错误、网络异常)，等待指定秒数后自动重试1次"><input type="checkbox" data-workflow-field="retryEnabled"${step.retryEnabled ? " checked" : ""} />重试</label><label class="gpt-workflow-retry-delay"><input type="number" data-workflow-field="retryDelayMin" min="30" max="600" value="${step.retryDelayMin}" aria-label="重试最小秒数" />~<input type="number" data-workflow-field="retryDelayMax" min="60" max="900" value="${step.retryDelayMax}" aria-label="重试最大秒数" /><span>秒后</span></label>` : ``}
-      ${hasTimeWindow ? `<label class="gpt-workflow-timewindow"><input type="time" data-workflow-field="timeStart" value="${step.timeStart}" aria-label="开始时间" />~<input type="time" data-workflow-field="timeEnd" value="${step.timeEnd}" aria-label="结束时间" /></label>` : ``}
-      ${hasDailyTime ? `<label class="gpt-workflow-daily"><input type="time" data-workflow-field="dailyTime" value="${step.dailyTime}" aria-label="每日执行时间" /></label>` : ``}
-      <label class="gpt-workflow-enabled"><input type="checkbox" data-workflow-field="enabled"${step.enabled ? " checked" : ""} />启用</label>
-      <button type="button" class="icon-button" data-workflow-move="up" title="上移" aria-label="上移">↑</button>
-      <button type="button" class="icon-button" data-workflow-move="down" title="下移" aria-label="下移">↓</button>
-      <button type="button" class="icon-button danger" data-workflow-remove title="删除环节" aria-label="删除环节">×</button>
+      <div class="gpt-workflow-main">
+        <span class="gpt-workflow-drag-handle" title="拖动排序" aria-label="拖动排序">⠿</span>
+        <span class="gpt-workflow-order">${index + 2}</span>
+        <span class="gpt-workflow-cat" style="color:${catInfo.color}" title="${catInfo.label}">${catInfo.icon}</span>
+        <select data-workflow-field="action" aria-label="第${index + 2}个环节">${buildModuleOptions(step.action)}</select>
+        ${hasText ? `<div class="gpt-workflow-text-cell">${hasDefaultPrompt ? `<select class="gpt-workflow-prompt-preset" data-workflow-field="textPreset" data-action="${step.action}" title="切换提示词来源"><option value="custom"${isUsingDefault ? "" : " selected"}>✍</option><option value="default"${isUsingDefault ? " selected" : ""}>📋</option></select>` : ""}<input type="text" data-workflow-field="text" value="${escapeHtml(step.text)}" placeholder="${step.action === "upload-material" ? "留空则自动生成默认提示词" : "发送文字内容"}" aria-label="第${index + 2}个环节${step.action === "upload-material" ? "上传提示词" : "发送文字"}" /></div>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
+        ${hasTimeout ? `<label class="gpt-workflow-timeout"><span>${hasDetectDelay ? "轮询" : "等待"}</span><input type="number" data-workflow-field="timeoutSeconds" min="5" max="3600" value="${step.timeoutSeconds}" aria-label="第${index + 2}个环节等待秒数" /><span>秒</span></label>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
+        ${hasAutoDetect ? `<label class="gpt-workflow-autodetect" title="开启后检测到完成就继续，等待时间仅作为上限"><input type="checkbox" data-workflow-field="autoDetect"${step.autoDetect ? " checked" : ""} />自动</label>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
+        <label class="gpt-workflow-enabled"><input type="checkbox" data-workflow-field="enabled"${step.enabled ? " checked" : ""} />启用</label>
+        <button type="button" class="icon-button" data-workflow-move="up" title="上移" aria-label="上移">↑</button>
+        <button type="button" class="icon-button" data-workflow-move="down" title="下移" aria-label="下移">↓</button>
+        <button type="button" class="icon-button danger" data-workflow-remove title="删除环节" aria-label="删除环节">×</button>
+      </div>
+      ${(hasRandomRange || hasDetectDelay || hasRetry || hasTimeWindow || hasDailyTime || hasModuleParams) ? `
+      <div class="gpt-workflow-extra">
+        ${hasRandomRange ? `<label class="gpt-workflow-random"><span>随机</span><input type="number" data-workflow-field="minSeconds" min="1" max="3600" value="${step.minSeconds}" aria-label="最小秒数" />~<input type="number" data-workflow-field="maxSeconds" min="5" max="3600" value="${step.maxSeconds}" aria-label="最大秒数" /><span>秒</span></label>` : ``}
+        ${hasDetectDelay ? `<label class="gpt-workflow-detectdelay" title="检测到目标完成后，等待此范围随机秒数再继续下一步"><span>检测后延迟</span><input type="number" data-workflow-field="detectDelayMin" min="0" max="30" value="${step.detectDelayMin}" aria-label="检测后最小延迟秒" />~<input type="number" data-workflow-field="detectDelayMax" min="1" max="60" value="${step.detectDelayMax}" aria-label="检测后最大延迟秒" /><span>秒</span></label>` : ``}
+        ${hasRetry ? `<label class="gpt-workflow-retry" title="发送后检测到失败(如出图错误、网络异常)，等待指定秒数后自动重试1次"><input type="checkbox" data-workflow-field="retryEnabled"${step.retryEnabled ? " checked" : ""} />重试</label><label class="gpt-workflow-retry-delay"><input type="number" data-workflow-field="retryDelayMin" min="30" max="600" value="${step.retryDelayMin}" aria-label="重试最小秒数" />~<input type="number" data-workflow-field="retryDelayMax" min="60" max="900" value="${step.retryDelayMax}" aria-label="重试最大秒数" /><span>秒后</span></label>` : ``}
+        ${hasTimeWindow ? `<label class="gpt-workflow-timewindow"><span>时间窗口</span><input type="time" data-workflow-field="timeStart" value="${step.timeStart}" aria-label="开始时间" />~<input type="time" data-workflow-field="timeEnd" value="${step.timeEnd}" aria-label="结束时间" /></label>` : ``}
+        ${hasDailyTime ? `<label class="gpt-workflow-daily"><span>每日定时</span><input type="time" data-workflow-field="dailyTime" value="${step.dailyTime}" aria-label="每日执行时间" /></label>` : ``}
+        ${moduleParamFields}
+      </div>` : ``}
+      ${moduleRule ? `<div class="gpt-workflow-rule" data-workflow-rule="${step.action}"><span class="gpt-workflow-rule-icon" title="判断规则">📋</span><span class="gpt-workflow-rule-text">${escapeHtml(moduleRule)}</span></div>` : ``}
     </div>`;
   }).join("");
 }
 function buildModuleOptions(currentAction) {
-  const categories = ["action", "wait", "time", "flow"];
+  const categories = ["action", "wait", "detect", "time", "flow"];
   return categories.map((cat) => {
     const catInfo = GPT_MODULE_CATEGORIES[cat];
     const modules = Object.entries(GPT_WORKFLOW_MODULES).filter(([, def]) => def.category === cat);
@@ -508,24 +726,36 @@ function buildModuleOptions(currentAction) {
   }).join("");
 }
 function readGptModeWorkflowFromUi() {
-  return [...document.querySelectorAll("#gptModeWorkflowEditor .gpt-workflow-step:not([data-workflow-fixed])")].map((row) => ({
-    action: row.querySelector('[data-workflow-field="action"]')?.value || "",
-    text: row.querySelector('[data-workflow-field="text"]')?.value || "",
-    timeoutSeconds: Number(row.querySelector('[data-workflow-field="timeoutSeconds"]')?.value || 60),
-    enabled: row.querySelector('[data-workflow-field="enabled"]')?.checked !== false,
-    autoDetect: row.querySelector('[data-workflow-field="autoDetect"]')?.checked === true,
-    minSeconds: Number(row.querySelector('[data-workflow-field="minSeconds"]')?.value || 5),
-    maxSeconds: Number(row.querySelector('[data-workflow-field="maxSeconds"]')?.value || 30),
-    timeStart: row.querySelector('[data-workflow-field="timeStart"]')?.value || "09:00",
-    timeEnd: row.querySelector('[data-workflow-field="timeEnd"]')?.value || "22:00",
-    dailyTime: row.querySelector('[data-workflow-field="dailyTime"]')?.value || "09:30",
-    retryCount: Number(row.querySelector('[data-workflow-field="retryCount"]')?.value || 3),
-    detectDelayMin: Number(row.querySelector('[data-workflow-field="detectDelayMin"]')?.value ?? 1),
-    detectDelayMax: Number(row.querySelector('[data-workflow-field="detectDelayMax"]')?.value ?? 3),
-    retryEnabled: row.querySelector('[data-workflow-field="retryEnabled"]')?.checked === true,
-    retryDelayMin: Number(row.querySelector('[data-workflow-field="retryDelayMin"]')?.value || 120),
-    retryDelayMax: Number(row.querySelector('[data-workflow-field="retryDelayMax"]')?.value || 300)
-  }));
+  return [...document.querySelectorAll("#gptModeWorkflowEditor .gpt-workflow-step:not([data-workflow-fixed])")].map((row) => {
+    const action = row.querySelector('[data-workflow-field="action"]')?.value || "";
+    const step = {
+      action,
+      text: row.querySelector('[data-workflow-field="text"]')?.value || "",
+      timeoutSeconds: Number(row.querySelector('[data-workflow-field="timeoutSeconds"]')?.value || 60),
+      enabled: row.querySelector('[data-workflow-field="enabled"]')?.checked !== false,
+      autoDetect: row.querySelector('[data-workflow-field="autoDetect"]')?.checked === true,
+      minSeconds: Number(row.querySelector('[data-workflow-field="minSeconds"]')?.value || 5),
+      maxSeconds: Number(row.querySelector('[data-workflow-field="maxSeconds"]')?.value || 30),
+      timeStart: row.querySelector('[data-workflow-field="timeStart"]')?.value || "09:00",
+      timeEnd: row.querySelector('[data-workflow-field="timeEnd"]')?.value || "22:00",
+      dailyTime: row.querySelector('[data-workflow-field="dailyTime"]')?.value || "09:30",
+      retryCount: Number(row.querySelector('[data-workflow-field="retryCount"]')?.value || 3),
+      detectDelayMin: Number(row.querySelector('[data-workflow-field="detectDelayMin"]')?.value ?? 1),
+      detectDelayMax: Number(row.querySelector('[data-workflow-field="detectDelayMax"]')?.value ?? 3),
+      retryEnabled: row.querySelector('[data-workflow-field="retryEnabled"]')?.checked === true,
+      retryDelayMin: Number(row.querySelector('[data-workflow-field="retryDelayMin"]')?.value || 120),
+      retryDelayMax: Number(row.querySelector('[data-workflow-field="retryDelayMax"]')?.value || 300)
+    };
+    // 读取模块定义中的动态参数
+    const moduleDef = GPT_WORKFLOW_MODULES[action];
+    const moduleParams = moduleDef?.params || {};
+    for (const [pk, pdef] of Object.entries(moduleParams)) {
+      const el = row.querySelector(`[data-workflow-field="${pk}"]`);
+      if (!el) continue;
+      step[pk] = pdef.type === "text" ? String(el.value || "") : Number(el.value || pdef.default);
+    }
+    return step;
+  });
 }
 function renderGptModeProfile() {
   const key = activeSettingsModeKey();
@@ -1015,8 +1245,8 @@ function renderGptAutoSettings() {
 }
 
 function saveGptAutoSettings() {
-  const minDelay = Math.max(5, Number($("#gptAutoMinDelay")?.value || 25));
-  const maxDelay = Math.max(minDelay, Number($("#gptAutoMaxDelay")?.value || 55));
+  const minDelay = $("#gptAutoMinDelay") ? Math.max(5, Number($("#gptAutoMinDelay").value || 25)) : (gptAutoSettings.minDelaySeconds || 25);
+  const maxDelay = $("#gptAutoMaxDelay") ? Math.max(minDelay, Number($("#gptAutoMaxDelay").value || 55)) : (gptAutoSettings.maxDelaySeconds || 55);
   // Profile key = previewed mode (what the user is editing in settings panel);
   // actualMode = real production mode (must NOT change just because user is previewing).
   const profileKey = activeSettingsModeKey();
@@ -1063,7 +1293,7 @@ function saveGptAutoSettings() {
     autoPackage: derivedAutoPackage,
     workflowSteps: actualSteps,
     pauseOnFailure: false,
-    autoArchive: $("#gptAutoArchiveEnabled")?.checked !== false,
+    autoArchive: $("#gptAutoArchiveEnabled") ? $("#gptAutoArchiveEnabled").checked !== false : (gptAutoSettings.autoArchive !== false),
     quotaReminderEnabled: $("#gptQuotaReminderEnabled")?.checked !== false,
     minDelaySeconds: minDelay,
     maxDelaySeconds: maxDelay,
@@ -1170,11 +1400,17 @@ async function api(path, options) {
   return response.json();
 }
 
-function toast(message) {
+function toast(message, type) {
   const el = $("#toast");
   el.textContent = message;
-  el.classList.add("show");
-  window.setTimeout(() => el.classList.remove("show"), 1800);
+  el.className = "toast show";
+  if (type) el.classList.add(type);
+  // 错误信息显示更久
+  const duration = type === "error" ? 5000 : 1800;
+  window.setTimeout(() => {
+    el.classList.remove("show");
+    if (type) el.classList.remove(type);
+  }, duration);
 }
 
 function shortText(text, limit = 20) {
@@ -1757,12 +1993,17 @@ function renderDistributionReserveAlert() {
   const reserve = Number(dashboard.distribution.reserve?.[category] || 0);
   const threshold = Number(settings.desktopReserveThreshold || 10);
   const dismissedKey = `tb-reserve-dismissed:${category}:${reserve}:${threshold}`;
-  const show = settings.desktopReserveAlertEnabled !== false
+  const shouldNotify = settings.desktopReserveAlertEnabled !== false
     && reserve < threshold
     && localStorage.getItem(dismissedKey) !== "1";
-  alert.hidden = !show;
-  if (!show) return;
-  alert.innerHTML = `<span class="reserve-alert-icon">!</span><div><strong>电脑作品集储备不足</strong><p>目前${reserveCategoryLabel(category)}只有 ${reserve} 个，低于安全线 ${threshold} 个，请继续批量制作作品集。</p></div><button type="button" data-dismiss-reserve-alert="${escapeHtml(dismissedKey)}" aria-label="关闭提醒">×</button>`;
+
+  // 隐藏旧的浮动通知条，改用小猫气泡
+  alert.hidden = true;
+
+  if (!shouldNotify) return;
+
+  const message = `电脑作品集储备不足：${reserveCategoryLabel(category)}只有 ${reserve} 个，低于安全线 ${threshold} 个，请继续批量制作作品集。`;
+  showWorkbenchAssistantBubble(message, { duration: 0, tone: "warning", persistent: true });
 }
 
 function closeImageLightbox() {
@@ -2376,7 +2617,7 @@ function renderGptTestMaterials() {
           <button class="workbench-post-folder" type="button" draggable="true" data-gpt-material-path="${escapeHtml(item.path)}" data-gpt-test-post-folder="${escapeHtml(item.id)}" title="${escapeHtml(item.name)}">
             <span class="folder-glyph" aria-hidden="true">${postExpanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.imageCount || 0} 图 · ${item.textCount || 0} TXT · 使用 ${Number(item.usageCount || 0)} 次</small></span>
           </button>
-          <button class="gpt-post-send-button" type="button" data-gpt-upload-post="${escapeHtml(item.id)}" title="只把这个帖子上传到当前 GPT 输入框，不自动发送"${gptAutoRunning ? " disabled" : ""}>上传</button>
+          <button class="gpt-post-send-button" type="button" data-gpt-upload-post="${escapeHtml(item.id)}" title="只把这个帖子的图片和 TXT 上传到当前 GPT 输入框，不自动发送"${gptAutoRunning ? " disabled" : ""}>上传素材</button>
         </div>
         ${postExpanded ? `<div class="workbench-post-assets">${images}${texts || `<span class="workbench-empty-asset">没有 TXT</span>`}</div>` : ""}
       </section>`;
@@ -2421,7 +2662,7 @@ function renderGptTestTemplates() {
         <button class="workbench-folder-item gpt-test-template-row${expanded ? " active" : ""}" type="button" data-gpt-test-template="${escapeHtml(template.id)}">
           <span class="folder-glyph" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span><strong>${escapeHtml(template.name)}${template.kind === "online" ? "" : `（${template.imageCount || 0}）`}</strong></span>
         </button>
-        <button class="gpt-post-send-button" type="button" data-gpt-upload-template="${escapeHtml(template.id)}" title="${template.kind === "online" ? "在当前账号窗口打开这个在线模板" : "只把这个模板上传到当前 GPT 输入框，不自动发送"}"${gptAutoRunning ? " disabled" : ""}>上传</button>
+        <button class="gpt-post-send-button" type="button" data-gpt-upload-template="${escapeHtml(template.id)}" title="${template.kind === "online" ? "在当前账号窗口打开这个在线模板" : "只把这个模板的图片和规则上传到当前 GPT 输入框，不自动发送"}"${gptAutoRunning ? " disabled" : ""}>上传模板</button>
       </div>
       ${expanded ? `<div class="workbench-template-images workbench-inline-previews">${onlineDetail}${previews}${texts}</div>` : ""}
     </section>`;
@@ -2660,7 +2901,7 @@ function scheduleContinuousGptProduction(delayMs = 2500) {
   if (!workWindow.allowed) {
     const nextStartAt = workWindow.nextStartAt;
     const waitMs = Math.max(1500, Number(nextStartAt?.getTime() || 0) - Date.now() + 1000);
-    showWorkbenchAssistantBubble(`当前是休息时段，永不停歇模式将在北京时间 ${nextStartAt?.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })} 继续。`, { duration: 0 });
+    showWorkbenchAssistantBubble(`当前是休息时段，单账号全自动将在北京时间 ${nextStartAt?.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })} 继续。`, { duration: 0 });
     gptContinuousLaunchTimer = setTimeout(() => {
       gptContinuousLaunchTimer = null;
       scheduleContinuousGptProduction(1500);
@@ -2785,7 +3026,11 @@ function buildGptTestTask(entry, template = null) {
   const uploadStep = (activeProfile.steps || []).find((step) => step.action === "upload-material");
   const uploadPromptText = String(uploadStep?.text || "").trim();
   const prompt = uploadPromptText
-    ? uploadPromptText
+    ? [
+        uploadPromptText,
+        `当前素材文件夹：${entry.item.name}`,
+        extra ? `本次补充要求：\n${extra}` : ""
+      ].filter(Boolean).join("\n\n")
     : useCurrentSession ? "" : [
         template?.kind === "online"
           ? `继续使用当前链接会话中已经沉淀好的「${template.name}」母版。`
@@ -2874,11 +3119,11 @@ function updateGptAssistantBubble(message = "") {
     } else if (!inWindow) {
       continuousStatus = ` · 工作时段外（${workStart}-${workEnd}自动开始）`;
     } else if (armed && runtime.status === "idle") {
-      continuousStatus = " · 永不停歇已就绪，等待启动";
+      continuousStatus = " · 单账号全自动已就绪，等待启动";
     } else if (armed) {
-      continuousStatus = " · 永不停歇运行中";
+      continuousStatus = " · 单账号全自动运行中";
     } else {
-      continuousStatus = " · 永不停歇未启动";
+      continuousStatus = " · 单账号全自动未启动";
     }
   }
   const taskMessage = setNumber > 0
@@ -3327,7 +3572,7 @@ async function checkScheduledGptProduction() {
     if (isContinuousGptMode() && gptTestQueueIndex >= gptTestQueue.length && !gptTestSelectedMaterials.size) {
       gptScheduledLaunchKeys.add(launchKey);
       gptScheduledDayKey = dayKey;
-      const prepared = await prepareAutoGptQueue(plan.count, "永不停歇");
+      const prepared = await prepareAutoGptQueue(plan.count, "单账号全自动");
       if (!prepared) {
         showWorkbenchAssistantBubble("已到全天自动时间，但素材库没有可用素材；点号隐藏文件夹已跳过。", { duration: 0 });
         continue;
@@ -3357,47 +3602,66 @@ async function checkScheduledGptProduction() {
 
 function updateGptTestQueueStatus(message = "") {
   const node = $("#gptTestQueueStatus");
+  const badge = $("#gptStatusBadge");
   const button = $("#gptTestSendBtn");
+  const progressBar = $(".gpt-auto-progress");
   if (!node || !button) return;
   const selectedCount = gptTestSelectedMaterials.size;
   const canResumeQueue = gptQueuePaused && gptTestQueue.length > 0 && gptTestQueueIndex < gptTestQueue.length;
-  const mode = GPT_MODE_DEFINITIONS[activeGptModeKey()]?.label || "人工控制";
-  if (message) node.textContent = message;
-  else if (gptQuotaPauseStatus && gptQueuePaused) node.textContent = gptQuotaPauseStatus;
-  else if (canResumeQueue) node.textContent = `已恢复未完成队列，还有 ${gptTestQueue.length - gptTestQueueIndex} 个步骤待处理`;
-  else if (!selectedCount) node.textContent = "请至少选择一个素材文件夹；模板可以不选";
-  else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) node.textContent = `还有 ${gptTestQueue.length - gptTestQueueIndex} 个队列步骤待处理`;
-  else node.textContent = `${mode}模式 · ${selectedCount} 个素材 × ${Math.max(1, gptTestSelectedTemplates.size)} 个母版 = ${gptProductionWorkCount()} 个作品`;
+  const modeKey = activeGptModeKey();
+  const mode = GPT_MODE_DEFINITIONS[modeKey]?.label || "人工控制";
+  const shortMode = GPT_MODE_DEFINITIONS[modeKey]?.shortName || mode;
+  // --- Issue 3: status badge + dynamic message ---
+  let badgeText = "待机";
+  let msgText = "";
+  if (message) { msgText = message; badgeText = "通知"; }
+  else if (gptAutoRunning) {
+    badgeText = "运行中";
+    msgText = `${mode}处理中 ${Math.min(gptTestQueueIndex + 1, gptTestQueue.length)}/${gptTestQueue.length}`;
+  }
+  else if (gptQuotaPauseStatus && gptQueuePaused) { msgText = gptQuotaPauseStatus; badgeText = "等额度"; }
+  else if (gptCurrentManualTask) { msgText = "已上传到输入框，请在右侧手动发送"; badgeText = "待发送"; }
+  else if (gptSemiAutoPendingTask) { msgText = "计划已生成，请确认后继续"; badgeText = "待确认"; }
+  else if (canResumeQueue) { msgText = `已恢复未完成队列，还有 ${gptTestQueue.length - gptTestQueueIndex} 个步骤待处理`; badgeText = "已恢复"; }
+  else if (gptTestQueue.length && gptTestQueueIndex < gptTestQueue.length) { msgText = `还有 ${gptTestQueue.length - gptTestQueueIndex} 个队列步骤待处理`; badgeText = "暂停中"; }
+  else if (!selectedCount) { msgText = "请至少选择一个素材文件夹；模板可以不选"; badgeText = "待机"; }
+  else { msgText = `${shortMode}模式 · ${selectedCount} 素材 × ${Math.max(1, gptTestSelectedTemplates.size)} 母版 = ${gptProductionWorkCount()} 作品`; badgeText = "就绪"; }
+  node.textContent = msgText;
+  if (badge) badge.textContent = badgeText;
+  const BADGE_CLASS_KEY = { "待机": "idle", "就绪": "ready", "运行中": "running", "通知": "info", "待发送": "pending", "待确认": "confirm", "暂停中": "paused", "等额度": "quota", "已恢复": "restored" };
+  if (badge) badge.className = `gpt-status-badge badge-${BADGE_CLASS_KEY[badgeText] || "idle"}`;
+  // --- Issue 1: button text reflects actual mode behavior ---
   button.disabled = (!selectedCount && !canResumeQueue) || !window.gptWorkbench?.available;
   if (gptAutoRunning) button.disabled = true;
-  // In manual mode, once a task is uploaded and waiting for the user to
-  // send the prompt in GPT, the send button must not trigger a duplicate
-  // upload.  The "完成当前，上传下一套" button is the only way forward.
   if (gptCurrentManualTask) button.disabled = true;
-  // In semi-auto mode, once the plan is generated and waiting for user
-  // confirmation, the send button must not start a new task.  The
-  // "确认继续出图" button is the only way forward.
   if (gptSemiAutoPendingTask) button.disabled = true;
-  button.textContent = gptAutoRunning
-    ? `${mode}处理中 ${Math.min(gptTestQueueIndex + 1, gptTestQueue.length)}/${gptTestQueue.length}`
-    : gptCurrentManualTask
-      ? "等待手动发送（见上方提示）"
-    : gptSemiAutoPendingTask
-      ? "等待确认计划（见下方按钮）"
-    : gptQueuePaused && gptTestQueueIndex < gptTestQueue.length
-      ? `继续自动生产 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
-    : gptTestQueue.length && gptTestQueueIndex > 0 && gptTestQueueIndex < gptTestQueue.length
-      ? `继续 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`
-      : gptAutoSettings.mode === "manual" ? "准备并上传当前一套" : "开始自动生产";
+  // Mode-specific button text: tell the user exactly what will happen
+  if (gptAutoRunning)
+    button.textContent = `${mode}进行中 ${Math.min(gptTestQueueIndex + 1, gptTestQueue.length)}/${gptTestQueue.length}`;
+  else if (gptCurrentManualTask)
+    button.textContent = "⏳ 等待手动发送";
+  else if (gptSemiAutoPendingTask)
+    button.textContent = "⏳ 等待确认计划";
+  else if (canResumeQueue)
+    button.textContent = `▶ 继续生产 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`;
+  else if (gptTestQueue.length && gptTestQueueIndex > 0 && gptTestQueueIndex < gptTestQueue.length)
+    button.textContent = `▶ 继续 ${gptTestQueueIndex + 1}/${gptTestQueue.length}`;
+  else if (modeKey === "manual")
+    button.textContent = "📤 上传素材到输入框";
+  else if (modeKey === "patrol")
+    button.textContent = "🔍 开始巡检生产";
+  else
+    button.textContent = `🚀 开始${shortMode}生产`;
+  // --- Issue 4: hide irrelevant buttons when idle ---
+  const hasActiveWork = gptAutoRunning || gptQueuePaused || gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
   const pauseButton = $("#gptPauseQueueBtn");
   if (pauseButton) {
     const runtime = readGptWindowRuntime(activeGptAccountId);
-    const hasWork = gptAutoRunning || gptQueuePaused || gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
-    pauseButton.hidden = !hasWork;
+    pauseButton.hidden = !hasActiveWork;
     pauseButton.disabled = false;
     const quotaWaiting = Boolean((gptQuotaPauseStatus || runtime.status === "waiting-quota") && !gptAutoRunning && gptQueuePaused);
-    pauseButton.textContent = runtime.pausedByUser || gptAutoPaused || (!gptAutoRunning && gptQueuePaused) ? "继续" : "暂停";
-    if (quotaWaiting) pauseButton.textContent = "继续（等额度）";
+    pauseButton.textContent = runtime.pausedByUser || gptAutoPaused || (!gptAutoRunning && gptQueuePaused) ? "▶ 继续" : "⏸ 暂停";
+    if (quotaWaiting) pauseButton.textContent = "▶ 继续（等额度）";
     pauseButton.title = quotaWaiting
       ? "已触达额度或低产出上限；到探测时间会自动试跑，也可以手动继续强制尝试"
       : gptAutoRunning ? "暂停当前工作流，当前帖子会停在安全检查点" : "继续当前工作流";
@@ -3405,14 +3669,20 @@ function updateGptTestQueueStatus(message = "") {
   const stopButton = $("#gptStopQueueBtn");
   if (stopButton) {
     const runtime = readGptWindowRuntime(activeGptAccountId);
-    const hasWork = gptAutoRunning || gptQueuePaused || gptTestQueue.some((task) => !["completed", "skipped"].includes(task._status));
-    stopButton.hidden = !hasWork && !runtime.stoppedByUser;
-    stopButton.textContent = runtime.stoppedByUser ? "启动" : "停止";
+    stopButton.hidden = !hasActiveWork && !runtime.stoppedByUser;
+    stopButton.textContent = runtime.stoppedByUser ? "▶ 启动" : "⏹ 停止";
     stopButton.title = runtime.stoppedByUser
       ? "重新启动当前账号窗口的生产模式"
       : "彻底停止当前账号窗口的本轮生产，不会删除队列或登录状态";
   }
-  $("#gptSkipTaskBtn")?.toggleAttribute("disabled", gptAutoRunning || !gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length);
+  // Skip button: only show when queue is active and not at the end
+  const skipBtn = $("#gptSkipTaskBtn");
+  if (skipBtn) {
+    skipBtn.hidden = gptAutoRunning ? false : (!gptTestQueue.length || gptTestQueueIndex >= gptTestQueue.length);
+    skipBtn.disabled = gptAutoRunning ? false : true;
+  }
+  // Progress bar: only visible when running
+  if (progressBar) progressBar.hidden = !gptAutoRunning && !gptQueuePaused;
   $("#gptManualNextBtn")?.toggleAttribute("hidden", gptAutoSettings.mode !== "manual" || !gptCurrentManualTask);
   $("#gptSemiAutoResumeBtn")?.toggleAttribute("hidden", !gptSemiAutoPendingTask);
   $("#gptRetryTaskBtn")?.toggleAttribute("hidden", !gptLastFailedTask || gptAutoRunning);
@@ -4112,8 +4382,8 @@ async function sendRotatingWindowGptTasks(options = {}) {
   const accounts = availableMultiWindowAccounts();
   if (!accounts.length) {
     gptQueuePaused = true;
-    updateGptTestQueueStatus("轮换模式没有可用的账号窗口；请先保留至少一个可见账号窗口");
-    showWorkbenchAssistantBubble("单窗口多浏览器轮换模式没有可用账号窗口，未上传素材。", { duration: 0, tone: "warning" });
+    updateGptTestQueueStatus("多账号全自动没有可用的账号窗口；请先保留至少一个可见账号窗口");
+    showWorkbenchAssistantBubble("多账号全自动没有可用账号窗口，未上传素材。", { duration: 0, tone: "warning" });
     return;
   }
   const pendingFromQueue = gptQueuePaused && gptTestQueue.length
@@ -4161,7 +4431,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
   });
   window.gptWorkbench?.setProductionActive?.(true).catch(() => {});
   persistGptQueue();
-  updateGptTestQueueStatus(`单窗口多浏览器轮换模式已启动 · ${accounts.length} 个账号窗口 · 一次只处理一帖`);
+  updateGptTestQueueStatus(`多账号全自动已启动 · ${accounts.length} 个账号窗口 · 一次只处理一帖`);
 
   const runInitializerForAccount = async (materialTask, account) => {
     if (!materialTask?.templateId) return;
@@ -4200,7 +4470,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
         const nextProbeAt = accounts.map((account) => Number(readGptCycleState(account.quotaGroup || account.id).nextProbeAt || 0)).filter(Boolean).sort((a, b) => a - b)[0] || 0;
         updateGptTestQueueStatus(nextProbeAt
           ? `所有账号窗口都在等待额度恢复；最早 ${new Date(nextProbeAt).toLocaleString("zh-CN", { hour12: false })} 再探测`
-          : "所有账号窗口暂时不可用；已安全暂停轮换，不会继续注入下一帖");
+          : "所有账号窗口暂时不可用；已安全暂停多账号全自动，不会继续注入下一帖");
         persistGptRotationRun({ status: "waiting-quota", nextProbeAt: nextProbeAt || null, workerState });
         break;
       }
@@ -4261,7 +4531,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
         state.failed += 1;
         task._status = "skipped";
         gptTestQueueIndex += 1;
-        showWorkbenchAssistantBubble(`${task.name || "当前素材"} 失败，已跳过并继续轮换下一帖。`, { duration: 4200, tone: "warning" });
+        showWorkbenchAssistantBubble(`${task.name || "当前素材"} 失败，已跳过并继续多账号全自动下一帖。`, { duration: 4200, tone: "warning" });
         persistGptQueue();
       }
     }
@@ -4269,7 +4539,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
     if (!gptAutoPaused && !pending.length) {
       gptQueuePaused = false;
       persistGptRotationRun({ status: "completed", completed: tracker.completed, failed: tracker.failed, workerState, finishedAt: new Date().toISOString(), pending: [] });
-      updateGptTestQueueStatus(`单窗口多浏览器轮换模式完成：成功 ${tracker.completed} 套，失败/跳过 ${tracker.failed} 套`);
+      updateGptTestQueueStatus(`多账号全自动完成：成功 ${tracker.completed} 套，失败/跳过 ${tracker.failed} 套`);
     } else if (gptAutoPaused) {
       persistGptRotationRun({ status: "paused", workerState, pending: pending.map((task) => task.requestId) });
     }
@@ -4277,7 +4547,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
     gptAutoRunning = false;
     window.gptWorkbench?.setProductionActive?.(false).catch(() => {});
     persistGptQueue();
-    updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
+    updateGptTestQueueStatus();
     refreshGptQuota();
     if (isContinuousGptProductionArmed() && !gptAutoPaused && !gptQueuePaused) scheduleContinuousGptProduction();
     clearGptMultiRunIfFinished();
@@ -4462,7 +4732,7 @@ async function sendMultiWindowGptTasks(options = {}) {
     gptAutoRunning = false;
     window.gptWorkbench?.setProductionActive?.(false).catch(() => {});
     persistGptQueue();
-    updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
+    updateGptTestQueueStatus();
     refreshGptQuota();
     if (isContinuousGptProductionArmed() && !gptAutoPaused) scheduleContinuousGptProduction();
     clearGptMultiRunIfFinished();
@@ -4811,7 +5081,7 @@ async function sendNextGptTestTask(options = {}) {
     button.disabled = false;
     window.gptWorkbench?.setProductionActive?.(false).catch(() => {});
     persistGptQueue();
-    updateGptTestQueueStatus($("#gptTestQueueStatus")?.textContent || "");
+    updateGptTestQueueStatus();
     refreshGptQuota();
     const finalRuntime = readGptWindowRuntime(runAccountId);
     if (!finalRuntime.stoppedByUser && !finalRuntime.pausedByUser && finalRuntime.status === "running") {
@@ -6626,20 +6896,49 @@ function renderDistribution() {
   `;
 
   $("#distributionOfficial").innerHTML = `
-    ${stageHeader("official", `微信公众号 · ${officialCollections.length} 个作品集`, "手机端发布完成后放到这里；公众号也发布完成后，再压缩归档。")}
-    ${typeTabs(officialCollections)}
-    <div class="official-launcher"><div><strong>微信公众号发布后台</strong><p>先打开作品核对内容，再到公众号后台上传。</p></div><button type="button" class="primary-button" data-open-official-site>打开公众号官网</button></div>
-    <div class="package-list">${visibleOfficialCollections.length ? visibleOfficialCollections.map((collection) => `
-      <article class="distribution-package-row">
-        <div class="package-select"><span class="package-radio" aria-hidden="true"></span><span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span></div>
-        <div class="badge-line"><span class="state-badge ${collection.sourceValid ? "good" : "bad"}">${collection.sourceValid ? "等待公众号发布" : "作品为空"}</span></div>
-        <div class="device-actions">
-          <button type="button" data-open-collection="${escapeHtml(collection.sourcePath || "")}">打开作品</button>
-          <button type="button" data-mark-used="${escapeHtml(collection.name)}" ${collection.sourceValid ? "" : "disabled"}>三端已发布，归档</button>
-          ${classificationSelect(collection)}
+    ${stageHeader("official", `微信公众号 · ${officialCollections.length} 个作品集`, "左侧选作品集 → 右侧选帖子 → 检查图片和文案 → 点「创建草稿」。首次使用请先完成下方账号配置。")}
+    <div class="official-launcher">
+      <div><strong>微信公众号草稿发布器</strong><p>自动上传图片和文案到公众号草稿箱，无需手动拖传。</p></div>
+      <div class="official-launcher-actions">
+        <button type="button" class="secondary-button" data-open-official-site>公众号官网</button>
+        <button type="button" class="secondary-button" data-wechat-draft-settings>账号设置</button>
+      </div>
+    </div>
+    ${renderWechatAccountStatus()}
+    <div class="wechat-draft-layout">
+      <aside class="wechat-draft-sidebar">
+        <section class="workbench-card wechat-draft-collection-card">
+          <header class="workbench-card-head">
+            <div><span class="workbench-step">01</span><strong>作品集</strong><small>${visibleOfficialCollections.length} 个可选</small></div>
+          </header>
+          <nav class="wechat-draft-collection-list">
+            ${visibleOfficialCollections.length ? visibleOfficialCollections.map((collection) => `
+              <article class="distribution-package-row ${wechatDraftSelectedCollection === collection.name ? "active" : ""}" data-wechat-collection="${escapeHtml(collection.name)}">
+                <div class="package-select"><span class="package-radio" aria-hidden="true"></span><span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span></div>
+                <div class="badge-line"><span class="state-badge ${collection.sourceValid ? "good" : "bad"}">${collection.sourceValid ? "可发布" : "作品为空"}</span></div>
+              </article>
+            `).join("") : `<div class="empty-state"><strong>这个分类暂时没有作品</strong><p>切换另一个分类，或打开真实文件夹核对。</p></div>`}
+          </nav>
+        </section>
+        <section class="workbench-card wechat-draft-posts-card">
+          <header class="workbench-card-head">
+            <div><span class="workbench-step">02</span><strong>帖子列表</strong><small id="wechatPostsHint">${wechatDraftSelectedCollection ? "加载中..." : "请先选择作品集"}</small></div>
+          </header>
+          <div class="wechat-batch-bar" id="wechatBatchBar"></div>
+          <div class="wechat-draft-post-panel" id="wechatDraftRight">
+            ${wechatDraftSelectedCollection ? `<div class="empty-state"><strong>加载中...</strong><p>正在扫描帖子</p></div>` : `<div class="empty-state"><strong>选择上方作品集</strong><p>选择一个作品集后，这里会显示帖子列表。</p></div>`}
+          </div>
+        </section>
+      </aside>
+      <section class="workbench-card wechat-draft-detail-card">
+        <header class="workbench-card-head">
+          <div><span class="workbench-step">03</span><strong>草稿检查台</strong><small>预览图片、检查文案、创建草稿</small></div>
+        </header>
+        <div class="wechat-draft-detail-body" id="wechatDraftDetailPanel">
+          <div class="empty-state"><strong>选择一篇帖子查看详情</strong><p>点击左侧帖子可预览图片、检查标题和正文，再创建草稿。</p></div>
         </div>
-      </article>
-    `).join("") : `<div class="empty-state"><strong>这个分类暂时没有作品</strong><p>切换另一个分类，或打开真实文件夹核对。</p></div>`}</div>
+      </section>
+    </div>
   `;
 
   $("#distributionUsed").innerHTML = `
@@ -6679,6 +6978,644 @@ function renderDistribution() {
   `;
   showDistributionPanel(activeDistributionPanel);
   renderDistributionReserveAlert();
+}
+
+// ─── 微信公众号草稿发布器 ─────────────────────────────
+
+async function loadWechatDraftPosts(collectionName) {
+  wechatDraftSelectedCollection = collectionName;
+  wechatDraftSelectedPost = null;
+  wechatDraftPosts = [];
+  renderDistribution();
+  const right = $("#wechatDraftRight");
+  if (!right) return;
+  right.innerHTML = `<div class="empty-state"><strong>加载中...</strong><p>正在扫描 ${escapeHtml(collectionName)} 中的帖子</p></div>`;
+  const detail = $("#wechatDraftDetailPanel");
+  if (detail) detail.innerHTML = `<div class="empty-state"><strong>选择一篇帖子查看详情</strong><p>点击左侧帖子可预览图片、检查标题和正文，再创建草稿。</p></div>`;
+  try {
+    const result = await api(`/api/wechat-draft/posts/${encodeURIComponent(collectionName)}`);
+    wechatDraftPosts = result.posts || [];
+    renderWechatDraftRight();
+  } catch (error) {
+    right.innerHTML = `<div class="empty-state"><strong>扫描失败</strong><p>${escapeHtml(error.message || String(error))}</p></div>`;
+    const bar = $("#wechatBatchBar");
+    if (bar) { bar.className = "wechat-batch-bar"; bar.innerHTML = ""; }
+  }
+}
+
+function renderWechatDraftRight() {
+  const right = $("#wechatDraftRight");
+  const detail = $("#wechatDraftDetailPanel");
+  const batchBar = $("#wechatBatchBar");
+  if (!right) return;
+
+  // 更新帖子列表区提示
+  const hint = $("#wechatPostsHint");
+  if (hint) {
+    hint.textContent = wechatDraftPosts.length ? `${wechatDraftPosts.length} 篇帖子` : "请先选择作品集";
+  }
+
+  // 渲染批量操作栏到独立容器
+  if (batchBar) {
+    const validCount = wechatDraftPosts.filter((p) => p.valid).length;
+    const modeLabel = wechatBatchDryRun ? "测试模式" : "正式模式";
+    const modeClass = wechatBatchDryRun ? "batch-mode-dryrun" : "batch-mode-formal";
+    const toggleLabel = wechatBatchDryRun ? "切到正式模式" : "切到测试模式";
+
+    if (wechatDraftPosts.length > 0) {
+      batchBar.className = `wechat-batch-bar ${modeClass}`;
+      batchBar.innerHTML = `
+        <label class="checker-option batch-select-all-label"><input type="checkbox" id="wechatBatchSelectAll" /> 全选</label>
+        <span class="batch-mode-indicator">${modeLabel}</span>
+        <span class="batch-valid-count">${validCount}/${wechatDraftPosts.length} 篇可用</span>
+        <div class="batch-bar-actions">
+          <button type="button" class="secondary-button" id="wechatBatchDryRunToggle" ${validCount > 0 ? "" : "disabled"}>${toggleLabel}</button>
+          <button type="button" class="primary-button" id="wechatBatchCreateBtn" ${validCount > 0 ? "" : "disabled"}>批量创建</button>
+        </div>
+      `;
+    } else {
+      batchBar.className = "wechat-batch-bar";
+      batchBar.innerHTML = "";
+    }
+  }
+
+  if (!wechatDraftPosts.length) {
+    right.innerHTML = `<div class="empty-state"><strong>没有找到帖子</strong><p>该作品集中没有有效的帖子（需要至少1张图片和1个TXT文案）。</p></div>`;
+    if (detail) detail.innerHTML = `<div class="empty-state"><strong>选择一篇帖子查看详情</strong><p>点击左侧帖子可预览图片、检查标题和正文，再创建草稿。</p></div>`;
+    return;
+  }
+
+  const postsList = wechatDraftPosts.map((post, index) => `
+    <article class="wechat-draft-post-card ${wechatDraftSelectedPost?.path === post.path ? "active" : ""} ${post.valid ? "" : "invalid"}" data-wechat-post-index="${index}">
+      <div class="post-card-header">
+        <label class="post-card-checkbox" onclick="event.stopPropagation()">
+          <input type="checkbox" class="wechat-batch-checkbox" data-post-index="${index}" ${post.valid ? "" : "disabled"} />
+        </label>
+        <strong>${escapeHtml(post.name)}</strong>
+        <span class="state-badge ${post.valid ? "good" : "bad"}">${post.valid ? `${post.imageCount}图` : "无效"}</span>
+      </div>
+      ${post.invalidReason ? `<small class="post-invalid-reason">${escapeHtml(post.invalidReason)}</small>` : ""}
+      <small class="post-card-title">${escapeHtml(post.title || "(无标题)")}</small>
+    </article>
+  `).join("");
+
+  // 帖子列表 → #wechatDraftRight
+  right.innerHTML = `
+    <div class="wechat-batch-progress" id="wechatBatchProgress" hidden></div>
+    <div class="wechat-draft-post-list">
+      ${postsList}
+    </div>
+  `;
+
+  // 草稿检查台 → #wechatDraftDetailPanel
+  if (!detail) return;
+
+  if (wechatDraftSelectedPost) {
+    const post = wechatDraftSelectedPost;
+    const titleChars = Array.from(post.title || "").filter((c) => !/\s/.test(c)).length;
+    const bodyChars = Array.from(post.body || "").filter((c) => !/\s/.test(c)).length;
+    const titleWarning = titleChars > 24;
+    const bodyWarning = bodyChars > 1000;
+    const images = post.images || [];
+
+    detail.innerHTML = `
+      <div class="wechat-draft-checker">
+        <div class="checker-header">
+          <h4>${escapeHtml(post.name)}</h4>
+          <span class="state-badge ${post.valid ? "good" : "bad"}">${post.valid ? "可创建草稿" : "无效帖子"}</span>
+        </div>
+
+        <div class="checker-section">
+          <label>图片（${images.length}张，按上传顺序）</label>
+          <div class="checker-image-grid">
+            ${images.map((img, i) => `
+              <div class="checker-image-item">
+                <img src="/api/wechat-draft/image-preview?path=${encodeURIComponent(post.path + "\\" + img)}" alt="${escapeHtml(img)}" loading="lazy" />
+                <span class="image-order">${i + 1}</span>
+                <small>${escapeHtml(img)}</small>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+
+        <div class="checker-section">
+          <label>标题 <span class="char-count ${titleWarning ? "warn" : ""}">${titleChars} 字${titleWarning ? " · 超过24字建议缩短" : ""}</span></label>
+          <input type="text" id="wechatDraftTitle" value="${escapeHtml(post.title || "")}" placeholder="标题" class="checker-title-input" />
+        </div>
+
+        <div class="checker-section">
+          <label>正文 <span class="char-count ${bodyWarning ? "warn" : ""}">${bodyChars} 字${bodyWarning ? " · 超过1000字（仍可创建）" : ""}</span></label>
+          <textarea id="wechatDraftBody" rows="8" placeholder="正文内容" class="checker-body-input">${escapeHtml(post.body || "")}</textarea>
+        </div>
+
+        <div class="checker-section checker-options">
+          <label class="checker-option">
+            <input type="checkbox" id="wechatDraftForce" />
+            <span>强制重复创建</span>
+          </label>
+        </div>
+
+        <div class="checker-actions">
+          <button type="button" class="primary-button" id="wechatDraftCreateBtn" ${post.valid ? "" : "disabled"} ${wechatDraftCreating ? "disabled" : ""}>
+            ${wechatDraftCreating ? "创建中..." : `创建草稿（${wechatBatchDryRun ? "测试模式" : "正式模式"}）`}
+          </button>
+        </div>
+
+        <div class="checker-status" id="wechatDraftStatus"></div>
+      </div>
+    `;
+  } else {
+    detail.innerHTML = `<div class="empty-state"><strong>选择一篇帖子查看详情</strong><p>点击左侧帖子可预览图片、检查标题和正文，再创建草稿。</p></div>`;
+  }
+}
+
+async function createWechatDraft() {
+  if (wechatDraftCreating || !wechatDraftSelectedPost) return;
+  wechatDraftCreating = true;
+  const btn = $("#wechatDraftCreateBtn");
+  const status = $("#wechatDraftStatus");
+  if (btn) btn.textContent = "创建中...";
+  if (status) status.innerHTML = `<span class="state-badge warn">正在创建草稿...</span>`;
+
+  const title = $("#wechatDraftTitle")?.value || "";
+  const body = $("#wechatDraftBody")?.value || "";
+  const dryRun = wechatBatchDryRun;
+  const forceCreate = $("#wechatDraftForce")?.checked === true;
+
+  try {
+    const result = await api("/api/wechat-draft/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        postPath: wechatDraftSelectedPost.path,
+        title,
+        body,
+        dryRun,
+        forceCreate,
+        account: wechatDraftSettings?.defaultAccount || "main"
+      })
+    });
+
+    if (result.success) {
+      const dryRunTag = result.dryRun ? '<span class="state-badge warn">测试模式</span>' : '<span class="state-badge good">正式草稿</span>';
+      const bodyWarning = result.bodyWarning ? '<span class="state-badge warn">正文超长</span>' : "";
+      status.innerHTML = `
+        <div class="checker-success">
+          ${dryRunTag} ${bodyWarning}
+          <strong>草稿创建成功</strong>
+          <p>草稿 ID: <code>${escapeHtml(result.draftMediaId || "")}</code></p>
+          <small>${escapeHtml(result.message || "")}</small>
+        </div>
+      `;
+    } else if (result.duplicate) {
+      status.innerHTML = `
+        <div class="checker-warning">
+          <span class="state-badge warn">重复</span>
+          <strong>${escapeHtml(result.message || "该帖子已创建过草稿")}</strong>
+          <p>上次创建时间: ${escapeHtml(result.previousRecord?.createdAt || "")}</p>
+          <p>草稿 ID: <code>${escapeHtml(result.previousRecord?.draftMediaId || "")}</code></p>
+          <small>勾选"强制重复创建"可创建新草稿</small>
+        </div>
+      `;
+    } else {
+      status.innerHTML = `
+        <div class="checker-error">
+          <span class="state-badge bad">失败</span>
+          <strong>创建失败</strong>
+          <p>${escapeHtml(result.error || "未知错误")}</p>
+          ${result.stage ? `<small>失败阶段: ${escapeHtml(result.stage)}</small>` : ""}
+        </div>
+      `;
+    }
+  } catch (error) {
+    if (status) status.innerHTML = `
+      <div class="checker-error">
+        <span class="state-badge bad">错误</span>
+        <strong>请求失败</strong>
+        <p>${escapeHtml(error.message || String(error))}</p>
+      </div>
+    `;
+  } finally {
+    wechatDraftCreating = false;
+    if (btn) btn.textContent = `创建草稿（${wechatBatchDryRun ? "测试模式" : "正式模式"}）`;
+  }
+}
+
+// ─── 批量草稿队列 ─────────────────────────────────────
+
+let wechatBatchProcessing = false;
+let wechatBatchDryRun = true;
+
+function getSelectedBatchPosts() {
+  const checkboxes = document.querySelectorAll(".wechat-batch-checkbox:checked");
+  const indices = Array.from(checkboxes).map((cb) => Number(cb.dataset.postIndex));
+  return indices.map((i) => wechatDraftPosts[i]).filter(Boolean);
+}
+
+async function startWechatBatchCreate() {
+  if (wechatBatchProcessing) return;
+  const selected = getSelectedBatchPosts();
+  if (!selected.length) {
+    alert("请先勾选要批量创建的帖子");
+    return;
+  }
+
+  const posts = selected.map((p) => ({
+    postPath: p.path,
+    title: p.title || p.name,
+    body: p.body || ""
+  }));
+
+  const progress = $("#wechatBatchProgress");
+  const btn = $("#wechatBatchCreateBtn");
+  if (btn) btn.disabled = true;
+
+  try {
+    const createResult = await api("/api/wechat-draft/batch/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ posts })
+    });
+
+    wechatBatchProcessing = true;
+    if (progress) progress.hidden = false;
+    renderWechatBatchProgress({ status: "running", total: posts.length, success: 0, failed: 0, skipped: 0, pending: posts.length, items: [] });
+
+    await processWechatBatchNext(createResult.batchId);
+  } catch (error) {
+    if (progress) {
+      progress.hidden = false;
+      progress.innerHTML = `<div class="checker-error"><span class="state-badge bad">错误</span><strong>创建批量队列失败</strong><p>${escapeHtml(error.message || String(error))}</p></div>`;
+    }
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function processWechatBatchNext(batchId) {
+  const progress = $("#wechatBatchProgress");
+  try {
+    const result = await api("/api/wechat-draft/batch/process-next", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId,
+        dryRun: wechatBatchDryRun,
+        account: wechatDraftSettings?.defaultAccount || "main"
+      })
+    });
+
+    const status = await api("/api/wechat-draft/batch/status");
+    renderWechatBatchProgress(status);
+
+    if (!result.done && wechatBatchProcessing) {
+      setTimeout(() => processWechatBatchNext(batchId), 500);
+    } else {
+      wechatBatchProcessing = false;
+      const btn = $("#wechatBatchCreateBtn");
+      if (btn) btn.disabled = false;
+      // 完成通知
+      const modeText = wechatBatchDryRun ? "测试模式" : "正式模式";
+      const successCount = status.success || 0;
+      const failedCount = status.failed || 0;
+      const skippedCount = status.skipped || 0;
+      toast(`批量${modeText}完成：成功 ${successCount} 篇，失败 ${failedCount} 篇，跳过 ${skippedCount} 篇`);
+    }
+  } catch (error) {
+    if (progress) {
+      progress.innerHTML = `<div class="checker-error"><span class="state-badge bad">错误</span><strong>处理失败</strong><p>${escapeHtml(error.message || String(error))}</p></div>`;
+    }
+    wechatBatchProcessing = false;
+    const btn = $("#wechatBatchCreateBtn");
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderWechatBatchProgress(status) {
+  const progress = $("#wechatBatchProgress");
+  if (!progress) return;
+
+  const total = status.total || 0;
+  const done = (status.success || 0) + (status.failed || 0) + (status.skipped || 0);
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+  const itemsHtml = (status.items || []).map((item) => {
+    const badge = item.status === "success" ? '<span class="state-badge good">成功</span>'
+      : item.status === "failed" ? '<span class="state-badge bad">失败</span>'
+      : item.status === "skipped" ? '<span class="state-badge warn">跳过</span>'
+      : item.status === "processing" ? '<span class="state-badge warn">处理中</span>'
+      : '<span class="state-badge">待处理</span>';
+    return `<div class="batch-progress-item">${badge} <span>${escapeHtml(item.title || item.postPath || "")}</span>${item.error ? `<small>${escapeHtml(item.error)}</small>` : ""}</div>`;
+  }).join("");
+
+  progress.innerHTML = `
+    <div class="batch-progress-header">
+      <strong>批量进度 ${pct}%（${done}/${total}）</strong>
+      <span class="state-badge good">成功 ${status.success || 0}</span>
+      <span class="state-badge bad">失败 ${status.failed || 0}</span>
+      <span class="state-badge warn">跳过 ${status.skipped || 0}</span>
+      ${wechatBatchProcessing ? '<button type="button" class="secondary-button" id="wechatBatchCancelBtn">取消</button>' : '<button type="button" class="secondary-button" id="wechatBatchClearBtn">清空记录</button>'}
+    </div>
+    <div class="batch-progress-bar"><div class="batch-progress-fill" style="width:${pct}%"></div></div>
+    <div class="batch-progress-items">${itemsHtml}</div>
+  `;
+}
+
+async function cancelWechatBatchCreate() {
+  wechatBatchProcessing = false;
+  try {
+    await api("/api/wechat-draft/batch/cancel", { method: "POST" });
+    const status = await api("/api/wechat-draft/batch/status");
+    renderWechatBatchProgress(status);
+  } catch {
+    // 忽略错误
+  }
+  const btn = $("#wechatBatchCreateBtn");
+  if (btn) btn.disabled = false;
+}
+
+async function clearWechatBatchRecords() {
+  try {
+    await api("/api/wechat-draft/batch/clear", { method: "POST" });
+    const progress = $("#wechatBatchProgress");
+    if (progress) {
+      progress.hidden = true;
+      progress.innerHTML = "";
+    }
+  } catch {
+    // 忽略错误
+  }
+}
+
+// ─── 微信公众号账号状态展示 ──────────────────────────
+
+function renderWechatAccountStatus() {
+  // 返回占位容器，异步加载实际状态
+  setTimeout(() => loadWechatAccountStatus(), 0);
+  return '<div id="wechatAccountStatus" class="wechat-account-status loading"><span class="status-dot pulse"></span>正在检查账号配置...</div>';
+}
+
+async function loadWechatAccountStatus() {
+  const container = $("#wechatAccountStatus");
+  if (!container) return;
+
+  let status;
+  try {
+    status = await api("/api/wechat-draft/account-status");
+  } catch {
+    container.className = "wechat-account-status error";
+    container.innerHTML = '<span class="status-dot bad"></span>无法获取账号状态，请检查工作台是否正常运行。';
+    return;
+  }
+
+  if (!status.accounts || status.accounts.length === 0) {
+    container.className = "wechat-account-status not-configured";
+    container.innerHTML = `
+      <div class="account-status-card not-ready">
+        <div class="account-status-header">
+          <span class="status-dot warn"></span>
+          <strong>还没配置公众号账号</strong>
+        </div>
+        <div class="account-status-guide">
+          <p>按以下 3 步完成配置，配好后就能一键创建草稿：</p>
+          <ol>
+            <li>点上方<strong>「账号设置」</strong>按钮，填写 AppID 和 AppSecret</li>
+            <li>到<strong>公众号后台 → 开发 → 基本配置 → IP白名单</strong>，添加本机 IP（否则 API 调用会被拒绝）</li>
+            <li>保存后<strong>重启工作台</strong>（关掉再打开），然后点下方<strong>「测试连接」</strong>验证</li>
+          </ol>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const accountsHtml = status.accounts.map((acc) => {
+    const dots = [];
+    if (acc.appIdSet) {
+      dots.push('<span class="config-check ok">AppID 已填写</span>');
+    } else {
+      dots.push('<span class="config-check no">AppID 未填写</span>');
+    }
+    if (acc.appSecretSet) {
+      dots.push('<span class="config-check ok">AppSecret 已设置</span>');
+    } else {
+      dots.push('<span class="config-check no">AppSecret 未设置（需重启工作台）</span>');
+    }
+    return `
+      <div class="account-status-item ${acc.ready ? "ready" : "not-ready"}">
+        <div class="account-status-header">
+          <span class="status-dot ${acc.ready ? "good" : "warn"}"></span>
+          <strong>${escapeHtml(acc.name)}</strong>
+          ${acc.ready ? '<span class="account-ready-tag">可创建草稿</span>' : '<span class="account-ready-tag warn">未就绪</span>'}
+        </div>
+        <div class="account-status-details">
+          <small>AppID: ${escapeHtml(acc.appId || "(未填写)")}</small>
+          <div class="config-checks">${dots.join("")}</div>
+        </div>
+        <button type="button" class="test-connection-btn" data-test-connection="${escapeHtml(acc.key)}">测试连接</button>
+      </div>
+    `;
+  }).join("");
+
+  const guideHtml = status.anyReady ? "" : `
+    <div class="account-setup-hint">
+      <p>配置还没完成，按以下步骤操作：</p>
+      <ol>
+        <li>点上方<strong>「账号设置」</strong>，确保 AppID 和 AppSecret 都已填写并保存</li>
+        <li>如果刚保存了 AppSecret，需要<strong>重启工作台</strong>（关掉再打开）让环境变量生效</li>
+        <li>到<strong>公众号后台 → 开发 → 基本配置 → IP白名单</strong>，添加本机 IP</li>
+        <li>回来点<strong>「测试连接」</strong>，看到"连接成功"就可以创建草稿了</li>
+      </ol>
+    </div>
+  `;
+
+  container.className = "wechat-account-status";
+  container.innerHTML = `
+    <div class="account-status-card">
+      ${accountsHtml}
+      ${guideHtml}
+    </div>
+  `;
+}
+
+async function testWechatConnection(accountKey) {
+  const btn = document.querySelector(`[data-test-connection="${accountKey}"]`);
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "正在测试...";
+  }
+  try {
+    const result = await api("/api/wechat-draft/test-connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account: accountKey })
+    });
+    if (result.success) {
+      toast(result.message || "连接成功！配置有效，可以创建草稿了。");
+      if (btn) {
+        btn.textContent = "连接成功";
+        btn.classList.add("success");
+      }
+    } else {
+      const msg = result.hint ? `${result.error}\n${result.hint}` : (result.error || "连接失败");
+      toast(msg, "error");
+      if (btn) {
+        btn.textContent = "连接失败，点此重试";
+        btn.classList.add("fail");
+      }
+    }
+  } catch (error) {
+    let msg = error.message || String(error);
+    // 尝试解析 JSON 响应中的 hint
+    try {
+      const parsed = JSON.parse(msg);
+      msg = parsed.hint ? `${parsed.error}\n${parsed.hint}` : (parsed.error || msg);
+    } catch {}
+    toast(msg, "error");
+    if (btn) {
+      btn.textContent = "连接失败，点此重试";
+      btn.classList.add("fail");
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+    }
+  }
+}
+
+async function openWechatDraftSettings() {
+  try {
+    wechatDraftSettings = await api("/api/wechat-draft/settings");
+  } catch {
+    wechatDraftSettings = { defaultAccount: "main", accounts: {} };
+  }
+
+  const accounts = wechatDraftSettings.accounts || {};
+  const accountKeys = Object.keys(accounts);
+  const accountHtml = accountKeys.length ? accountKeys.map((key) => {
+    const acc = accounts[key];
+    return `
+      <div class="settings-account-row" data-account-key="${escapeHtml(key)}">
+        <strong>${escapeHtml(acc.name || key)}</strong>
+        <small>AppID: ${escapeHtml(acc.appId || "(未设置)")} · 密钥环境变量: ${escapeHtml(acc.appSecretEnv || `WECHAT_${key.toUpperCase()}_APP_SECRET`)}</small>
+        <button type="button" data-edit-account="${escapeHtml(key)}">编辑</button>
+      </div>
+    `;
+  }).join("") : '<p>暂无账号配置</p>';
+
+  const overlay = document.createElement("div");
+  overlay.className = "device-picker-backdrop";
+  overlay.innerHTML = `
+    <section class="device-picker-dialog wechat-draft-settings-dialog" role="dialog" aria-modal="true">
+      <header>
+        <div><strong>微信公众号账号设置</strong></div>
+        <button type="button" data-close-settings aria-label="关闭">×</button>
+      </header>
+      <div class="settings-dialog-body">
+        <div class="settings-section">
+          <label>默认账号</label>
+          <input type="text" id="settingsDefaultAccount" value="${escapeHtml(wechatDraftSettings.defaultAccount || "main")}" />
+        </div>
+        <div class="settings-section">
+          <h5>已配置账号</h5>
+          ${accountHtml}
+          <button type="button" data-add-account>添加账号</button>
+        </div>
+        <div class="settings-section" id="accountEditArea"></div>
+        <div class="settings-section">
+          <p class="settings-hint">AppSecret 通过环境变量设置，例如：<br/><code>setx WECHAT_MAIN_APP_SECRET "你的AppSecret"</code><br/>不会在页面中显示或存储 AppSecret 明文。</p>
+        </div>
+      </div>
+    </section>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay || e.target.closest("[data-close-settings]")) {
+      overlay.remove();
+    }
+    if (e.target.closest("[data-add-account]")) {
+      $("#accountEditArea").innerHTML = renderAccountEditForm("", { name: "", appId: "", appSecretEnv: "" });
+    }
+    const editBtn = e.target.closest("[data-edit-account]");
+    if (editBtn) {
+      const key = editBtn.dataset.editAccount;
+      const acc = accounts[key] || {};
+      $("#accountEditArea").innerHTML = renderAccountEditForm(key, acc);
+    }
+    const saveBtn = e.target.closest("[data-save-account]");
+    if (saveBtn) {
+      saveAccountFromForm(overlay);
+    }
+  });
+}
+
+function renderAccountEditForm(key, acc) {
+  const envName = acc.appSecretEnv || `WECHAT_${(key || "main").toUpperCase()}_APP_SECRET`;
+  return `
+    <div class="account-edit-form">
+      <h5>${key ? "编辑账号" : "添加账号"}</h5>
+      <label>账号 Key（英文标识，如 main）</label>
+      <input type="text" id="editAccountKey" value="${escapeHtml(key)}" ${key ? "readonly" : ""} placeholder="main" />
+      <label>显示名称</label>
+      <input type="text" id="editAccountName" value="${escapeHtml(acc.name || "")}" placeholder="团建公众号" />
+      <label>AppID</label>
+      <input type="text" id="editAppId" value="${escapeHtml(acc.appId || "")}" placeholder="wx开头的应用ID" />
+      <label>AppSecret（应用密钥）</label>
+      <input type="password" id="editAppSecret" value="" placeholder="从公众号后台复制，点保存后自动设置环境变量" autocomplete="off" />
+      <small style="color:var(--muted);font-size:11px;margin-bottom:8px;display:block">仅首次填写或更换密钥时填入。留空表示不修改。系统会自动设置环境变量 <code>${escapeHtml(envName)}</code>，不会存入配置文件。</small>
+      <input type="hidden" id="editAppSecretEnv" value="${escapeHtml(envName)}" />
+      <button type="button" data-save-account>保存账号</button>
+    </div>
+  `;
+}
+
+async function saveAccountFromForm(overlay) {
+  const key = $("#editAccountKey")?.value.trim();
+  if (!key) return;
+  const name = $("#editAccountName")?.value.trim() || key;
+  const appId = $("#editAppId")?.value.trim() || "";
+  const appSecret = $("#editAppSecret")?.value.trim() || "";
+  const appSecretEnv = $("#editAppSecretEnv")?.value.trim() || `WECHAT_${key.toUpperCase()}_APP_SECRET`;
+  const defaultAccount = $("#settingsDefaultAccount")?.value.trim() || key;
+
+  try {
+    // 如果填了 AppSecret，先设置环境变量
+    if (appSecret) {
+      const secretResult = await api("/api/wechat-draft/set-secret", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ envVar: appSecretEnv, value: appSecret })
+      });
+      if (!secretResult.success) {
+        alert("环境变量设置失败: " + (secretResult.error || ""));
+        return;
+      }
+    }
+    // 保存账号配置（不含 AppSecret 明文）
+    const result = await api("/api/wechat-draft/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        defaultAccount,
+        accounts: {
+          [key]: { name, appId, appSecretEnv, author: "" }
+        }
+      })
+    });
+    wechatDraftSettings = result;
+    overlay.remove();
+    // 保存成功后给明确反馈
+    if (appSecret) {
+      toast("账号已保存，AppSecret 已设置。需要重启工作台才能生效——关掉再打开就行。");
+    } else {
+      toast("账号已保存。");
+    }
+    openWechatDraftSettings();
+    // 刷新主页面的账号状态
+    loadWechatAccountStatus();
+  } catch (error) {
+    alert("保存失败: " + (error.message || String(error)));
+  }
 }
 
 function renderTransferTasks() {
@@ -9314,6 +10251,62 @@ function bindEvents() {
       renderCollections();
     }
     if (event.target.closest("[data-open-official-site]")) openExternal("https://mp.weixin.qq.com/");
+
+    // 微信公众号草稿发布器事件
+    const wechatCollection = event.target.closest("[data-wechat-collection]");
+    if (wechatCollection) {
+      loadWechatDraftPosts(wechatCollection.dataset.wechatCollection);
+      return;
+    }
+    const wechatPost = event.target.closest("[data-wechat-post-index]");
+    if (wechatPost) {
+      const index = Number(wechatPost.dataset.wechatPostIndex);
+      if (wechatDraftPosts[index]) {
+        wechatDraftSelectedPost = wechatDraftPosts[index];
+        renderWechatDraftRight();
+      }
+      return;
+    }
+    if (event.target.closest("[data-wechat-draft-settings]")) {
+      openWechatDraftSettings();
+      return;
+    }
+    const testConnBtn = event.target.closest("[data-test-connection]");
+    if (testConnBtn) {
+      testWechatConnection(testConnBtn.dataset.testConnection);
+      return;
+    }
+    const createDraftBtn = event.target.closest("#wechatDraftCreateBtn");
+    if (createDraftBtn) {
+      createWechatDraft();
+      return;
+    }
+    // 批量草稿队列事件
+    if (event.target.closest("#wechatBatchCreateBtn")) {
+      startWechatBatchCreate();
+      return;
+    }
+    if (event.target.closest("#wechatBatchCancelBtn")) {
+      cancelWechatBatchCreate();
+      return;
+    }
+    if (event.target.closest("#wechatBatchClearBtn")) {
+      clearWechatBatchRecords();
+      return;
+    }
+    if (event.target.closest("#wechatBatchDryRunToggle")) {
+      wechatBatchDryRun = !wechatBatchDryRun;
+      renderWechatDraftRight();
+      return;
+    }
+    const batchSelectAll = event.target.closest("#wechatBatchSelectAll");
+    if (batchSelectAll) {
+      const checked = batchSelectAll.checked;
+      document.querySelectorAll(".wechat-batch-checkbox").forEach((cb) => {
+        if (!cb.disabled) cb.checked = checked;
+      });
+      return;
+    }
     const deviceAction = event.target.closest("[data-device-action]");
     if (deviceAction) {
       const type = deviceAction.dataset.deviceAction;
@@ -9369,6 +10362,16 @@ function bindEvents() {
       classification.dataset.classifyCollection,
       classification.value
     );
+    // 批量 checkbox 变化时同步全选框状态
+    if (event.target.classList?.contains("wechat-batch-checkbox")) {
+      const allCheckboxes = document.querySelectorAll(".wechat-batch-checkbox:not(:disabled)");
+      const checkedCount = document.querySelectorAll(".wechat-batch-checkbox:checked").length;
+      const selectAll = $("#wechatBatchSelectAll");
+      if (selectAll) {
+        selectAll.checked = allCheckboxes.length > 0 && checkedCount === allCheckboxes.length;
+        selectAll.indeterminate = checkedCount > 0 && checkedCount < allCheckboxes.length;
+      }
+    }
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -9751,7 +10754,90 @@ function bindEvents() {
     const popover = $("#gptModeInfoPopover");
     if (popover) popover.hidden = !popover.hidden;
   });
-  //  // ── Mode quick-tabs: click to preview mode settings in the settings panel ──
+  // ── Mode add/delete buttons ──
+  $("#gptAddModeBtn")?.addEventListener("click", () => {
+    if (gptAutoRunning) {
+      showWorkbenchAssistantBubble("任务运行中，不能新增模式。", { duration: 3600 });
+      return;
+    }
+    const name = window.prompt("输入新模式名称：", "自定义模式");
+    if (!name || !name.trim()) return;
+    const trimmed = name.trim().slice(0, 40);
+    // 生成唯一 key
+    let idx = 1;
+    while (gptModeProfiles[`custom-${idx}`]) idx++;
+    const customKey = `custom-${idx}`;
+    const baseKey = activeSettingsModeKey();
+    const baseProfile = gptModeProfiles[baseKey] || gptModeProfiles.manual;
+    gptModeProfiles[customKey] = {
+      name: trimmed,
+      useCurrentSession: baseProfile.useCurrentSession !== false,
+      confirmText: baseProfile.confirmText || "1",
+      copyPrompt: baseProfile.copyPrompt || "给我一份小红书文案",
+      steps: normalizeGptWorkflowSteps(baseProfile.steps),
+      isCustom: true,
+      baseMode: baseKey
+    };
+    saveGptModeProfiles();
+    // 动态添加模式标签
+    const tabsContainer = $("#gptModeQuickTabs");
+    if (tabsContainer) {
+      const newTab = document.createElement("button");
+      newTab.type = "button";
+      newTab.className = "mode-quick-tab";
+      newTab.dataset.mode = customKey;
+      newTab.setAttribute("role", "tab");
+      newTab.innerHTML = `<span>${escapeHtml(trimmed)}</span><small>自定义</small>`;
+      newTab.addEventListener("click", () => {
+        if (gptAutoRunning) { showWorkbenchAssistantBubble("任务运行中，不能切换模式。", { duration: 3600 }); return; }
+        gptSettingsPreviewMode = customKey;
+        renderGptModeProfile();
+        updateModeQuickTabs(customKey);
+      });
+      tabsContainer.appendChild(newTab);
+    }
+    gptSettingsPreviewMode = customKey;
+    renderGptModeProfile();
+    updateModeQuickTabs(customKey);
+    showWorkbenchAssistantBubble(`已创建模式「${trimmed}」，基于「${baseProfile.name}」的设置。`, { duration: 4200 });
+  });
+  $("#gptDeleteModeBtn")?.addEventListener("click", () => {
+    if (gptAutoRunning) {
+      showWorkbenchAssistantBubble("任务运行中，不能删除模式。", { duration: 3600 });
+      return;
+    }
+    const key = activeSettingsModeKey();
+    const profile = gptModeProfiles[key];
+    const modeName = profile?.name || key;
+    if (profile?.isCustom) {
+      // 自定义模式：直接删除
+      if (!window.confirm(`删除自定义模式「${modeName}」？此操作不可撤销。`)) return;
+      delete gptModeProfiles[key];
+      saveGptModeProfiles();
+      // 移除标签
+      const tab = document.querySelector(`#gptModeQuickTabs .mode-quick-tab[data-mode="${key}"]`);
+      if (tab) tab.remove();
+      // 切回默认模式
+      gptSettingsPreviewMode = normalizeGptProductionMode(gptAutoSettings.mode);
+      renderGptModeProfile();
+      updateModeQuickTabs();
+      showWorkbenchAssistantBubble(`已删除自定义模式「${modeName}」。`, { duration: 3600 });
+    } else {
+      // 内置模式：重置为默认
+      if (!window.confirm(`重置「${modeName}」为默认设置？自定义的工作流和参数将被清除。`)) return;
+      gptModeProfiles[key] = {
+        name: GPT_MODE_DEFINITIONS[key]?.defaultName || modeName,
+        useCurrentSession: true,
+        confirmText: "1",
+        copyPrompt: "给我一份小红书文案",
+        steps: defaultGptWorkflowSteps()
+      };
+      saveGptModeProfiles();
+      applyGptModeProfile(key);
+      renderGptAutoSettings();
+      showWorkbenchAssistantBubble(`「${modeName}」已重置为默认设置。`, { duration: 3600 });
+    }
+  });
   document.querySelectorAll("#gptModeQuickTabs .mode-quick-tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       if (gptAutoRunning) {
@@ -9788,7 +10874,7 @@ function bindEvents() {
     if (!draft.length) return;
     const validation = validateGptWorkflowSteps(draft);
     if (!validation.ok) return; // silent — let the user finish typing
-    gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps };
+    gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps, useCurrentSession: $("#gptModeStartBehavior")?.value !== "inject" };
     saveGptModeProfiles();
     applyGptModeProfile(key);
   });
@@ -9806,10 +10892,29 @@ function bindEvents() {
       showWorkbenchAssistantBubble(`流程有误：${validation.error}`, { duration: 5200 });
       return;
     }
-    gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps };
+    gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps, useCurrentSession: $("#gptModeStartBehavior")?.value !== "inject" };
     saveGptModeProfiles();
     applyGptModeProfile(key);
     saveGptAutoSettings();
+    // 提示词预设选择器：选择「默认」时自动填充默认提示词
+    if (event.target?.dataset?.workflowField === "textPreset") {
+      const action = event.target.dataset.action || "";
+      const defaultsList = defaultGptWorkflowSteps();
+      const defaultStep = defaultsList.find((s) => s.action === action);
+      const textInput = event.target.closest(".gpt-workflow-text-cell")?.querySelector('[data-workflow-field="text"]');
+      if (event.target.value === "default" && defaultStep?.text && textInput) {
+        textInput.value = defaultStep.text;
+        // 触发保存
+        const draft = readGptModeWorkflowFromUi();
+        const validation = validateGptWorkflowSteps(draft);
+        if (validation.ok) {
+          gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps, useCurrentSession: $("#gptModeStartBehavior")?.value !== "inject" };
+          saveGptModeProfiles();
+          applyGptModeProfile(key);
+          saveGptAutoSettings();
+        }
+      }
+    }
     // If the action dropdown changed, re-render to show/hide correct input fields
     if (event.target?.dataset?.workflowField === "action") {
       renderGptModeWorkflow();
@@ -10055,10 +11160,10 @@ function bindEvents() {
   });
   [
     "#gptProductionMode",
-    "#gptProductionModeSetting", "#gptAutoArchiveEnabled", "#gptQuotaReminderEnabled", "#gptAutoMinDelay", "#gptAutoMaxDelay",
+    "#gptProductionModeSetting", "#gptQuotaReminderEnabled",
     "#gptAutoTaskTimeout", "#gptAutoAccountLimit", "#gptParallelWorkers", "#gptUploadLimit", "#gptGenerationLimit", "#gptQuotaWindowHours",
     "#gptMinimumImageCount", "#gptIdleUnloadMinutes", "#gptDownloadRoot", "#gptProductRoot",
-    "#gptPromptLibraryEnabled", "#gptMessageDownloadsEnabled", "#gptScheduledEnabled", "#gptScheduledTime", "#gptScheduledJitter",
+    "#gptPromptLibraryEnabled", "#gptMessageDownloadsEnabled", "#gptScheduledEnabled", "#gptScheduledTime", "#gptScheduledJitter", "#gptSchedulePlan",
     "#gptLaunchAtLogin", "#gptContinuousAutoStart", "#gptContinuousWorkHoursEnabled", "#gptContinuousWorkStart", "#gptContinuousWorkEnd",
     "#gptExtraPromptRules", "#gptModeProfileName", "#gptModeStartBehavior"
   ].forEach((selector) => {
@@ -10636,7 +11741,21 @@ loadDashboard()
   .catch((error) => {
     console.error(error);
     toast("读取本地库失败");
+    // Even if loadDashboard failed, still hydrate GPT profiles from the
+    // main process so account tabs are not lost when localStorage is empty.
+    hydrateGptBrowserProfiles().catch(() => {});
   });
+
+// Independent safety-net: hydrate GPT profiles shortly after load regardless
+// of loadDashboard outcome.  This covers the race where the renderer starts
+// before the server is ready, or when localStorage was cleared (e.g. during
+// cookie cleanup) and the .then() chain never runs.
+window.setTimeout(() => {
+  hydrateGptBrowserProfiles().catch(() => {});
+}, 2000);
+window.setTimeout(() => {
+  hydrateGptBrowserProfiles().catch(() => {});
+}, 5000);
   $("#contextTrashFolder")?.addEventListener("click", async () => {
     const target = contextMenuTarget;
     hideContextMenu();

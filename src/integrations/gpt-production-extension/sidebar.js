@@ -2197,6 +2197,15 @@
     const wfText = (action, fallback = "") => String(wfStepMap.get(action)?.text || fallback).trim() || fallback;
     const wfTimeout = (action, fallback = 60) => Math.max(5, Math.min(3600, Number(wfStepMap.get(action)?.timeoutSeconds || fallback))) * 1000;
     const wfAutoDetect = (action) => wfStepMap.get(action)?.autoDetect !== false;
+    // 读取步骤中的可调参数（如 quietSeconds, minImages, minCopyLength 等）
+    const wfParam = (action, key, fallback) => {
+      const step = wfStepMap.get(action);
+      if (!step) return fallback;
+      const val = step[key];
+      if (val === undefined || val === null || val === "") return fallback;
+      const num = Number(val);
+      return isNaN(num) ? val : num;
+    };
     // Determine if separated archive steps are used instead of combined package-archive
     const usesSeparatedArchive = wfEnabled("download-images") || wfEnabled("save-text") || wfEnabled("move-archive");
     const usesCombinedArchive = wfEnabled("package-archive") && !usesSeparatedArchive;
@@ -2488,10 +2497,12 @@
       } else {
         reportWorkbenchProgress(task, "继续等待迁移计划", 24, "已恢复当前网页中的计划生成，不重复上传或发送");
       }
+      // 从工作流步骤参数读取静默秒数，wfAutoDetect 控制是否走条件检测
+      const planQuietMs = (wfAutoDetect("wait-plan") ? wfParam("wait-plan", "quietSeconds", 8) : 2) * 1000;
       let planResult = await waitForAssistantCompletion(initialAssistantCount, {
-        timeout: Math.min(taskTimeout, 8 * 60_000),
+        timeout: Math.min(taskTimeout, wfTimeout("wait-plan", 480)),
         minTextLength: 4,
-        completionQuietMs: 8_000,
+        completionQuietMs: planQuietMs,
         baselineKeys: initialAssistantKeys
       });
       if (!templateInitialization) {
@@ -2566,14 +2577,17 @@
     let imageUrls = workflow.generatedImageUrls || null;
     if (!workflow.downloadResult) {
       const expectedImages = Math.max(1, Number(workflow.plannedImageCount || 0));
-      const minimumImages = Math.max(1, Number(options.minimumImageCount || 4));
+      // 从工作流步骤参数读取最小图片数，wfAutoDetect 控制是否走条件检测
+      const minimumImages = wfAutoDetect("wait-images")
+        ? Math.max(1, wfParam("wait-images", "minImages", 4))
+        : Math.max(1, Number(options.minimumImageCount || 4));
       const baselineUrls = Array.isArray(workflow.generatedBaselineUrls) ? workflow.generatedBaselineUrls : [];
       let detected = Array.isArray(imageUrls) ? imageUrls : [];
       reportWorkbenchProgress(task, "等待图片", 48, `已发送 1，正在等待本轮 ${expectedImages} 张图片生成`);
       const imageDetection = await waitForGeneratedImageGrowth(
         baselineUrls,
         0,
-        taskTimeout,
+        wfAutoDetect("wait-images") ? wfTimeout("wait-images", 900) : taskTimeout,
         expectedImages,
         async () => {
           if (workflow.batchChoiceSubmitted || !currentBatchChoicePrompt()) return;
@@ -2651,11 +2665,15 @@
     if (!workflow.copyText) {
       reportWorkbenchProgress(task, "等待小红书文案", 72, "图片已生成，先取得本轮文案；文案完成前不下载、不打包");
       const requestedCopyPrompt = wfText("request-copy", String(options.copyPrompt || "给我一份小红书文案").trim() || "给我一份小红书文案");
-      const publishResult = await waitForPublishCopy(requestedCopyPrompt, 8 * 60_000);
+      // 从工作流步骤参数读取超时和最小字数
+      const copyTimeoutMs = wfAutoDetect("wait-copy") ? wfTimeout("wait-copy", 480) : 8 * 60_000;
+      const copyMinLength = wfAutoDetect("wait-copy") ? wfParam("wait-copy", "minCopyLength", 300) : 300;
+      const publishResult = await waitForPublishCopy(requestedCopyPrompt, copyTimeoutMs);
       workflow.copyText = String(publishResult?.text || "").trim();
     }
     const copyText = workflow.copyText;
-    if (!isLikelyPublishCopy(copyText, 300)) throw new Error("没有检测到不少于 300 个可见字符的完整小红书文案，未执行图片下载与打包");
+    const copyMinCheck = wfAutoDetect("wait-copy") ? wfParam("wait-copy", "minCopyLength", 300) : 300;
+    if (!isLikelyPublishCopy(copyText, copyMinCheck)) throw new Error(`没有检测到不少于 ${copyMinCheck} 个可见字符的完整小红书文案，未执行图片下载与打包`);
     workflow.textSubmitted = true;
     workflow.batchId ||= workPackageBatchId();
 

@@ -5,9 +5,13 @@ const path = require("node:path");
 const http = require("node:http");
 const { version: APP_VERSION } = require("../package.json");
 
-if (process.env.TB_USER_DATA_ROOT) {
-  app.setPath("userData", path.resolve(process.env.TB_USER_DATA_ROOT));
-}
+// Use the unified userData directory.  The environment variable is set by
+// start.ps1, but if it is missing (e.g. launched via a shortcut that loses
+// the variable), fall back to the canonical path so account profiles and
+// login state are never silently lost.
+const TB_USER_DATA_ROOT = process.env.TB_USER_DATA_ROOT
+  || "D:\\AICode\\运行数据\\江湖有旅人\\团建工作台\\electron-userdata";
+app.setPath("userData", path.resolve(TB_USER_DATA_ROOT));
 
 const APP_PORT = String(process.env.PORT || "4327").trim() || "4327";
 const APP_URL = `http://127.0.0.1:${APP_PORT}/`;
@@ -1289,13 +1293,19 @@ function notifyWindowRestored(reason = "show") {
     if (account?.view && !account.view.webContents.isDestroyed()) {
       try {
         const bounds = account.view.getBounds();
-        mainWindow.contentView.removeChildView(account.view);
-        mainWindow.contentView.addChildView(account.view);
-        account.view.setBounds(bounds);
-        account.view.setBackgroundColor(embeddedGptPalette(gptThemeName).main);
-        account.view.setBorderRadius(16);
-        account.view.setVisible(false);
-        appendDesktopLog("gpt-surface-restored", `${reason} ${account.id} ${bounds.width}x${bounds.height}`);
+        // Skip re-attaching if bounds are 0x0 — the view was just created
+        // by ensureGptAccount but desktop:gpt-show hasn't set the real
+        // bounds yet.  Re-attaching with 0x0 makes the GPT window invisible.
+        if (bounds.width > 0 && bounds.height > 0) {
+          mainWindow.contentView.removeChildView(account.view);
+          mainWindow.contentView.addChildView(account.view);
+          account.view.setBounds(bounds);
+          account.view.setBackgroundColor(embeddedGptPalette(gptThemeName).main);
+          account.view.setBorderRadius(16);
+          appendDesktopLog("gpt-surface-restored", `${reason} ${account.id} ${bounds.width}x${bounds.height}`);
+        } else {
+          appendDesktopLog("gpt-surface-skip", `${reason} ${account.id} bounds=${bounds.width}x${bounds.height}`);
+        }
       } catch (error) {
         appendDesktopLog("gpt-surface-restore-failed", `${reason} ${error.message}`);
       }
@@ -1455,6 +1465,13 @@ async function createWindow() {
 
   window.once("ready-to-show", () => {
     if (process.env.TB_DESKTOP_HIDDEN !== "1") window.show();
+  });
+  // The "show" event may fire before the renderer's DOM is ready, causing
+  // notifyWindowRestored to send desktop:window-restored into the void.
+  // Re-trigger after the page finishes loading so the renderer can actually
+  // receive it and restore the embedded GPT surface.
+  window.webContents.once("did-finish-load", () => {
+    setTimeout(() => notifyWindowRestored("did-finish-load"), 200);
   });
   window.webContents.on("did-fail-load", (_event, code, description, validatedURL, isMainFrame) => {
     appendDesktopLog("shell-load-failed", `code=${code} main=${isMainFrame} url=${validatedURL} ${description}`);

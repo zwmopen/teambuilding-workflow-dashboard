@@ -28,6 +28,7 @@ const {
   renameCollectionType,
   reconcileWorkflowFolders
 } = require("./lib/distribution-data");
+const wechatDraft = require("./lib/wechat-draft");
 const {
   isDownloadedText,
   ledgerStatus,
@@ -6009,6 +6010,299 @@ async function route(req, res) {
       apply: true
     }));
   }
+
+  // ─── 微信公众号草稿发布器 ──────────────────────────
+  if (pathname === "/api/wechat-draft/settings" && req.method === "GET") {
+    return sendJson(res, wechatDraft.getWechatSettings());
+  }
+  if (pathname === "/api/wechat-draft/settings" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    return sendJson(res, wechatDraft.saveWechatSettings(body));
+  }
+  if (pathname === "/api/wechat-draft/set-secret" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const envVar = String(body.envVar || "").trim();
+    const value = String(body.value || "").trim();
+    if (!envVar || !value) {
+      return send(res, 400, JSON.stringify({ success: false, error: "envVar 和 value 不能为空" }));
+    }
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(envVar)) {
+      return send(res, 400, JSON.stringify({ success: false, error: "环境变量名格式不合法" }));
+    }
+    try {
+      const setxPath = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "setx.exe");
+      childProcess.execSync(`"${setxPath}" ${envVar} "${value.replace(/"/g, '\\"')}"`, { windowsHide: true });
+      process.env[envVar] = value;
+      return sendJson(res, { success: true, message: `环境变量 ${envVar} 已设置，重启工作台后永久生效` });
+    } catch (error) {
+      return send(res, 500, JSON.stringify({ success: false, error: error.message }));
+    }
+  }
+  // 账号状态检查：返回每个账号的 AppID 和 AppSecret 环境变量配置情况
+  if (pathname === "/api/wechat-draft/account-status" && req.method === "GET") {
+    const settings = wechatDraft.getWechatSettings();
+    const accountKeys = Object.keys(settings.accounts || {});
+    const status = accountKeys.map((key) => {
+      const acc = settings.accounts[key];
+      const envVar = acc.appSecretEnv || `WECHAT_${key.toUpperCase()}_APP_SECRET`;
+      return {
+        key,
+        name: acc.name || key,
+        appId: acc.appId || "",
+        appIdSet: !!(acc.appId && acc.appId.trim()),
+        appSecretEnv: envVar,
+        appSecretSet: !!process.env[envVar],
+        ready: !!(acc.appId && acc.appId.trim() && process.env[envVar])
+      };
+    });
+    return sendJson(res, {
+      defaultAccount: settings.defaultAccount || "main",
+      accounts: status,
+      anyReady: status.some((s) => s.ready),
+      allReady: status.length > 0 && status.every((s) => s.ready)
+    });
+  }
+  // 测试连接：调用微信 API 获取 access_token，验证配置是否有效
+  if (pathname === "/api/wechat-draft/test-connection" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 8_000) || "{}");
+    const settings = wechatDraft.getWechatSettings();
+    const accountKey = body.account || settings.defaultAccount || "main";
+    const account = settings.accounts?.[accountKey];
+    if (!account || !account.appId) {
+      return send(res, 400, JSON.stringify({ success: false, error: `账号 ${accountKey} 未配置 AppID，请先在账号设置中填写` }));
+    }
+    const envVar = account.appSecretEnv || `WECHAT_${accountKey.toUpperCase()}_APP_SECRET`;
+    const appSecret = process.env[envVar] || "";
+    if (!appSecret) {
+      return send(res, 400, JSON.stringify({
+        success: false,
+        error: `环境变量 ${envVar} 未设置。请回到账号设置重新填写 AppSecret 并保存，然后重启工作台。`
+      }));
+    }
+    try {
+      await wechatDraft.getAccessToken(account.appId, appSecret);
+      return sendJson(res, {
+        success: true,
+        message: `连接成功！账号「${account.name || accountKey}」的 AppID 和 AppSecret 验证通过，可以创建草稿了。`
+      });
+    } catch (error) {
+      const errMsg = String(error.message || error);
+      let hint = "";
+      if (errMsg.includes("40164")) {
+        hint = "问题原因：当前电脑的 IP 地址不在公众号白名单里。请到公众号后台 → 开发 → 基本配置 → IP白名单，添加本机 IP。";
+      } else if (errMsg.includes("40001") || errMsg.includes("40125")) {
+        hint = "问题原因：AppSecret 不正确。请到公众号后台重新复制 AppSecret，回到账号设置重新填写。";
+      } else if (errMsg.includes("40013")) {
+        hint = "问题原因：AppID 不正确。请检查 AppID 是否以 wx 开头，是否复制完整。";
+      }
+      return send(res, 400, JSON.stringify({ success: false, error: errMsg, hint }));
+    }
+  }
+  if (pathname === "/api/wechat-draft/history" && req.method === "GET") {
+    return sendJson(res, { records: wechatDraft.getDraftHistory(50) });
+  }
+  if (pathname.startsWith("/api/wechat-draft/posts/") && req.method === "GET") {
+    const collectionName = decodeURIComponent(pathname.slice("/api/wechat-draft/posts/".length));
+    const settings = getWorkspaceSettings();
+    const libraryRoot = settings.workPackage.libraryPath;
+    const collectionPath = path.join(libraryRoot, "微信公众号", collectionName);
+    // 安全检查：防止路径穿越
+    if (/[\\/]wp-content|[\\/]system32/i.test(collectionPath)) {
+      return send(res, 400, JSON.stringify({ error: "无效的作品集名称" }));
+    }
+    try {
+      const result = wechatDraft.scanCollectionPosts(collectionPath);
+      return sendJson(res, result);
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
+  }
+  if (pathname === "/api/wechat-draft/image-preview" && req.method === "GET") {
+    // 图片预览：通过文件路径返回图片内容
+    const imgPath = parsed.query.path;
+    if (!imgPath || !isAllowedFile(imgPath)) return send(res, 403, JSON.stringify({ error: "path not allowed" }));
+    if (!fs.existsSync(imgPath)) return send(res, 404, JSON.stringify({ error: "file not found" }));
+    const ext = path.extname(imgPath).toLowerCase();
+    const mimeTypes = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" };
+    const mime = mimeTypes[ext] || "application/octet-stream";
+    const buffer = fs.readFileSync(imgPath);
+    res.writeHead(200, { "Content-Type": mime, "Cache-Control": "max-age=3600" });
+    res.end(buffer);
+    return;
+  }
+  if (pathname === "/api/wechat-draft/create" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 256_000) || "{}");
+    // 获取账号配置
+    const settings = wechatDraft.getWechatSettings();
+    const accountKey = body.account || settings.defaultAccount || "main";
+    const account = settings.accounts?.[accountKey];
+    if (!body.dryRun && (!account || !account.appId)) {
+      return send(res, 400, JSON.stringify({ error: `账号 ${accountKey} 未配置 AppID` }));
+    }
+    // 读取 AppSecret（从环境变量）
+    let appSecret = "";
+    if (!body.dryRun && account) {
+      const envVar = account.appSecretEnv || `WECHAT_${accountKey.toUpperCase()}_APP_SECRET`;
+      appSecret = process.env[envVar] || "";
+      if (!appSecret) {
+        return send(res, 400, JSON.stringify({ error: `环境变量 ${envVar} 未设置，无法获取 AppSecret` }));
+      }
+    }
+    try {
+      const result = await wechatDraft.createDraftTask({
+        postPath: body.postPath,
+        title: body.title,
+        body: body.body,
+        account: accountKey,
+        dryRun: body.dryRun !== false,
+        forceCreate: body.forceCreate === true,
+        appId: account?.appId,
+        appSecret
+      });
+      return sendJson(res, result);
+    } catch (error) {
+      return send(res, 400, JSON.stringify({ error: error.message }));
+    }
+  }
+
+  // ─── 微信公众号草稿 - 批量队列 ──────────────────────
+  if (pathname === "/api/wechat-draft/batch/create" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 256_000) || "{}");
+    const posts = Array.isArray(body.posts) ? body.posts : [];
+    if (!posts.length) {
+      return send(res, 400, JSON.stringify({ error: "帖子列表不能为空" }));
+    }
+    const batchId = wechatDraft.createBatchQueue(posts);
+    return sendJson(res, { batchId, count: posts.length });
+  }
+
+  if (pathname === "/api/wechat-draft/batch/status" && req.method === "GET") {
+    const queue = wechatDraft.getBatchQueue();
+    const summary = {
+      batchId: queue.batchId,
+      status: queue.status,
+      total: queue.items.length,
+      pending: queue.items.filter((it) => it.status === "pending").length,
+      success: queue.items.filter((it) => it.status === "success").length,
+      failed: queue.items.filter((it) => it.status === "failed").length,
+      skipped: queue.items.filter((it) => it.status === "skipped").length,
+      processing: queue.items.filter((it) => it.status === "processing").length,
+      items: queue.items
+    };
+    return sendJson(res, summary);
+  }
+
+  if (pathname === "/api/wechat-draft/batch/process-next" && req.method === "POST") {
+    const body = JSON.parse(await getBody(req, 64_000) || "{}");
+    const queue = wechatDraft.getBatchQueue();
+    if (!queue.batchId) {
+      return sendJson(res, { done: true, message: "没有活跃的批量队列" });
+    }
+    const nextItem = queue.items.find((it) => it.status === "pending");
+    if (!nextItem) {
+      wechatDraft.updateBatchStatus(queue.batchId, "completed");
+      return sendJson(res, { done: true, message: "所有帖子已处理完毕" });
+    }
+
+    // 标记为处理中
+    wechatDraft.updateBatchItem(queue.batchId, nextItem.id, { status: "processing" });
+    if (queue.status !== "running") {
+      wechatDraft.updateBatchStatus(queue.batchId, "running");
+    }
+
+    // 获取账号配置
+    const settings = wechatDraft.getWechatSettings();
+    const accountKey = body.account || settings.defaultAccount || "main";
+    const account = settings.accounts?.[accountKey];
+    const dryRun = body.dryRun !== false;
+
+    if (!dryRun && (!account || !account.appId)) {
+      wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
+        status: "failed",
+        error: `账号 ${accountKey} 未配置 AppID`,
+        processedAt: new Date().toISOString()
+      });
+      return sendJson(res, { done: false, item: nextItem, error: `账号 ${accountKey} 未配置 AppID` });
+    }
+
+    // 读取 AppSecret
+    let appSecret = "";
+    if (!dryRun && account) {
+      const envVar = account.appSecretEnv || `WECHAT_${accountKey.toUpperCase()}_APP_SECRET`;
+      appSecret = process.env[envVar] || "";
+      if (!appSecret) {
+        wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
+          status: "failed",
+          error: `环境变量 ${envVar} 未设置`,
+          processedAt: new Date().toISOString()
+        });
+        return sendJson(res, { done: false, item: nextItem, error: `环境变量 ${envVar} 未设置` });
+      }
+    }
+
+    try {
+      const result = await wechatDraft.createDraftTask({
+        postPath: nextItem.postPath,
+        title: nextItem.title,
+        body: nextItem.body,
+        account: accountKey,
+        dryRun,
+        forceCreate: body.forceCreate === true,
+        appId: account?.appId,
+        appSecret
+      });
+
+      if (result.success) {
+        wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
+          status: "success",
+          draftMediaId: result.draftMediaId,
+          processedAt: new Date().toISOString()
+        });
+      } else if (result.duplicate) {
+        wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
+          status: "skipped",
+          error: result.message || "重复帖子已跳过",
+          processedAt: new Date().toISOString()
+        });
+      } else {
+        wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
+          status: "failed",
+          error: result.error || "未知错误",
+          processedAt: new Date().toISOString()
+        });
+      }
+
+      const updatedQueue = wechatDraft.getBatchQueue();
+      const remaining = updatedQueue.items.filter((it) => it.status === "pending").length;
+      return sendJson(res, {
+        done: remaining === 0,
+        item: updatedQueue.items.find((it) => it.id === nextItem.id),
+        remaining,
+        result
+      });
+    } catch (error) {
+      wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
+        status: "failed",
+        error: error.message,
+        processedAt: new Date().toISOString()
+      });
+      return sendJson(res, { done: false, item: nextItem, error: error.message });
+    }
+  }
+
+  if (pathname === "/api/wechat-draft/batch/cancel" && req.method === "POST") {
+    const queue = wechatDraft.getBatchQueue();
+    if (queue.batchId) {
+      wechatDraft.updateBatchStatus(queue.batchId, "cancelled");
+    }
+    return sendJson(res, { ok: true });
+  }
+
+  if (pathname === "/api/wechat-draft/batch/clear" && req.method === "POST") {
+    wechatDraft.clearBatchQueue();
+    return sendJson(res, { ok: true });
+  }
+
   if (pathname === "/api/open" && req.method === "POST") {
     const body = JSON.parse(await getBody(req) || "{}");
     const target = body.path;
