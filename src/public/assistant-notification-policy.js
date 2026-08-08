@@ -6,7 +6,10 @@
   const DEFAULT_ASSISTANT_SETTINGS = Object.freeze({
     notificationsEnabled: true,
     catVisible: true,
+    bubblePinned: true,
     motionEnabled: true,
+    detached: false,
+    alwaysOnTop: false,
     currentDurationMs: 9000,
     otherDurationMs: 3000,
     otherMaxPerBatch: 1
@@ -18,10 +21,14 @@
   }
 
   function normalizeAssistantSettings(input = {}) {
+    const detached = input.detached === true;
     return {
       notificationsEnabled: input.notificationsEnabled !== false,
       catVisible: input.catVisible !== false,
+      bubblePinned: input.bubblePinned !== false,
       motionEnabled: input.motionEnabled !== false,
+      detached,
+      alwaysOnTop: detached && input.alwaysOnTop === true,
       currentDurationMs: clampNumber(input.currentDurationMs, DEFAULT_ASSISTANT_SETTINGS.currentDurationMs, 1000, 30_000),
       otherDurationMs: clampNumber(input.otherDurationMs, DEFAULT_ASSISTANT_SETTINGS.otherDurationMs, 1000, 30_000),
       otherMaxPerBatch: Math.round(clampNumber(input.otherMaxPerBatch, DEFAULT_ASSISTANT_SETTINGS.otherMaxPerBatch, 0, 5))

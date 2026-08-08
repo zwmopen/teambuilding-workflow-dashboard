@@ -978,6 +978,9 @@ function writeGptProductionCheckpoint(body = {}) {
     // ── 图片字段 ──
     imageSubmitted: Boolean(source.imageSubmitted),
     detectedImageCount: Math.max(0, Math.min(30, Number(source.detectedImageCount || 0))),
+    generatedImageUrls: Array.isArray(source.generatedImageUrls)
+      ? source.generatedImageUrls.map((item) => String(item || "").slice(0, 4000)).filter(Boolean).slice(0, 30)
+      : [],
     imageGenerationDetectedAt: String(source.imageGenerationDetectedAt || "").slice(0, 40),
     firstImageReadyAt: String(source.firstImageReadyAt || "").slice(0, 40),
     lastImageReadyAt: String(source.lastImageReadyAt || "").slice(0, 40),

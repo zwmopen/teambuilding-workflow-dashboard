@@ -9,6 +9,14 @@ const {
   formatPortInUseMessage
 } = require("../lib/workbench-port");
 
+// Some Windows machines repeatedly lose the Electron GPU subprocess during
+// startup (exit code -1073741515), which otherwise terminates the whole app.
+// The workbench is automation/UI bound, so software compositing is the safer
+// default and keeps unattended production recoverable after a restart.
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch(`disable-gpu`);
+app.commandLine.appendSwitch(`disable-gpu-compositing`);
+
 // Use the unified userData directory.  The environment variable is set by
 // start.ps1, but if it is missing (e.g. launched via a shortcut that loses
 // the variable), fall back to the canonical path so account profiles and
@@ -37,6 +45,10 @@ let assistantOverlayState = {
   settings: {}
 };
 let assistantCursorTimer = null;
+// While the user interacts with the child overlay, Windows can briefly report
+// both it and the parent as unfocused. Keep a short grace period so a drag or
+// click cannot make the cat flicker or disappear.
+let assistantOverlayInteractionUntil = 0;
 let tray = null;
 let isExplicitQuit = false;
 let quitFlushStarted = false;
@@ -109,6 +121,33 @@ function sendAssistantOverlayState() {
   assistantOverlayWindow.webContents.send("assistant-overlay:state", assistantOverlayState);
 }
 
+function assistantOverlayIsDetached() {
+  return assistantOverlayState.settings?.detached === true;
+}
+
+function applyAssistantOverlayWindowMode(overlay = assistantOverlayWindow) {
+  if (!overlay || overlay.isDestroyed()) return;
+  const detached = assistantOverlayIsDetached();
+  const alwaysOnTop = assistantOverlayState.settings?.alwaysOnTop === true;
+  overlay.setParentWindow(detached ? null : mainWindow);
+  overlay.setAlwaysOnTop(detached && alwaysOnTop, "floating", 1);
+}
+
+function hideAttachedAssistantOverlayWhenInactive() {
+  setTimeout(() => {
+    if (assistantOverlayIsDetached()) return;
+    if (Date.now() < assistantOverlayInteractionUntil) return;
+    if (mainWindow?.isFocused() || assistantOverlayWindow?.isFocused()) return;
+    assistantOverlayWindow?.hide();
+  }, 120);
+}
+
+function showAssistantOverlayForWorkbench() {
+  if (!assistantOverlayWindow || assistantOverlayWindow.isDestroyed()) return;
+  if (assistantOverlayState.catVisible === false) return;
+  if (assistantOverlayIsDetached() || mainWindow?.isFocused()) assistantOverlayWindow.showInactive();
+}
+
 function updateAssistantCursorDirection() {
   if (!assistantOverlayWindow || assistantOverlayWindow.isDestroyed()) return;
   const motionEnabled = assistantOverlayState.settings?.motionEnabled !== false;
@@ -158,13 +197,10 @@ async function ensureAssistantOverlay() {
   overlay.setMenuBarVisibility(false);
   // 透明区域点击穿透：初始忽略鼠标事件，只有鼠标进入小猫/气泡时才恢复
   overlay.setIgnoreMouseEvents(true, { forward: true });
-  // WebContentsView is composited above the renderer DOM and therefore cannot
-  // be ordered with CSS z-index.  Keep the native assistant as a child-level
-  // floating window so it stays above the embedded GPT surface while the
-  // workbench is visible.  It is still hidden together with the main window
-  // (minimize/background/quit handlers below), so it does not become a global
-  // desktop widget.
-  overlay.setAlwaysOnTop(true, "floating", 1);
+  // The cat belongs to the workbench by default. System-level floating is an
+  // explicit opt-in and only applies after the user also allows detaching it.
+  applyAssistantOverlayWindowMode(overlay);
+  overlay.on("blur", hideAttachedAssistantOverlayWhenInactive);
   overlay.on("close", (event) => {
     if (isExplicitQuit) return;
     event.preventDefault();
@@ -178,7 +214,7 @@ async function ensureAssistantOverlay() {
   await overlay.loadURL(`${APP_URL}assistant-overlay.html?appVersion=${encodeURIComponent(APP_VERSION)}`);
   sendAssistantOverlayState();
   if (!assistantCursorTimer) assistantCursorTimer = setInterval(updateAssistantCursorDirection, 50);
-  if (mainWindow.isVisible() && assistantOverlayState.catVisible !== false) overlay.showInactive();
+  if (mainWindow.isFocused() && assistantOverlayState.catVisible !== false) overlay.showInactive();
   return overlay;
 }
 
@@ -221,6 +257,14 @@ function gptBrowserProfilesFile() {
   return path.join(app.getPath("userData"), GPT_BROWSER_PROFILES_FILE);
 }
 
+function safeGptProductionMode(value = "manual", fallback = "manual") {
+  const normalized = String(value || fallback || "manual").trim().toLowerCase();
+  const migrated = normalized === "multi" ? "rotate" : normalized;
+  return ["manual", "semi-auto", "automatic", "single", "rotate", "scheduled", "patrol", "all-day"].includes(migrated)
+    ? migrated
+    : String(fallback || "manual");
+}
+
 function defaultBrowserProfiles() {
   return {
     version: 1,
@@ -229,6 +273,7 @@ function defaultBrowserProfiles() {
       id: "account-1",
       name: "账号窗口 1",
       quotaGroup: "account-1",
+      mode: "manual",
       hidden: false,
       disabled: false,
       lastUrl: GPT_URL,
@@ -247,6 +292,7 @@ function readBrowserProfiles() {
         id: safeGptAccountId(profile.id),
         name: (/^浏览器\s*\d+$/i.test(String(profile.name || "")) ? `账号窗口 ${index + 1}` : String(profile.name || `账号窗口 ${index + 1}`)).slice(0, 24),
         quotaGroup: safeGptAccountId(profile.quotaGroup || profile.id),
+        mode: safeGptProductionMode(profile.mode),
         hidden: Boolean(profile.hidden),
         ...(Object.prototype.hasOwnProperty.call(profile, "disabled")
           ? { disabled: Boolean(profile.disabled) }
@@ -313,6 +359,17 @@ function safeBrowserUrlOrDefault(value = "", fallback = GPT_URL) {
   } catch {
     return fallback;
   }
+}
+
+function safePatrolConversationUrl(value = "") {
+  const parsed = new URL(safeBrowserUrl(value));
+  if (!["chatgpt.com", "www.chatgpt.com", "chat.openai.com"].includes(parsed.hostname)
+    || !/^\/c\/[a-z0-9-]+\/?$/i.test(parsed.pathname)) {
+    throw new Error("巡检续接只允许访问明确的 ChatGPT 对话链接");
+  }
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.href.replace(/\/$/, "");
 }
 
 function rememberGptUrl(accountId, value) {
@@ -916,6 +973,7 @@ ipcMain.handle("desktop:gpt-profile-save", async (_event, input = {}) => {
     id,
     name: String(input.name || existing?.name || `账号窗口 ${state.profiles.length + 1}`).trim().slice(0, 24),
     quotaGroup: safeGptAccountId(input.quotaGroup || existing?.quotaGroup || id),
+    mode: safeGptProductionMode(input.mode ?? existing?.mode),
     hidden: Boolean(input.hidden ?? existing?.hidden),
     disabled: Boolean(input.disabled ?? existing?.disabled),
     lastUrl: safeGptUrl(input.lastUrl || existing?.lastUrl),
@@ -1017,6 +1075,11 @@ ipcMain.handle("desktop:notify", async (_event, input = {}) => {
   return { ok: true };
 });
 
+ipcMain.handle("desktop:restart-app", async () => {
+  setTimeout(restartApp, 100);
+  return { ok: true };
+});
+
 ipcMain.handle("desktop:assistant-update", async (_event, input = {}) => {
   const legacyBubbleVisible = Object.prototype.hasOwnProperty.call(input, "visible") ? input.visible !== false : undefined;
   assistantOverlayState = {
@@ -1027,18 +1090,21 @@ ipcMain.handle("desktop:assistant-update", async (_event, input = {}) => {
     settings: input.settings && typeof input.settings === "object" ? { ...assistantOverlayState.settings, ...input.settings } : assistantOverlayState.settings
   };
   const overlay = await ensureAssistantOverlay();
+  applyAssistantOverlayWindowMode(overlay);
   sendAssistantOverlayState();
-  if (assistantOverlayState.catVisible && mainWindow?.isVisible()) overlay.showInactive();
+  if (assistantOverlayState.catVisible && (assistantOverlayIsDetached() || mainWindow?.isFocused())) overlay.showInactive();
   else overlay.hide();
   return { ok: true };
 });
 
 ipcMain.on("assistant-overlay:action", (_event, input = {}) => {
+  if (["chat", "open-settings"].includes(String(input.type || ""))) restoreMainWindow();
   mainWindow?.webContents.send("desktop:assistant-action", input);
 });
 
 ipcMain.on("assistant-overlay:move", (_event, input = {}) => {
   if (!assistantOverlayWindow || assistantOverlayWindow.isDestroyed()) return;
+  assistantOverlayInteractionUntil = Date.now() + 800;
   const [x, y] = assistantOverlayWindow.getPosition();
   const next = clampAssistantOverlayBounds({ x: x + Number(input.dx || 0), y: y + Number(input.dy || 0) });
   assistantOverlayWindow.setBounds(next, false);
@@ -1050,9 +1116,12 @@ ipcMain.on("assistant-overlay:move", (_event, input = {}) => {
 ipcMain.on("assistant-overlay:set-mouse-events", (_event, input = {}) => {
   if (!assistantOverlayWindow || assistantOverlayWindow.isDestroyed()) return;
   if (input.ignore) {
+    assistantOverlayInteractionUntil = Date.now() + 350;
     assistantOverlayWindow.setIgnoreMouseEvents(true, { forward: true });
   } else {
+    assistantOverlayInteractionUntil = Date.now() + 800;
     assistantOverlayWindow.setIgnoreMouseEvents(false);
+    if (!assistantOverlayIsDetached() && mainWindow && !mainWindow.isDestroyed()) assistantOverlayWindow.showInactive();
   }
 });
 
@@ -1277,7 +1346,7 @@ ipcMain.handle("desktop:gpt-patrol-discover", async (_event, input = {}) => {
     source: "teambuilding-workbench",
     type: "tb-workbench-patrol-discover-request",
     requestId,
-    allowlist: Array.isArray(input.allowlist) ? input.allowlist.map(String) : [],
+    denylist: Array.isArray(input.denylist) ? input.denylist.map(String) : [],
     maximumScrolls: Math.max(0, Math.min(40, Number(input.maximumScrolls || 16)))
   };
   return contents.executeJavaScript(`new Promise((resolve) => {
@@ -1298,6 +1367,69 @@ ipcMain.handle("desktop:gpt-patrol-discover", async (_event, input = {}) => {
     window.addEventListener("message", onMessage);
     window.postMessage(request, "*");
   })`, true).catch(() => null);
+});
+
+ipcMain.handle("desktop:gpt-patrol-continue", async (_event, input = {}) => {
+  const accountId = safeGptAccountId(input.accountId || activeGptAccountId);
+  const targetUrl = safePatrolConversationUrl(input.targetUrl);
+  const denylist = Array.isArray(input.denylist) ? input.denylist.map(String) : [];
+  const normalizedDenylist = denylist.map((value) => {
+    try { return safePatrolConversationUrl(value); } catch { return String(value || "").trim(); }
+  });
+  if (normalizedDenylist.includes(targetUrl)) {
+    return { ok: false, acted: false, reason: "target-explicitly-excluded", accountId, targetUrl };
+  }
+
+  const account = await ensureGptAccount(accountId);
+  const contents = account?.view?.webContents;
+  if (!contents || contents.isDestroyed()) return { ok: false, acted: false, error: "GPT 网页尚未就绪" };
+  const currentUrl = String(contents.getURL() || "").split(/[?#]/)[0].replace(/\/$/, "");
+  if (currentUrl !== targetUrl) await contents.loadURL(targetUrl);
+  const readyDeadline = Date.now() + 20_000;
+  while (Date.now() < readyDeadline) {
+    const ready = await contents.executeJavaScript("document.documentElement.dataset.tbGptProductionExtension === 'ready'", true).catch(() => false);
+    if (ready) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  const requestId = `patrol-continue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const payload = {
+    source: "teambuilding-workbench",
+    type: "tb-workbench-patrol-continue-request",
+    requestId,
+    targetUrl,
+    denylist: normalizedDenylist,
+    confirmText: String(input.confirmText || "1"),
+    copyPrompt: String(input.copyPrompt || ""),
+    generationRequestCount: Math.max(0, Number(input.generationRequestCount || 0)),
+    maximumGenerationRequests: Math.max(1, Math.min(20, Number(input.maximumGenerationRequests || 5))),
+    productionRequestId: String(input.productionRequestId || ""),
+    materialName: String(input.materialName || ""),
+    sourceMaterialPath: String(input.sourceMaterialPath || ""),
+    templateId: String(input.templateId || ""),
+    downloadRoot: String(input.downloadRoot || ""),
+    productRoot: String(input.productRoot || ""),
+    autoArchive: input.autoArchive !== false,
+    inspectOnly: Boolean(input.inspectOnly)
+  };
+  return contents.executeJavaScript(`new Promise((resolve) => {
+    const request = ${JSON.stringify(payload)};
+    const timeout = setTimeout(() => {
+      window.removeEventListener("message", onMessage);
+      resolve({ ok: false, acted: false, error: "巡检单步续接超时" });
+    }, 600000);
+    function onMessage(event) {
+      const data = event?.data;
+      if (data?.source !== "tb-gpt-production-extension"
+        || data?.type !== "tb-workbench-patrol-continue-result"
+        || data.requestId !== request.requestId) return;
+      clearTimeout(timeout);
+      window.removeEventListener("message", onMessage);
+      resolve(data);
+    }
+    window.addEventListener("message", onMessage);
+    window.postMessage(request, "*");
+  })`, true).catch((error) => ({ ok: false, acted: false, error: error?.message || String(error) }));
 });
 
 // --- Diagnostic: returns full GPT page state for troubleshooting ---
@@ -1567,7 +1699,7 @@ function notifyWindowRestored(reason = "show") {
       }
     }
     mainWindow.webContents.send("desktop:window-restored", { reason });
-    if (assistantOverlayState.catVisible) assistantOverlayWindow?.showInactive();
+    showAssistantOverlayForWorkbench();
   }, 140);
 }
 
@@ -1709,12 +1841,14 @@ async function createWindow() {
   mainWindow = window;
   window.on("minimize", () => {
     hideAllGptViews();
-    assistantOverlayWindow?.hide();
+    if (!assistantOverlayIsDetached()) assistantOverlayWindow?.hide();
   });
   window.on("hide", () => {
     hideAllGptViews();
-    assistantOverlayWindow?.hide();
+    if (!assistantOverlayIsDetached()) assistantOverlayWindow?.hide();
   });
+  window.on("blur", hideAttachedAssistantOverlayWhenInactive);
+  window.on("focus", showAssistantOverlayForWorkbench);
   window.on("show", () => {
     notifyWindowRestored("show");
   });

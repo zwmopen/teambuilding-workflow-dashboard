@@ -20,19 +20,20 @@ const {
   shouldRetryThreadError,
   detectRepetitiveAssistantLoop,
   isArchivedAutomationBoundary,
-  firstBatchChoice
+  firstBatchChoice,
+  validatePlanPageCap,
+  resolveEntryInstruction
 } = require("./gpt-automation-core");
 
-test("patrol candidates require both a template title and explicit allowlist entry", () => {
+test("patrol candidates auto-join by template or master title and exclude games", () => {
   const { classifyPatrolConversationCandidate } = require("./gpt-automation-core");
   const url = "https://chatgpt.com/c/template-123";
-  assert.deepEqual(
-    classifyPatrolConversationCandidate({ title: "轮播模板｜杭州团建", url, allowlist: [url] }),
-    { title: "轮播模板｜杭州团建", url, titleMatched: true, explicitlyAllowed: true, eligible: true }
-  );
-  assert.equal(classifyPatrolConversationCandidate({ title: "日常聊天", url, allowlist: [url] }).eligible, false);
-  assert.equal(classifyPatrolConversationCandidate({ title: "轮播模板｜未准入", url, allowlist: [] }).eligible, false);
-  assert.equal(classifyPatrolConversationCandidate({ title: "轮播模板｜按标题准入", url, allowlist: ["轮播模板｜按标题准入"] }).eligible, true);
+  assert.equal(classifyPatrolConversationCandidate({ title: "团建模板", url }).eligible, true);
+  assert.equal(classifyPatrolConversationCandidate({ title: "轮播母版", url }).eligible, true);
+  assert.equal(classifyPatrolConversationCandidate({ title: "日常聊天", url }).eligible, false);
+  assert.equal(classifyPatrolConversationCandidate({ title: "团建游戏模板", url }).eligible, false);
+  assert.equal(classifyPatrolConversationCandidate({ title: "游戏母版", url }).excluded, true);
+  assert.equal(classifyPatrolConversationCandidate({ title: "团建模板", url, denylist: [url] }).eligible, false);
 });
 
 test("a successfully archived material boundary no longer blocks the next post", () => {
@@ -66,6 +67,42 @@ test("plans above the ChatGPT batch cap select P1-P10 and expect only that batch
     reply: "先出 P1-P7",
     expectedImageCount: 7
   });
+});
+
+test("material plans must stay within ten pages and must never split into a second batch", () => {
+  assert.deepEqual(validatePlanPageCap({
+    plannedImageCount: 10,
+    text: "计划输出 P1-P10，共10张独立成品图。"
+  }), { valid: true, code: "" });
+  assert.equal(validatePlanPageCap({
+    plannedImageCount: 12,
+    text: "第一批 P1-P10，第二批 P11-P12"
+  }).code, "PLAN_PAGE_CAP_EXCEEDED");
+  assert.equal(validatePlanPageCap({
+    plannedImageCount: 10,
+    text: "先出 P1-P10，第二批继续剩余内容"
+  }).code, "PLAN_BATCHING_FORBIDDEN");
+  assert.deepEqual(validatePlanPageCap({
+    plannedImageCount: 10,
+    text: "最终规划 P1-P10。禁止第 11 页，不做 P11，不会开启第二批。"
+  }), { valid: true, code: "" });
+  assert.deepEqual(validatePlanPageCap({
+    plannedImageCount: 10,
+    text: "没有第11页，也不会开启第二批；全部素材已筛选合并。"
+  }), { valid: true, code: "" });
+});
+
+test("the instruction actually sent uses the editable task prompt", () => {
+  assert.equal(resolveEntryInstruction({
+    name: "素材A",
+    prompt: "用户在工作台保存的上传提示词"
+  }), "用户在工作台保存的上传提示词");
+  assert.equal(resolveEntryInstruction({
+    name: "素材A",
+    prompt: "默认提示词",
+    customPrompt: "本任务临时覆盖提示词"
+  }), "本任务临时覆盖提示词");
+  assert.match(resolveEntryInstruction({ name: "素材A" }), /素材A/);
 });
 
 test("template initialization completion does not require a planned image count", () => {

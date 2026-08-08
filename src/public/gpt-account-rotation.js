@@ -106,6 +106,55 @@
     return { reached: false, kind: "", required: 0, remaining: 0 };
   }
 
+  function normalizeMaterialPath(value = "") {
+    return String(value || "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/\/+$/g, "")
+      .toLowerCase();
+  }
+
+  function materialIdentityKey(value = '') {
+    const normalized = normalizeMaterialPath(value);
+    if (!normalized) return '';
+    const stableId = normalized.match(/[（(]([0-9a-f]{8,64})[）)]$/i)?.[1];
+    if (stableId) return `id:${stableId}`;
+    const parts = normalized.split('/').filter(Boolean);
+    return `name:${parts.at(-1) || normalized}`;
+  }
+
+  function recentSuccessfulMaterialKeys(checkpoints = [], now = Date.now(), maxAgeMs = 30 * 24 * 60 * 60 * 1000) {
+    const keys = new Set();
+    (Array.isArray(checkpoints) ? checkpoints : []).forEach((checkpoint) => {
+      if (checkpoint?.packageValid !== true) return;
+      const updatedAt = Date.parse(String(checkpoint?.updatedAt || checkpoint?.finishedAt || ''));
+      const age = Number(now) - updatedAt;
+      if (!Number.isFinite(updatedAt) || age < -5 * 60 * 1000 || age > Math.max(0, Number(maxAgeMs || 0))) return;
+      const key = materialIdentityKey(checkpoint?.sourceMaterialPath);
+      if (key) keys.add(key);
+    });
+    return [...keys];
+  }
+
+  function recoverableMaterialPaths(checkpoints = [], now = Date.now(), maxAgeMs = 24 * 60 * 60 * 1000) {
+    const paths = new Set();
+    (Array.isArray(checkpoints) ? checkpoints : []).forEach((checkpoint) => {
+      const sourcePath = normalizeMaterialPath(checkpoint?.sourceMaterialPath);
+      if (!sourcePath || checkpoint?.packageValid === true) return;
+      const updatedAt = Date.parse(String(checkpoint?.updatedAt || ""));
+      const age = Number(now) - updatedAt;
+      if (!Number.isFinite(updatedAt) || age < -5 * 60 * 1000 || age > Math.max(0, Number(maxAgeMs || 0))) return;
+      const percent = Math.max(0, Number(checkpoint?.percent || 0));
+      const hasArtifact = Number(checkpoint?.plannedImageCount || 0) > 0
+        || Number(checkpoint?.downloadedImageCount || 0) > 0
+        || Number(checkpoint?.copyTextLength || 0) > 0;
+      const meaningfulStage = /计划|确认|生图|图片|文案|下载|txt|打包|归档|plan|image|copy|download|package/i
+        .test(String(checkpoint?.stage || ""));
+      if (percent >= 20 && (meaningfulStage || hasArtifact)) paths.add(sourcePath);
+    });
+    return [...paths];
+  }
+
   function selectNextRotationAccount({
     accounts = [],
     cursor = 0,
@@ -135,6 +184,9 @@
     accountParticipatesInRotation,
     accountQuotaBoundary,
     effectiveProductionMode,
+    materialIdentityKey,
+    recentSuccessfulMaterialKeys,
+    recoverableMaterialPaths,
     reconcileAccountQuotaSettings,
     rotationRunAfterModeSwitch,
     rotationResumeCheckpoint,

@@ -5,6 +5,9 @@ const {
   accountParticipatesInRotation,
   accountQuotaBoundary,
   effectiveProductionMode,
+  materialIdentityKey,
+  recentSuccessfulMaterialKeys,
+  recoverableMaterialPaths,
   rotationRunAfterModeSwitch,
   reconcileAccountQuotaSettings,
   rotationResumeCheckpoint,
@@ -12,6 +15,53 @@ const {
   taskQuotaBoundary,
   selectNextRotationAccount
 } = require("./gpt-account-rotation");
+
+test('successful materials remain deduplicated after their usage folder changes', () => {
+  const now = Date.parse('2026-08-09T00:00:00.000Z');
+  const before = 'D:\\\\materials\\\\1\\\\post-name（607ae3f8）';
+  const after = 'D:\\\\materials\\\\2\\\\post-name（607ae3f8）';
+  assert.equal(materialIdentityKey(before), materialIdentityKey(after));
+  assert.deepEqual(recentSuccessfulMaterialKeys([{
+    sourceMaterialPath: before,
+    packageValid: true,
+    updatedAt: '2026-08-08T23:00:00.000Z'
+  }], now), [materialIdentityKey(after)]);
+});
+
+test("recent incomplete checkpoints reserve their source material across accounts and restarts", () => {
+  const now = Date.parse("2026-08-08T15:10:00.000Z");
+  assert.deepEqual(recoverableMaterialPaths([
+    {
+      sourceMaterialPath: "D:\\materials\\work-a",
+      stage: "等待小红书文案",
+      percent: 66,
+      plannedImageCount: 9,
+      packageValid: false,
+      updatedAt: "2026-08-08T15:04:00.000Z"
+    },
+    {
+      sourceMaterialPath: "D:\\materials\\completed",
+      stage: "已归档",
+      percent: 100,
+      packageValid: true,
+      updatedAt: "2026-08-08T15:05:00.000Z"
+    },
+    {
+      sourceMaterialPath: "D:\\materials\\stale",
+      stage: "等待图片",
+      percent: 50,
+      packageValid: false,
+      updatedAt: "2026-08-06T12:00:00.000Z"
+    },
+    {
+      sourceMaterialPath: "D:\\materials\\not-started",
+      stage: "已排队",
+      percent: 0,
+      packageValid: false,
+      updatedAt: "2026-08-08T15:06:00.000Z"
+    }
+  ], now), ["d:/materials/work-a"]);
+});
 
 test("an unfinished rotation run stays authoritative across pause and restart", () => {
   assert.equal(effectiveProductionMode("single", { mode: "rotate", status: "running" }), "rotate");

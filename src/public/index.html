@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-  <link rel="stylesheet" href="/styles.css?v=0.15.1" />
+  <link rel="stylesheet" href="/styles.css?v=0.15.26" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -638,7 +638,10 @@
             <div class="assistant-settings-grid">
               <label class="switch-setting"><span><b>显示小猫</b><small>关闭后可在这里重新打开</small></span><input id="assistantCatVisible" type="checkbox" checked /></label>
               <label class="switch-setting"><span><b>显示通知</b><small>只关闭气泡，不影响生产和日志</small></span><input id="assistantNotificationsEnabled" type="checkbox" checked /></label>
+              <label class="switch-setting"><span><b>保持气泡打开</b><small>通知结束后保留最后一条状态，不再闪退</small></span><input id="assistantBubblePinned" type="checkbox" checked /></label>
               <label class="switch-setting"><span><b>动态跟随</b><small>头部随鼠标方向自然转动</small></span><input id="assistantMotionEnabled" type="checkbox" checked /></label>
+              <label class="switch-setting"><span><b>脱离工作台显示</b><small>关闭时切到其他软件会自动隐藏</small></span><input id="assistantDetached" type="checkbox" /></label>
+              <label class="switch-setting"><span><b>脱离后始终置顶</b><small>仅在允许脱离工作台后生效</small></span><input id="assistantAlwaysOnTop" type="checkbox" disabled /></label>
               <label><span>当前界面（秒）</span><input id="assistantCurrentDurationSeconds" type="number" min="1" max="30" value="9" /></label>
               <label><span>其他界面（秒）</span><input id="assistantOtherDurationSeconds" type="number" min="1" max="30" value="3" /></label>
               <label><span>其他界面每批最多</span><input id="assistantOtherMaxPerBatch" type="number" min="0" max="5" value="1" /></label>
@@ -808,9 +811,9 @@
             <p class="settings-footnote">生产间隔已移入工作流的「随机等待」步骤——在工作流环节中直接设置每步的随机等待秒数。归档行为由最后一步「移动到成品库」环节控制（勾选启用即可归档，取消勾选则跳过）。</p>
           </div>
           <div class="settings-group mode-specific-group gpt-patrol-settings" id="gptPatrolSettingsGroup" hidden>
-            <h3>多对话安全准入 <small class="scope-tag">当前账号窗口</small></h3>
-            <p class="settings-footnote">首版只读扫描。系统会向下滚动加载历史对话，并恢复原滚动位置；只有标题包含“模板”且在下方明确准入的对话，才允许后续自动续接。</p>
-            <label class="settings-wide-field"><span>允许自动续接的对话</span><textarea id="gptPatrolAllowlist" rows="4" placeholder="每行一个完整对话网址或精确标题"></textarea></label>
+            <h3>多对话自动参与规则 <small class="scope-tag">当前账号窗口</small></h3>
+            <p class="settings-footnote">系统会向下滚动加载历史对话并恢复原位置。标题含“模板”或“母版”会自动参与；标题含“游戏”一律排除。页面内容特征只判断进度，不决定是否参与。</p>
+            <label class="settings-wide-field"><span>额外手动排除的对话</span><textarea id="gptPatrolDenylist" rows="4" placeholder="每行一个完整对话网址或精确标题；通常不需要填写"></textarea></label>
             <div class="gpt-patrol-actions"><button id="gptPatrolDiscoverBtn" type="button" class="secondary-button">只读扫描当前账号</button><span id="gptPatrolDiscoverStatus">尚未扫描</span></div>
             <div id="gptPatrolConversationList" class="gpt-patrol-conversation-list" aria-live="polite"></div>
           </div>
@@ -904,12 +907,13 @@
       <button id="contextDeleteMode" type="button" class="danger-action">删除模式配置</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-  <script src="/assistant-notification-policy.js?v=0.15.1"></script>
-  <script src="/gpt-prompt-registry.js?v=0.15.1"></script>
-  <script src="/gpt-account-rotation.js?v=0.15.1"></script>
-  <script src="/gpt-runtime-recovery.js?v=0.15.1"></script>
-  <script src="/distribution-ui.js?v=0.15.1"></script>
-  <script src="/material-workspace.js?v=0.15.1"></script>
-  <script src="/app.js?v=0.15.1"></script>
+  <script src="/assistant-notification-policy.js?v=0.15.26"></script>
+  <script src="/gpt-prompt-registry.js?v=0.15.26"></script>
+  <script src="/gpt-account-rotation.js?v=0.15.26"></script>
+  <script src="/gpt-runtime-recovery.js?v=0.15.26"></script>
+  <script src="/gpt-patrol-scheduler.js?v=0.15.26"></script>
+  <script src="/distribution-ui.js?v=0.15.26"></script>
+  <script src="/material-workspace.js?v=0.15.26"></script>
+  <script src="/app.js?v=0.15.26"></script>
   </body>
 </html>

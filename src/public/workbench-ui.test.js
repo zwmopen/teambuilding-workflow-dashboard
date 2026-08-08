@@ -217,7 +217,12 @@ test("GPT production exposes editable current-session and injected-prompt profil
 test("GPT 工作流提示词和等待参数编辑器不再挤成摆设", () => {
   assert.match(app, /data-workflow-field="text"[\s\S]*gpt-workflow-prompt-editor/);
   assert.match(app, /data-workflow-prompt-edit/);
-  assert.match(app, /编辑提示词/);
+  assert.match(app, /查看 \/ 编辑/);
+  assert.match(app, /gpt-workflow-prompt-summary/);
+  assert.match(css, /gpt-workflow-text-cell-simple/);
+  assert.match(app, /const key = activeSettingsModeKey\(\)/);
+  assert.match(app, /提示词已保存，将从下一套任务生效/);
+  assert.doesNotMatch(app, /togglePromptExpand\(row, editor, presetSelect, stepIndex, actionLabel, \{ readOnly: gptAutoRunning \}\)/);
   assert.match(css, /\.gpt-workflow-text-cell:focus-within \.gpt-workflow-prompt-editor[\s\S]*min-height: 92px/);
   assert.match(app, /gpt-workflow-random-inline/);
   assert.doesNotMatch(app, /gpt-workflow-random-inline"><span>随机<\/span>/);
@@ -358,6 +363,13 @@ test("GPT automatic production exposes safe retry, quota and real archive contro
   assert.match(server, /function archiveMaterialAfterProduction/);
   assert.match(server, /sourceMaterialArchivePath: finalPath/);
   assert.match(server, /packageRecord\.sourceMaterialArchivePath = finalPath/);
+});
+
+test("completed copy in a restored long conversation is preserved and cannot advance the queue when missing", () => {
+  assert.match(gptSidebar, /function cleanAssistantText\(turn\)[\s\S]*const visibleText = String\(turn\.innerText/);
+  assert.match(gptSidebar, /cleanedText\.length[^;]*\? cleanedText : visibleText/);
+  assert.match(gptSidebar, /copyError\.code = "COPY_REQUIRED"/);
+  assert.match(app, /"COPY_REQUIRED"\]\.includes/);
 });
 
 test("partial GPT attachments are treated as an upload-limit signal and the cat chat stays above the native page", () => {
@@ -660,9 +672,23 @@ test("GPT rotation mode serially switches account windows only after a real quot
   assert.doesNotMatch(app, /state\.completed \+= 1;[\s\S]{0,220}accountCursor = \(accountCursor \+ 1\) % accounts\.length/);
 });
 
+test("GPT rotation checks quota before opening the local upload-cycle window", () => {
+  const start = app.indexOf("async function runGptTaskOnBrowser");
+  const end = app.indexOf("function resetGptTaskForRotation", start);
+  const body = app.slice(start, end);
+  const quotaCheck = body.indexOf("await ensureGptTaskQuota(task, task.quotaAccountId)");
+  const usageAnchor = body.indexOf('recordGptQuotaConsumption(task, task.quotaAccountId, "upload")');
+
+  assert.ok(quotaCheck >= 0, "rotation must run a quota preflight");
+  assert.ok(usageAnchor >= 0, "rotation must retain the upload-cycle anchor");
+  assert.ok(quotaCheck < usageAnchor, "quota preflight must happen before the upload-cycle anchor is opened");
+});
+
 test("rotation pauses on a dirty composer instead of skipping subsequent materials", () => {
   assert.match(app, /const integrityBoundaryCodes\s*=\s*new Set\(/);
-  assert.match(app, /integrityBoundaryCodes\.has\(String\(task\._errorCode/);
+  assert.match(app, /integrityBoundaryCodes\.has\(failureCode\)/);
+  assert.match(app, /isTransientGptWindowFailure\(\{ code: failureCode, message \}\)/);
+  assert.doesNotMatch(app.slice(app.indexOf('async function sendRotatingGptTasks'), app.indexOf('async function sendMultiWindowGptTasks')), /task\._status\s*=\s*"skipped"/);
   assert.match(app, /task\._status\s*=\s*"paused";[\s\S]{0,1200}gptAutoPaused\s*=\s*true;[\s\S]{0,1200}break;/);
   assert.match(app, /copy\.taskType\s*=\s*"template-init";[\s\S]{0,500}copy\.forceUpload\s*=\s*true;/);
 });
@@ -702,6 +728,19 @@ test("GPT queue recovery persists the final failed stage and replaces stale retr
   assert.match(server, /gpt-production\/recover-image-batch/);
   assert.match(server, /resolveAuthorizedDownloadRoot/);
   assert.match(server, /image_inbox_path/);
+});
+
+test("GPT checkpoints persist generated image URLs so a restart can finish download and packaging", () => {
+  assert.match(server, /generatedImageUrls:\s*Array\.isArray\(source\.generatedImageUrls\)/);
+  assert.match(gptSidebar, /generatedImageUrls:\s*workflow\.generatedImageUrls/);
+  assert.match(gptSidebar, /workflow\.generatedImageUrls\s*\|\|=\s*checkpoint\.generatedImageUrls/);
+});
+
+test("patrol packaging closes the authoritative server checkpoint as well as the visible history", () => {
+  assert.match(gptSidebar, /await api\("\/api\/gpt-production\/checkpoint"/);
+  assert.match(gptSidebar, /await reportPatrolPackageCompletion\(packageTask/);
+  assert.match(gptSidebar, /downloadedFiles,\s*downloadRoot:/);
+  assert.match(gptSidebar, /packagePath\s*\n\s*}/);
 });
 
 test("desktop close goes to tray and temporary cache maintenance never clears login storage", () => {
@@ -824,6 +863,9 @@ test("assistant notifications are page-aware, stable, configurable, and independ
   assert.match(html, /assistant-notification-policy\.js/);
   assert.match(html, /id="assistantCatVisible"/);
   assert.match(html, /id="assistantNotificationsEnabled"/);
+  assert.match(html, /id="assistantBubblePinned"[^>]*checked/);
+  assert.match(assistantOverlay, /id="menuBubblePinned"[^>]*checked/);
+  assert.match(app, /function assistantBubbleShouldBeVisible/);
   assert.match(html, /id="assistantCurrentDurationSeconds"[^>]*value="9"/);
   assert.match(html, /id="assistantOtherDurationSeconds"[^>]*value="3"/);
   assert.match(html, /id="assistantOtherMaxPerBatch"[^>]*value="1"/);
@@ -861,7 +903,27 @@ test("workbench keeps a single explicit renderer layer contract", () => {
   assert.match(css, /\.workbench-assistant-launcher\s*\{\s*z-index:\s*var\(--tb-layer-assistant-cat\)/);
   assert.match(css, /\.context-menu[\s\S]*?z-index:\s*var\(--tb-layer-context-menu\)/);
   assert.match(css, /\.system-dialog-backdrop[\s\S]*?z-index:\s*var\(--tb-layer-dialog\)/);
-  assert.match(desktopMain, /overlay\.setAlwaysOnTop\(true, "floating", 1\)/);
+  assert.match(desktopMain, /overlay\.setAlwaysOnTop\(detached && alwaysOnTop, "floating", 1\)/);
+});
+
+test("native cat is app-bound by default, opens on double click, and exposes floating controls", () => {
+  assert.match(assistantOverlay, /id="menuDetached"/);
+  assert.match(assistantOverlay, /id="menuAlwaysOnTop"/);
+  assert.match(assistantOverlay, /cat\.addEventListener\("dblclick",/);
+  assert.doesNotMatch(assistantOverlay, /cat\.addEventListener\("click",[\s\S]{0,160}type:\s*"chat"/);
+  assert.match(html, /id="assistantDetached"/);
+  assert.match(html, /id="assistantAlwaysOnTop"/);
+  assert.match(desktopMain, /function applyAssistantOverlayWindowMode/);
+  assert.match(desktopMain, /window\.on\("blur",/);
+  assert.match(desktopMain, /window\.on\("focus",/);
+  assert.match(desktopMain, /assistantOverlayInteractionUntil/);
+  assert.match(desktopMain, /Date\.now\(\) < assistantOverlayInteractionUntil/);
+});
+
+test("desktop bridge exposes the same safe restart path used by the tray", () => {
+  assert.match(desktopPreload, /restartApp\(\)\s*\{\s*return ipcRenderer\.invoke\("desktop:restart-app"\)/);
+  assert.match(desktopMain, /ipcMain\.handle\("desktop:restart-app"/);
+  assert.match(desktopMain, /setTimeout\(restartApp, 100\)/);
 });
 
 test("GPT automatic production keeps a durable user-visible production history", () => {
@@ -1206,6 +1268,17 @@ test("settings exposes the real initialization and per-step prompts as editable 
   assert.match(html, /当前素材文件夹由程序自动追加/);
 });
 
+test("the editable material prompt is the exact instruction sent and plans are capped at ten", () => {
+  assert.match(app, /const GPT_MATERIAL_PLAN_PROMPT = [^;]*最多 10 张[^;]*禁止第二批/);
+  assert.match(app, /action: "upload-material", text: GPT_MATERIAL_PLAN_PROMPT/);
+  assert.match(app, /normalizeGptMaterialPlanPrompt/);
+  assert.match(app, /function normalizeQueuedGptTaskPrompt\(task/);
+  assert.match(app, /saved\.tasks = saved\.tasks\.map\(\(task\) => normalizeQueuedGptTaskPrompt\(task\)\)/);
+  assert.match(gptSidebar, /return resolveEntryInstruction\(entry\)/);
+  assert.match(gptSidebar, /validatePlanPageCap\(\{ plannedImageCount, text: planText, maximum: 10 \}\)/);
+  assert.match(gptSidebar, /PLAN_PAGE_CAP_EXCEEDED\|PLAN_BATCHING_FORBIDDEN/);
+});
+
 test("multi-account endless mode keeps one serial task per browser and isolates quota stops", () => {
   assert.match(html, /value="multi"[^>]*>多账号全自动（旧版）/);
   assert.match(app, /pendingGroups\.splice\(claimIndex, 1\)/);
@@ -1299,6 +1372,18 @@ test("per-window mode: each account window stores and restores its own productio
   assert.match(app, /previousModes/);
   // Account tabs show the mode tag
   assert.match(app, /gpt-account-mode-tag/);
+});
+
+test("per-window mode is persisted to the native browser profile", () => {
+  const modeChange = app.match(/const handleGptModeChange = \(event\) => \{([\s\S]*?)\n\s*\};\n\s*\$\("#gptProductionMode"\)/)?.[1] || "";
+  assert.match(modeChange, /currentAccount\.mode\s*=\s*key/);
+  assert.match(modeChange, /window\.gptWorkbench\?\.saveProfile\?\.\(\{\s*\.\.\.currentAccount,\s*active:\s*false\s*\}\)/);
+});
+
+test("Electron browser profiles preserve a validated production mode across rehydration", () => {
+  assert.match(desktopMain, /function safeGptProductionMode\(/);
+  assert.match(desktopMain, /mode:\s*safeGptProductionMode\(profile\.mode/);
+  assert.match(desktopMain, /mode:\s*safeGptProductionMode\(input\.mode\s*\?\?\s*existing\?\.mode/);
 });
 
 test("account tab context menu opens that window's own production mode and quota settings", () => {
@@ -1503,9 +1588,11 @@ test("scheduled and patrol modes are continuous for automatic queue replenishmen
   assert.match(app, /patrol:\s*\{[^}]*continuous:\s*true/);
 });
 
-test("single-account multi-conversation patrol is read-only and double-gated before takeover", () => {
+test("single-account multi-conversation patrol auto-joins template titles and keeps a denylist", () => {
   assert.match(html, /id="gptPatrolSettingsGroup"[^>]*hidden/);
-  assert.match(html, /id="gptPatrolAllowlist"/);
+  assert.match(html, /id="gptPatrolDenylist"/);
+  assert.match(html, /标题含“模板”或“母版”会自动参与/);
+  assert.match(html, /标题含“游戏”一律排除/);
   assert.match(html, /id="gptPatrolDiscoverBtn"[^>]*>只读扫描当前账号/);
   assert.match(app, /GPT_PATROL_SETTINGS_STORAGE_KEY/);
   assert.match(app, /discoverCurrentAccountPatrolConversations/);
@@ -1515,7 +1602,7 @@ test("single-account multi-conversation patrol is read-only and double-gated bef
   assert.match(gptSidebar, /discoverPatrolConversations/);
   assert.match(gptSidebar, /maximumScrolls/);
   assert.match(gptSidebar, /originalPositions/);
-  assert.match(gptSidebar, /titleMatched && explicitlyAllowed/);
+  assert.match(gptSidebar, /titleMatched && !excluded/);
   assert.match(gptSidebar, /readOnly:\s*true/);
   assert.doesNotMatch(gptSidebar, /tb-workbench-patrol-discover-request[\s\S]{0,1200}sendComposerText/);
 });
@@ -1525,6 +1612,60 @@ test("patrol discovery displays a side-effect-free stage label for the current c
   assert.match(gptSidebar, /patrolState = classifyPatrolStage/);
   assert.match(gptSidebar, /expectedImageCount/);
   assert.match(app, /当前对话：\$\{escapeHtml\(item\.currentState\.patrolState\.label\)\}/);
+  assert.match(gptSidebar, /turnDeadline = Date\.now\(\) \+ 20_000/);
+  assert.match(gptSidebar, /imageHydrationDeadline = Date\.now\(\) \+ 20_000/);
+});
+
+test("patrol exposes an explicit title-gated single-step continuation bridge", () => {
+  assert.match(app, /data-patrol-continue/);
+  assert.match(app, /continuePatrolConversation\(activeGptAccountId/);
+  assert.match(desktopPreload, /continuePatrolConversation\(accountId/);
+  assert.match(desktopMain, /desktop:gpt-patrol-continue/);
+  assert.match(gptSidebar, /executePatrolSingleStep/);
+  assert.match(gptSidebar, /decidePatrolSingleStep/);
+  assert.match(gptSidebar, /tb-workbench-patrol-continue-request/);
+  assert.match(gptSidebar, /titleMatched && !excluded/);
+});
+
+test("patrol recognizes ChatGPT semantic image turns and native batch completion", () => {
+  assert.match(gptSidebar, /\[data-turn="user"\], \[data-turn="assistant"\]/);
+  assert.match(gptSidebar, /!turn\.parentElement\?\.closest\?\.\('\[data-turn\]'\)/);
+  assert.match(gptSidebar, /conversationTurnRole/);
+  assert.match(gptSidebar, /button\[aria-label\*="下载本组"\]/);
+  assert.match(gptSidebar, /containers\.flatMap\(\(container\) => \[\.\.\.container\.querySelectorAll\("img"\)\]\)/);
+});
+
+test("patrol mode assigns each queued material to a verified free template conversation", () => {
+  assert.match(html, /gpt-patrol-scheduler\.js\?v=/);
+  assert.match(app, /async function preparePatrolTaskNavigation\(/);
+  assert.match(app, /TBGptPatrolScheduler\.orderedEligibleConversations/);
+  assert.match(app, /continuePatrolConversation\(accountId/);
+  assert.match(app, /inspectOnly:\s*true/);
+  assert.match(desktopPreload, /inspectOnly:\s*Boolean\(options\.inspectOnly\)/);
+  assert.match(desktopMain, /inspectOnly:\s*Boolean\(input\.inspectOnly\)/);
+  assert.match(gptSidebar, /if \(options\.inspectOnly\)/);
+  assert.match(app, /TBGptPatrolScheduler\.patrolProbeAvailability/);
+  assert.match(app, /task\.patrolConversationUrl\s*=\s*candidate\.url/);
+  assert.match(app, /savePatrolCursor\(/);
+  assert.match(app, /await preparePatrolTaskNavigation\(task, runAccountId\)/);
+  assert.match(app, /PATROL_NO_AVAILABLE_CONVERSATION/);
+});
+
+test("patrol packaging reports and can replay the authoritative completed package without redownloading", () => {
+  assert.match(gptSidebar, /function reportPatrolPackageCompletion\(/);
+  assert.match(gptSidebar, /record\.packagePath[\s\S]{0,1800}reportPatrolPackageCompletion/);
+  assert.match(gptSidebar, /reportWorkbenchTask\(packageTask, "success"/);
+  assert.match(gptSidebar, /logConversationEvent\("archived"/);
+  assert.match(gptSidebar, /downloadedImages:\s*Number\(/);
+  assert.match(gptSidebar, /copyTextLength:\s*String\(/);
+});
+
+test("patrol continuation consumes its package result into one completed user-visible history row", () => {
+  assert.match(app, /function recordPatrolPackageResult\(/);
+  assert.match(app, /recordPatrolPackageResult\(item, result\)/);
+  assert.match(app, /gptProductionHistory\s*=\s*gptProductionHistory\.filter\(\(entry\) => entry\.requestId !== requestId\)/);
+  assert.match(app, /status:\s*"completed"/);
+  assert.match(gptSidebar, /productionRequestId:\s*String\(options\.requestId/);
 });
 
 test("a recovered task clears stale failure metadata after successful completion", () => {

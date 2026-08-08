@@ -24,7 +24,9 @@
   const PATH_STORAGE_KEY = "tb-production-paths";
   const ACTION_STORAGE_KEY = "tb-material-action-settings";
   const ARCHIVED_BOUNDARY_KEY = "tb-gpt-last-archived-boundary-v1";
+  const PATROL_ACTION_LEDGER_KEY = "tb-gpt-patrol-action-ledger-v1";
   const DEFAULT_PUBLISH_COPY_PROMPT = "请只输出一份可直接复制发布的完整小红书文案。第一行直接写实际标题，随后直接写正文，末尾直接写话题标签。不要输出任何解释、开场白、总结，也不要输出“标题”“正文”“话题”“标签”等栏目名或 Markdown 标题。";
+  const DEFAULT_MATERIAL_PLAN_PROMPT = "请完整读取全部附件，不要省略 TXT。本套迁移计划和最终成品都最多 10 张；素材超过 10 张时，必须先全部读取，再自行筛选、聚类、合并和取舍，只规划 P1-P10 以内。禁止第 11 页，禁止分批，禁止第二批，禁止把剩余素材留到下一批。先严格按既定格式输出最多 10 页的逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。";
   const normalizePublishCopyPrompt = (value) => {
     const prompt = String(value || "").trim();
     return !prompt || prompt === "给我一份小红书文案" ? DEFAULT_PUBLISH_COPY_PROMPT : prompt;
@@ -43,6 +45,24 @@
     const maximum = Math.max(1, Number(options.maximum || 10));
     const expectedImageCount = Math.min(Math.max(1, Number(options.plannedImageCount || maximum)), maximum);
     return { reply: `先出 P1-P${expectedImageCount}`, expectedImageCount };
+  });
+  const validatePlanPageCap = automationCore.validatePlanPageCap || ((options = {}) => {
+    const maximum = Math.max(1, Number(options.maximum || 10));
+    const planned = Math.max(0, Number(options.plannedImageCount || 0));
+    const text = String(options.text || "");
+    if (planned > maximum) return { valid: false, code: "PLAN_PAGE_CAP_EXCEEDED" };
+    if (/P\s*11\b|第二批\s*[:：]?\s*P|第二批.{0,24}(?:继续|生成|出图|剩余)|(?:继续|再出).{0,24}P\s*11/iu.test(text)) {
+      return { valid: false, code: "PLAN_BATCHING_FORBIDDEN" };
+    }
+    return { valid: true, code: "" };
+  });
+  const resolveEntryInstruction = automationCore.resolveEntryInstruction || ((entry = {}) => {
+    if (String(entry.customPrompt || "").trim()) return String(entry.customPrompt).trim();
+    if (String(entry.prompt || "").trim()) return String(entry.prompt).trim();
+    return [
+      "请沿用当前对话已经确定的母版与规则，处理刚上传的这组团建素材。",
+      `内容名称：${String(entry.name || "").trim()}`
+    ].filter(Boolean).join("\n");
   });
   const shouldRecoverSilentAssistant = automationCore.shouldRecoverSilentAssistant || ((options = {}) => (
     Number(options.elapsedMs || 0) >= Number(options.thresholdMs || 60_000)
@@ -72,10 +92,12 @@
   const classifyPatrolConversationCandidate = automationCore.classifyPatrolConversationCandidate || ((options = {}) => {
     const title = String(options.title || "").replace(/\s+/g, " ").trim();
     const url = String(options.url || "").trim();
-    const allowlist = (Array.isArray(options.allowlist) ? options.allowlist : []).map((value) => String(value || "").trim());
-    const titleMatched = /模板/i.test(title);
-    const explicitlyAllowed = allowlist.includes(url) || allowlist.includes(title);
-    return { title, url, titleMatched, explicitlyAllowed, eligible: titleMatched && explicitlyAllowed };
+    const denylist = (Array.isArray(options.denylist) ? options.denylist : []).map((value) => String(value || "").trim());
+    const titleMatched = /模板|母版/i.test(title);
+    const excludedByKeyword = /游戏/i.test(title);
+    const explicitlyExcluded = denylist.includes(url) || denylist.includes(title);
+    const excluded = excludedByKeyword || explicitlyExcluded;
+    return { title, url, titleMatched, excludedByKeyword, explicitlyExcluded, excluded, eligible: titleMatched && !excluded };
   });
   const classifyPatrolStage = globalThis.TeambuildingGptPatrolStage?.classifyPatrolStage || ((options = {}) => ({
     key: options.stage || "unknown",
@@ -84,6 +106,16 @@
     safeToAct: false,
     detail: ""
   }));
+  const decidePatrolSingleStep = globalThis.TeambuildingGptPatrolStage?.decidePatrolSingleStep || (() => ({
+    allowed: false,
+    action: "none",
+    reason: "patrol-decision-module-unavailable"
+  }));
+  const isAutomationMaterialPrompt = globalThis.TeambuildingGptPatrolStage?.isAutomationMaterialPrompt
+    || ((text = "") => /当前素材文件夹：/.test(String(text || ""))
+      && /本次附件全部是待迁移素材|请(?:完整)?读取全部附件/.test(String(text || "")));
+  const preferredRecoveryImageUrls = globalThis.TeambuildingGptPatrolStage?.preferredRecoveryImageUrls
+    || ((pageUrls = [], checkpointUrls = []) => checkpointUrls.length > pageUrls.length ? checkpointUrls : pageUrls);
   const uniqueGeneratedImageUrls = automationCore.uniqueGeneratedImageUrls || ((values) => [...new Set(values)]);
   const isCompleteCopy = automationCore.isCompleteCopy || ((text, minimum = 300) => String(text || "").replace(/\s/g, "").length >= minimum);
   const isLikelyPublishCopy = automationCore.isLikelyPublishCopy || isCompleteCopy;
@@ -1235,9 +1267,9 @@
     const turns = conversationRoleTurns();
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const turn = turns[index];
-      if (turn.getAttribute("data-message-author-role") !== "user") continue;
+      if (conversationTurnRole(turn) !== "user") continue;
       const text = normalizeDraft(turn.innerText || turn.textContent || "");
-      if (/当前素材文件夹：/.test(text) && /本次附件全部是待迁移素材|请读取全部附件/.test(text)) return text;
+      if (isAutomationMaterialPrompt(text)) return text;
     }
     return "";
   }
@@ -1269,9 +1301,9 @@
     let materialText = "";
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const turn = turns[index];
-      if (turn.getAttribute("data-message-author-role") !== "user") continue;
+      if (conversationTurnRole(turn) !== "user") continue;
       const text = normalizeDraft(turn.innerText || turn.textContent || "");
-      if (/当前素材文件夹：/.test(text) && /本次附件全部是待迁移素材|请读取全部附件/.test(text)) {
+      if (isAutomationMaterialPrompt(text)) {
         materialIndex = index;
         materialText = text;
         break;
@@ -1286,11 +1318,11 @@
     const after = turns.slice(materialIndex + 1);
     const userAfter = after
       .map((turn, index) => ({ turn, index }))
-      .filter(({ turn }) => turn.getAttribute("data-message-author-role") === "user");
+      .filter(({ turn }) => conversationTurnRole(turn) === "user");
     const copyRequest = userAfter.find(({ turn }) => /给我一份小红书文案|小红书文案/.test(normalizeDraft(turn.innerText || turn.textContent || "")));
     if (copyRequest) {
       const laterAssistants = after.slice(copyRequest.index + 1)
-        .filter((turn) => turn.getAttribute("data-message-author-role") === "assistant");
+        .filter((turn) => conversationTurnRole(turn) === "assistant");
       const latestCopy = cleanAssistantText(laterAssistants.at(-1));
       if (isLikelyPublishCopy(latestCopy, 300) && !generatingNow()) {
         const imageUrls = freshImageUrls(after.slice(0, copyRequest.index + 1));
@@ -1301,7 +1333,7 @@
     const confirm = userAfter.find(({ turn }) => /^1\s*$/.test(normalizeDraft(turn.innerText || turn.textContent || "")));
     if (confirm) {
       const laterAssistants = after.slice(confirm.index + 1)
-        .filter((turn) => turn.getAttribute("data-message-author-role") === "assistant");
+        .filter((turn) => conversationTurnRole(turn) === "assistant");
       const imageUrls = freshImageUrls(laterAssistants);
       const latestAssistant = laterAssistants.at(-1);
       const risk = generatedOutputRisk(latestAssistant);
@@ -1319,7 +1351,7 @@
       return { stage: "waiting-images", materialText, materialIndex, imageUrls: [] };
     }
     const latestPlan = [...after].reverse().find((turn) => {
-      if (turn.getAttribute("data-message-author-role") !== "assistant") return false;
+      if (conversationTurnRole(turn) !== "assistant") return false;
       const text = cleanAssistantText(turn);
       return text.length >= 80 && /迁移计划|逐页|P\s*1|第\s*1\s*页/i.test(text);
     });
@@ -1363,7 +1395,7 @@
   }
 
   async function discoverPatrolConversations(options = {}) {
-    const allowlist = Array.isArray(options.allowlist) ? options.allowlist : [];
+    const denylist = Array.isArray(options.denylist) ? options.denylist : [];
     const maximumScrolls = Math.max(0, Math.min(40, Number(options.maximumScrolls ?? 16)));
     const settleMs = Math.max(100, Math.min(1500, Number(options.settleMs ?? 350)));
     const found = new Map();
@@ -1396,9 +1428,30 @@
         node.dispatchEvent(new Event("scroll", { bubbles: true }));
       });
     }
+    // The extension-ready marker is installed before ChatGPT has restored a
+    // long conversation after desktop restart. Do not classify an empty DOM
+    // as "awaiting material"; wait for the real conversation turns first.
+    if (/\/c\//.test(String(location.pathname || "")) && conversationRoleTurns().length === 0) {
+      const turnDeadline = Date.now() + 20_000;
+      while (Date.now() < turnDeadline && conversationRoleTurns().length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    const latestRestoredAssistant = [...conversationRoleTurns()].reverse()
+      .find((turn) => conversationTurnRole(turn) === "assistant") || null;
+    if (/Worked for|已完成|处理完成/i.test(String(latestRestoredAssistant?.innerText || ""))
+      && latestRestoredAssistant?.querySelectorAll?.("img")?.length === 0) {
+      const imageHydrationDeadline = Date.now() + 20_000;
+      while (Date.now() < imageHydrationDeadline
+        && latestRestoredAssistant.isConnected
+        && latestRestoredAssistant.querySelectorAll("img").length === 0
+        && latestRestoredAssistant.querySelectorAll(".cgpt-conversation-tree-image-download-all").length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
     const currentState = conversationStateSnapshot();
     const conversations = [...found.values()].map((item) => ({
-      ...classifyPatrolConversationCandidate({ ...item, allowlist }),
+      ...classifyPatrolConversationCandidate({ ...item, denylist }),
       current: item.current,
       currentState: item.current ? currentState : null
     }));
@@ -1420,7 +1473,7 @@
   // a matching material turn and the current stage is complete.
   function conversationStateSnapshot() {
     const turns = conversationRoleTurns();
-    const latestAssistant = [...turns].reverse().find((turn) => turn.getAttribute("data-message-author-role") === "assistant") || null;
+    const latestAssistant = [...turns].reverse().find((turn) => conversationTurnRole(turn) === "assistant") || null;
     const latestAssistantText = latestAssistant ? cleanAssistantText(latestAssistant) : "";
     const boundary = currentAutomationBoundarySnapshot();
     const currentLink = patrolConversationLinks().find((item) => item.current);
@@ -1435,8 +1488,13 @@
       || /(?:\u56de\u590d|\u8f93\u5165|reply|respond)[^\n]{0,18}\b1\b/i.test(latestAssistantText));
     const generated = latestImages.length > 0;
     const risk = generatedOutputRisk(latestAssistant);
-    const templateConversation = /\u6a21\u677f/i.test(conversationLabel);
-    const stage = boundary?.stage
+    const templateConversation = /\u6a21\u677f|\u6bcd\u7248/i.test(conversationLabel) && !/\u6e38\u620f/i.test(conversationLabel);
+    const currentUrl = String(location.href || "").split(/[?#]/)[0];
+    const patrolRecord = readPatrolActionLedger()[currentUrl] || {};
+    const archivedByPatrol = !boundary
+      && patrolRecord.lastAction === "download-and-package"
+      && Boolean(String(patrolRecord.packagePath || "").trim());
+    const stage = archivedByPatrol ? "archived" : boundary?.stage
       || (hasCopy ? "completed-copy-pending-package" : waitingForConfirm ? "plan-ready" : generated ? "images-ready" : "unknown");
     const expectedImageCount = parsePlannedImageCount(boundary?.planText || latestAssistantText);
     const patrolState = classifyPatrolStage({
@@ -1447,6 +1505,14 @@
       generating: Boolean(generatingNow()),
       hasCopy
     });
+    const evidenceDiagnostic = {
+      turnCount: turns.length,
+      roles: turns.slice(-6).map((turn) => conversationTurnRole(turn)),
+      boundaryStage: String(boundary?.stage || ""),
+      latestAssistantCandidateImages: latestAssistant ? freshImageUrls([latestAssistant]).length : 0,
+      latestAssistantDomImages: latestAssistant?.querySelectorAll?.("img")?.length || 0,
+      latestAssistantBatchButtons: latestAssistant?.querySelectorAll?.(".cgpt-conversation-tree-image-download-all")?.length || 0
+    };
     return {
       stage,
       patrolState,
@@ -1464,10 +1530,336 @@
       limitSignal: Boolean(risk.hasRetrySignal),
       pyScriptFallbackSignal: Boolean(risk.pyScriptFallbackSignal),
       lowImageLimit: Boolean(risk.lowImageLimit),
-      canInjectNext: stage === "completed-copy-pending-package" || (stage === "unknown" && !generated && !waitingForConfirm)
+      canInjectNext: stage === "archived" || (stage === "unknown" && !generated && !waitingForConfirm),
+      evidenceDiagnostic
     };
   }
   globalThis.TeambuildingGptConversationStateSnapshot = conversationStateSnapshot;
+
+  function readPatrolActionLedger() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(PATROL_ACTION_LEDGER_KEY) || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writePatrolActionLedger(ledger) {
+    try { localStorage.setItem(PATROL_ACTION_LEDGER_KEY, JSON.stringify(ledger || {})); } catch { /* private mode */ }
+  }
+
+  async function reportPatrolPackageCompletion(packageTask, details = {}) {
+    const packagePath = String(details.packagePath || "").trim();
+    const downloadedImages = Math.max(0, Number(details.downloadedImages || 0));
+    const copyTextLength = String(details.copyText || "").trim().length;
+    const archivePath = String(details.archivePath || "").trim();
+    const productionRequestId = String(packageTask?.entry?.externalRequestId || "").trim();
+    const downloadedFiles = Array.isArray(details.downloadedFiles) ? details.downloadedFiles.filter(Boolean) : [];
+    if (productionRequestId && packagePath) {
+      const saved = await api(`/api/gpt-production/checkpoint?requestId=${encodeURIComponent(productionRequestId)}`).catch(() => null);
+      await api("/api/gpt-production/checkpoint", {
+        method: "POST",
+        body: JSON.stringify({
+          requestId: productionRequestId,
+          checkpoint: {
+            ...(saved?.checkpoint || {}),
+            stage: "作品归档完成",
+            percent: 100,
+            plannedImageCount: Math.max(downloadedImages, Number(packageTask?.workflow?.plannedImageCount || 0)),
+            generatedImageUrls: packageTask?.workflow?.generatedImageUrls || saved?.checkpoint?.generatedImageUrls || [],
+            downloadedFiles,
+            downloadRoot: String(details.downloadRoot || packageTask?.entry?.autoOptions?.downloadRoot || ""),
+            copyText: String(details.copyText || ""),
+            packagePath
+          }
+        })
+      }).catch(() => null);
+    }
+    reportWorkbenchProgress(
+      packageTask,
+      "作品归档完成",
+      100,
+      packagePath ? `巡检续接作品已核对并保存到 ${packagePath}` : "巡检续接作品已完成",
+      "completed"
+    );
+    reportWorkbenchTask(packageTask, "success", "巡检续接作品已完成下载、打包和素材归档", {
+      taskType: "material",
+      downloadedImages,
+      plannedImageCount: Math.max(downloadedImages, Number(packageTask?.workflow?.plannedImageCount || 0)),
+      batchId: String(details.batchId || packageTask?.workflow?.batchId || ""),
+      packagePath,
+      packageValid: Boolean(packagePath),
+      downloadRoot: String(details.downloadRoot || packageTask?.entry?.autoOptions?.downloadRoot || ""),
+      copyTextLength,
+      archivePath,
+      conversationUrl: String(details.conversationUrl || location.href)
+    });
+  }
+
+  async function executePatrolSingleStep(options = {}) {
+    const currentUrl = String(location.href || "").split(/[?#]/)[0];
+    const targetUrl = String(options.targetUrl || currentUrl).split(/[?#]/)[0];
+    if (!/^https:\/\/(?:chatgpt\.com|chat\.openai\.com)\/c\//i.test(currentUrl) || currentUrl !== targetUrl) {
+      return { ok: false, acted: false, reason: "target-conversation-not-current", currentUrl, targetUrl };
+    }
+
+    // Electron considers the page loaded before ChatGPT has restored the
+    // conversation title and semantic turns. Acting against that short empty
+    // window produces a harmless but confusing "production-title-required"
+    // result, so continuation waits for the real conversation boundary too.
+    if (conversationRoleTurns().length === 0) {
+      const restoreDeadline = Date.now() + 20_000;
+      while (Date.now() < restoreDeadline && conversationRoleTurns().length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+
+    const snapshot = conversationStateSnapshot();
+    const candidate = classifyPatrolConversationCandidate({
+      title: snapshot.conversationLabel,
+      url: currentUrl,
+      denylist: Array.isArray(options.denylist) ? options.denylist : []
+    });
+    if (options.inspectOnly) {
+      return { ok: true, acted: false, reason: "inspection-only", candidate, snapshot };
+    }
+    const ledger = readPatrolActionLedger();
+    const record = ledger[currentUrl] && typeof ledger[currentUrl] === "object" ? ledger[currentUrl] : {};
+    const generationRequestCount = Math.max(
+      0,
+      Number(record.generationRequestCount || 0),
+      Number(options.generationRequestCount || 0)
+    );
+    if (record.packagePath && options.requestId) {
+      const replayImageCount = Math.max(0, Number(record.downloadedImages || snapshot.latestImageCount || 0));
+      const replayTask = {
+        status: "success",
+        entry: {
+          externalRequestId: String(options.requestId),
+          name: String(options.materialName || snapshot.conversationLabel || "巡检续接作品"),
+          materialPath: String(options.sourceMaterialPath || ""),
+          autoOptions: { downloadRoot: String(options.downloadRoot || "") }
+        },
+        workflow: {
+          batchId: String(record.batchId || ""),
+          plannedImageCount: replayImageCount,
+          generatedImageUrls: Array.from({ length: replayImageCount }, (_, index) => `replayed-${index + 1}`)
+        }
+      };
+      await reportPatrolPackageCompletion(replayTask, {
+        packagePath: record.packagePath,
+        downloadedImages: replayImageCount,
+        copyText: String(record.copyText || snapshot.latestAssistantText || ""),
+        batchId: String(record.batchId || ""),
+        downloadRoot: String(options.downloadRoot || ""),
+        archivePath: String(record.archivePath || ""),
+        conversationUrl: currentUrl
+      });
+      return {
+        ok: true,
+        acted: false,
+        reason: "already-packaged",
+        productionRequestId: String(options.requestId || ""),
+        candidate,
+        snapshot,
+        generationRequestCount,
+        packagePath: String(record.packagePath),
+        downloadedImages: replayImageCount,
+        copyTextLength: String(record.copyText || snapshot.latestAssistantText || "").trim().length
+      };
+    }
+    const decision = decidePatrolSingleStep({
+      candidate,
+      patrolState: snapshot.patrolState,
+      generating: Boolean(generatingNow()),
+      composerReady: Boolean(composer()),
+      composerEmpty: !normalizeDraft(composerDraftText()),
+      generationRequestCount,
+      maximumGenerationRequests: Number(options.maximumGenerationRequests || 5)
+    });
+    if (!decision.allowed) {
+      return { ok: true, acted: false, reason: decision.reason, decision, candidate, snapshot, generationRequestCount };
+    }
+    if (record.lastAction === decision.action
+      && record.lastStage === snapshot.stage
+      && Date.now() - Number(record.lastActionAt || 0) < 60_000) {
+      return { ok: true, acted: false, reason: "duplicate-action-guard", decision, candidate, snapshot, generationRequestCount };
+    }
+
+    if (decision.action === "download-and-package") {
+      const copyText = String(snapshot?.currentBoundary?.copyText || currentAutomationBoundarySnapshot()?.copyText || "").trim();
+      let imageUrls = Array.isArray(currentAutomationBoundarySnapshot()?.imageUrls)
+        ? currentAutomationBoundarySnapshot().imageUrls
+        : [];
+      let recoveryCheckpoint = null;
+      if (options.requestId) {
+        const saved = await api(`/api/gpt-production/checkpoint?requestId=${encodeURIComponent(options.requestId)}`).catch(() => null);
+        recoveryCheckpoint = saved?.checkpoint || null;
+        imageUrls = preferredRecoveryImageUrls(imageUrls, recoveryCheckpoint?.generatedImageUrls || []);
+      }
+      const expectedRecoveryImages = Math.max(
+        0,
+        Number(recoveryCheckpoint?.plannedImageCount || 0),
+        Number(recoveryCheckpoint?.detectedImageCount || 0)
+      );
+      if (expectedRecoveryImages && imageUrls.length < expectedRecoveryImages) {
+        return {
+          ok: true,
+          acted: false,
+          reason: "recovery-image-set-incomplete",
+          decision,
+          candidate,
+          snapshot,
+          generationRequestCount,
+          detectedImages: imageUrls.length,
+          expectedImages: expectedRecoveryImages
+        };
+      }
+      if (!isLikelyPublishCopy(copyText, 300)) {
+        return { ok: true, acted: false, reason: "publish-copy-not-ready", decision, candidate, snapshot, generationRequestCount };
+      }
+      if (!imageUrls.length) {
+        return { ok: true, acted: false, reason: "generated-images-not-ready", decision, candidate, snapshot, generationRequestCount };
+      }
+      const sourceMaterialPath = String(options.sourceMaterialPath || "").trim();
+      const materialName = String(options.materialName || sourceMaterialPath.split(/[\\/]/).pop() || snapshot.conversationLabel || "巡检续接作品").trim();
+      const batchId = workPackageBatchId();
+      const downloadRoot = String(options.downloadRoot || "").trim();
+      const packageTask = {
+        status: "running",
+        entry: {
+          externalRequestId: String(options.requestId || `patrol-${batchId}`),
+          name: materialName,
+          materialPath: sourceMaterialPath,
+          autoOptions: { downloadRoot }
+        },
+        workflow: {
+          batchId,
+          textSubmitted: true,
+          plannedImageCount: imageUrls.length,
+          generatedImageUrls: imageUrls
+        }
+      };
+      const copyFile = await globalThis.TeambuildingGptProductionSaveCopyText({ copyText, batchId, downloadRoot });
+      const downloadResult = await downloadFreshImages(imageUrls, packageTask);
+      const packageResult = await packageDownloadedReply({
+        clipboardText: copyText,
+        title: materialName,
+        conversationUrl: currentUrl,
+        accountName: localStorage.getItem("tb-workbench-account-id") || "",
+        sourceMaterialPath,
+        batchId: downloadResult.batchId,
+        expectedImageCount: downloadResult.count,
+        downloadRoot: String(downloadResult.files?.[0] || "").replace(/[\\/][^\\/]+$/, "") || downloadRoot,
+        productRoot: String(options.productRoot || "").trim()
+      });
+      let archiveResult = null;
+      if (!packageResult?.duplicate && options.autoArchive !== false && sourceMaterialPath) {
+        const archiveResponse = await api("/api/gpt-production/archive-material", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entryPath: sourceMaterialPath,
+            requestId: String(options.requestId || `patrol-${batchId}`),
+            templateId: String(options.templateId || ""),
+            conversationUrl: currentUrl,
+            packagePath: String(packageResult?.packagePath || "")
+          })
+        });
+        if (!archiveResponse?.ok) throw new Error(archiveResponse?.error || "作品已生成，但素材归档失败");
+        archiveResult = archiveResponse.archive || null;
+      }
+      markArchivedAutomationBoundary();
+      const archivePath = String(archiveResult?.to || "");
+      ledger[currentUrl] = {
+        generationRequestCount,
+        lastAction: decision.action,
+        lastStage: snapshot.stage,
+        lastActionAt: Date.now(),
+        packagePath: String(packageResult?.packagePath || ""),
+        batchId: String(downloadResult.batchId || batchId),
+        downloadedImages: Number(downloadResult.count || 0),
+        copyText,
+        copyTextPath: String(copyFile?.filename || ""),
+        archivePath
+      };
+      writePatrolActionLedger(ledger);
+      logConversationEvent("text-saved", {
+        requestId: String(options.requestId || ""),
+        materialName,
+        step: "patrol-package/save-text",
+        copyTextPath: String(copyFile?.filename || ""),
+        meta: { copyLength: copyText.length }
+      });
+      logConversationEvent("images-downloaded", {
+        requestId: String(options.requestId || ""),
+        materialName,
+        step: "patrol-package/download-images",
+        imageUrls,
+        downloadedFiles: Array.isArray(downloadResult.files) ? downloadResult.files : [],
+        meta: { count: Number(downloadResult.count || 0), downloadRoot }
+      });
+      logConversationEvent("archived", {
+        requestId: String(options.requestId || ""),
+        materialName,
+        step: "patrol-package/archive",
+        copyTextPath: String(copyFile?.filename || ""),
+        packagePath: String(packageResult?.packagePath || ""),
+        meta: { imageCount: Number(downloadResult.count || 0), batchId: downloadResult.batchId || batchId }
+      });
+      await reportPatrolPackageCompletion(packageTask, {
+        packagePath: String(packageResult?.packagePath || ""),
+        downloadedImages: Number(downloadResult.count || 0),
+        copyText,
+        downloadedFiles: Array.isArray(downloadResult.files) ? downloadResult.files : [],
+        batchId: String(downloadResult.batchId || batchId),
+        downloadRoot,
+        archivePath,
+        conversationUrl: currentUrl
+      });
+      return {
+        ok: true,
+        acted: true,
+        action: decision.action,
+        reason: "completed",
+        productionRequestId: String(options.requestId || ""),
+        candidate,
+        snapshot,
+        generationRequestCount,
+        downloadedImages: downloadResult.count,
+        copyTextPath: String(copyFile?.filename || ""),
+        packageResult,
+        archiveResult
+      };
+    }
+
+    const text = decision.action === "send-confirm"
+      ? String(options.confirmText || "1").trim() || "1"
+      : normalizePublishCopyPrompt(options.copyPrompt || DEFAULT_PUBLISH_COPY_PROMPT);
+    await replaceComposerText(text);
+    await submitComposer();
+    clearComposerDraft();
+
+    const nextGenerationRequestCount = generationRequestCount + (decision.action === "send-confirm" ? 1 : 0);
+    ledger[currentUrl] = {
+      generationRequestCount: nextGenerationRequestCount,
+      lastAction: decision.action,
+      lastStage: snapshot.stage,
+      lastActionAt: Date.now()
+    };
+    writePatrolActionLedger(ledger);
+    return {
+      ok: true,
+      acted: true,
+      action: decision.action,
+      reason: "completed",
+      candidate,
+      snapshot,
+      generationRequestCount: nextGenerationRequestCount
+    };
+  }
+  globalThis.TeambuildingGptPatrolContinue = executePatrolSingleStep;
 
   async function findPendingRemoteProduction() {
     const history = await api("/api/gpt-production/history").catch(() => null);
@@ -1532,11 +1924,7 @@
   }
 
   function instruction(entry) {
-    if (entry.customPrompt) return String(entry.customPrompt);
-    return [
-      "请沿用当前对话已经确定的母版与规则，处理刚上传的这组团建素材。",
-      `内容名称：${entry.name}`
-    ].join("\n");
+    return resolveEntryInstruction(entry);
   }
 
   async function checkEntryDuplicate(entry, task) {
@@ -1708,6 +2096,9 @@
   }
 
   function assistantTurns() {
+    const semanticTurns = [...document.querySelectorAll('[data-turn="assistant"]')]
+      .filter((turn) => !turn.parentElement?.closest?.('[data-turn]'));
+    if (semanticTurns.length) return semanticTurns;
     const outerTurns = [...document.querySelectorAll('[data-testid^="conversation-turn"]')];
     if (outerTurns.length) {
       return outerTurns
@@ -1716,9 +2107,9 @@
     }
 
     const roleTurns = [...document.querySelectorAll('[data-message-author-role="assistant"]')]
-      .filter((turn) => turn.closest('[data-message-author-role]') === turn);
+      .filter((turn) => !turn.parentElement?.closest?.('[data-message-author-role]'));
     if (roleTurns.length) return roleTurns;
-    return [...document.querySelectorAll('article[data-turn="assistant"]')];
+    return [...document.querySelectorAll('[data-turn="assistant"]')];
   }
 
   function latestUserTurnWrapper() {
@@ -1737,8 +2128,15 @@
   }
 
   function conversationRoleTurns() {
+    const semanticTurns = [...document.querySelectorAll('[data-turn="user"], [data-turn="assistant"]')]
+      .filter((turn) => !turn.parentElement?.closest?.('[data-turn]'));
+    if (semanticTurns.length) return semanticTurns;
     return [...document.querySelectorAll('[data-message-author-role="user"], [data-message-author-role="assistant"]')]
-      .filter((turn) => turn.closest('[data-message-author-role]') === turn);
+      .filter((turn) => !turn.parentElement?.closest?.('[data-message-author-role]'));
+  }
+
+  function conversationTurnRole(turn) {
+    return String(turn?.getAttribute?.("data-turn") || turn?.getAttribute?.("data-message-author-role") || "").trim();
   }
 
   function latestCopyTurnAfterPrompt(copyPrompt = DEFAULT_PUBLISH_COPY_PROMPT, options = {}) {
@@ -1748,12 +2146,12 @@
     const keywordPattern = String(options.keywordPattern || "").trim();
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const turn = turns[index];
-      if (turn.getAttribute("data-message-author-role") !== "user") continue;
+      if (conversationTurnRole(turn) !== "user") continue;
       const userText = String(turn.innerText || turn.textContent || "").replace(/\s/g, "");
       if (!userText.includes(promptNeedle) && !/小红书文案/.test(userText)) continue;
       for (let cursor = index + 1; cursor < turns.length; cursor += 1) {
         const candidate = turns[cursor];
-        const role = candidate.getAttribute("data-message-author-role");
+        const role = conversationTurnRole(candidate);
         if (role === "user") break;
         const text = cleanAssistantText(candidate);
         if (role === "assistant" && (isLikelyPublishCopy(text, minimum) || completionKeywordDetected(text, { action: "wait-copy", keywordPattern }).matched)) return candidate;
@@ -1765,7 +2163,7 @@
     // finished copy without confusing a migration plan for publishable text.
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const candidate = turns[index];
-      if (candidate.getAttribute("data-message-author-role") !== "assistant") continue;
+      if (conversationTurnRole(candidate) !== "assistant") continue;
       const text = cleanAssistantText(candidate);
       if (isLikelyPublishCopy(text, minimum) || completionKeywordDetected(text, { action: "wait-copy", keywordPattern }).matched) return candidate;
     }
@@ -1780,7 +2178,7 @@
     let promptIndex = -1;
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const turn = turns[index];
-      if (turn.getAttribute("data-message-author-role") !== "user") continue;
+      if (conversationTurnRole(turn) !== "user") continue;
       const userText = String(turn.innerText || turn.textContent || "").replace(/\s/g, "");
       if (userText.includes(promptNeedle) || /小红书.{0,8}文案|文案.{0,8}小红书/.test(userText)) {
         promptIndex = index;
@@ -1790,7 +2188,7 @@
     if (promptIndex < 0) return null;
     for (let cursor = promptIndex + 1; cursor < turns.length; cursor += 1) {
       const candidate = turns[cursor];
-      const role = candidate.getAttribute("data-message-author-role");
+      const role = conversationTurnRole(candidate);
       if (role === "user") break;
       const text = cleanAssistantText(candidate);
       if (role === "assistant" && (isLikelyPublishCopy(text, minimum) || completionKeywordDetected(text, { action: "wait-copy", keywordPattern }).matched)) return candidate;
@@ -2090,7 +2488,9 @@
       const responseComplete = Boolean(responseRoot.querySelector([
         '[data-testid="copy-turn-action-button"]',
         'button[aria-label*="复制回复"]',
-        'button[aria-label*="Copy response" i]'
+        'button[aria-label*="Copy response" i]',
+        'button[aria-label*="下载本组"]',
+        'button[aria-label*="Download group" i]'
       ].join(",")));
       const declaredCounts = [...turn.querySelectorAll('button')]
         .flatMap((button) => {
@@ -2561,12 +2961,20 @@
       ...scope.querySelectorAll(".cgpt-conversation-tree-image-download-all")
     ]))];
     const imagesFromDownloadButtons = buttons.flatMap((button) => {
-      if (Array.isArray(button.__cgptImageDownloadImages)) return button.__cgptImageDownloadImages;
-      const container = button.__cgptImageDownloadContainer
-        || button.closest("[data-cgpt-image-download-container]")
-        || button.closest('[data-message-author-role="assistant"]')
-        || button.parentElement;
-      return container ? [...container.querySelectorAll("img")] : [];
+      const containers = [...new Set([
+        button.__cgptImageDownloadContainer,
+        button.closest("[data-cgpt-image-download-container]"),
+        button.closest('[data-message-author-role="assistant"]'),
+        button.closest('[data-turn="assistant"]'),
+        button.parentElement
+      ].filter(Boolean))];
+      // The vendor helper keeps a best-effort element list, but ChatGPT can
+      // replace carousel nodes after the button is injected. Always merge the
+      // live container images instead of trusting only that cached list.
+      return [
+        ...(Array.isArray(button.__cgptImageDownloadImages) ? button.__cgptImageDownloadImages : []),
+        ...containers.flatMap((container) => [...container.querySelectorAll("img")])
+      ];
     });
     const images = imagesFromDownloadButtons.length
       ? imagesFromDownloadButtons
@@ -2732,11 +3140,20 @@
 
   function cleanAssistantText(turn) {
     if (!turn) return "";
+    const visibleText = String(turn.innerText || turn.textContent || "").trim();
     const clone = turn.cloneNode(true);
     clone.querySelectorAll("button, svg, img, [aria-hidden='true'], .cgpt-conversation-tree-image-download-slot, .cgpt-conversation-tree-text-download-slot")
       .forEach((node) => node.remove());
-    return String(clone.innerText || clone.textContent || "")
+    const cleanedText = String(clone.innerText || clone.textContent || "").trim();
+    // ChatGPT sometimes wraps the only visible answer inside an aria-hidden
+    // subtree while a separate accessibility mirror owns the semantic turn.
+    // Removing chrome from a detached clone can therefore erase a perfectly
+    // visible long-form reply. Prefer the cleaned clone when it retained real
+    // content, otherwise fall back to the connected turn's visible text.
+    const sourceText = cleanedText.length >= Math.min(80, Math.ceil(visibleText.length / 3)) ? cleanedText : visibleText;
+    return sourceText
       .replace(/^\s*(ChatGPT|助手)\s*/i, "")
+      .replace(/^\s*说[：:]\s*/, "")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
   }
@@ -2758,7 +3175,7 @@
     // (send-confirm, request-copy), fall back to default workflow to ensure
     // the complete pipeline executes instead of silently skipping steps.
     const DEFAULT_WF_STEPS = [
-      { action: "upload-material", text: "", timeoutSeconds: 120, enabled: true, autoDetect: true },
+      { action: "upload-material", text: DEFAULT_MATERIAL_PLAN_PROMPT, timeoutSeconds: 120, enabled: true, autoDetect: true },
       { action: "wait-random", text: "", enabled: true, minSeconds: 1, maxSeconds: 5 },
       { action: "wait-plan", text: "", timeoutSeconds: 480, enabled: true, autoDetect: true },
       { action: "send-confirm", text: "1", timeoutSeconds: 20, enabled: true, autoDetect: false },
@@ -3034,6 +3451,10 @@
           const planComplete = Boolean(planResult.responseComplete) || migrationPlanHasCompletionMarker(planText) || planKeywordHit;
           const plannedImageCount = parsePlannedImageCount(planText);
           planDetection = classifyPlanDetectionResult({ validPlan, planComplete, plannedImageCount });
+          if (planDetection.ready && !templateInitialization) {
+            const pageCap = validatePlanPageCap({ plannedImageCount, text: planText, maximum: 10 });
+            if (!pageCap.valid) planDetection = { ready: false, code: pageCap.code };
+          }
         } catch (error) {
           if (!/等待 GPT 回复完成超时/.test(String(error?.message || ""))) throw error;
           planDetection = { ready: false, code: "PLAN_NOT_READY" };
@@ -3050,8 +3471,18 @@
           error.code = "COMPOSER_DRAFT_PENDING";
           throw error;
         }
-        const recoveryText = "请继续处理我上一条已上传的全部附件。先严格按既定格式输出完整逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。";
-        reportWorkbenchProgress(task, "恢复迁移计划", 25, `GPT 未返回有效计划，正在恢复当前帖子（第 ${recovery.nextAttempt}/2 次），不会上传下一套`);
+        const capViolation = /PLAN_PAGE_CAP_EXCEEDED|PLAN_BATCHING_FORBIDDEN/.test(planDetection.code);
+        const recoveryText = capViolation
+          ? "请重写刚才的迁移计划。本套计划和最终成品都最多 10 张；请先完整读取全部素材，再自行筛选、聚类、合并和取舍，只保留 P1-P10 以内。禁止第 11 页，禁止分批，禁止第二批，禁止把剩余素材留到下一批。重写最多 10 页的完整计划，并在结尾等待我回复 1，暂时不要出图。"
+          : "请继续处理我上一条已上传的全部附件。先严格按既定格式输出完整逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。";
+        reportWorkbenchProgress(
+          task,
+          capViolation ? "纠正计划页数" : "恢复迁移计划",
+          25,
+          capViolation
+            ? `检测到计划超过 10 页或提出第二批，正在要求原地重写（第 ${recovery.nextAttempt}/2 次），不会回复 1`
+            : `GPT 未返回有效计划，正在恢复当前帖子（第 ${recovery.nextAttempt}/2 次），不会上传下一套`
+        );
         const previousRecoveryUserTurn = latestUserTurnWrapper();
         await sendComposerText(recoveryText);
         currentPlanPromptTurn = await waitFor(() => {
@@ -3069,6 +3500,11 @@
         if (planDetection.code === "PLAN_NOT_COMPLETE") {
           const error = new Error("迁移计划正文尚未稳定结束；当前帖子已暂停，不发送 1、不上传下一帖");
           error.code = "PLAN_NOT_COMPLETE";
+          throw error;
+        }
+        if (/PLAN_PAGE_CAP_EXCEEDED|PLAN_BATCHING_FORBIDDEN/.test(planDetection.code)) {
+          const error = new Error("GPT 迁移计划仍超过 10 页或提出第二批；当前帖子已暂停，不发送 1、不消耗生图额度、不上传下一套素材");
+          error.code = planDetection.code;
           throw error;
         }
         workflow.planText = planText;
@@ -3277,7 +3713,11 @@
       logTaskConversationEvent("copy-received", { receivedText: workflow.copyText, step: "wait-copy", meta: { copyLength: workflow.copyText.length } });
       // 文案校验
       const copyMinCheck = wfAutoDetect("wait-copy") ? wfParam("wait-copy", "minCopyLength", 300) : 300;
-      if (!isLikelyPublishCopy(workflow.copyText, copyMinCheck)) throw new Error(`没有检测到不少于 ${copyMinCheck} 个可见字符的完整小红书文案，未执行图片下载与打包`);
+      if (!isLikelyPublishCopy(workflow.copyText, copyMinCheck)) {
+        const copyError = new Error(`没有检测到不少于 ${copyMinCheck} 个可见字符的完整小红书文案，未执行图片下载与打包`);
+        copyError.code = "COPY_REQUIRED";
+        throw copyError;
+      }
       workflow.textSubmitted = true;
       workflow.batchId ||= workPackageBatchId();
     }
@@ -3530,6 +3970,7 @@
             plannedImageCount: workflow.plannedImageCount,
             planSubmitted: workflow.planSubmitted,
             imageSubmitted: workflow.imageSubmitted,
+            generatedImageUrls: workflow.generatedImageUrls || [],
             textSubmitted: workflow.textSubmitted,
             batchId: workflow.downloadResult?.batchId || workflow.batchId,
             downloadRoot: workflow.downloadResult?.downloadRoot || options.downloadRoot,
@@ -3549,6 +3990,7 @@
         workflow.planSubmitted ||= Boolean(checkpoint.planSubmitted);
         workflow.planDone ||= Boolean(checkpoint.plannedImageCount && checkpoint.planSubmitted);
         workflow.imageSubmitted ||= Boolean(checkpoint.imageSubmitted);
+        workflow.generatedImageUrls ||= checkpoint.generatedImageUrls || [];
         workflow.textSubmitted ||= Boolean(checkpoint.textSubmitted);
         workflow.copyText ||= String(checkpoint.copyText || "");
         workflow.batchId ||= String(checkpoint.batchId || "");
@@ -4804,9 +5246,40 @@
 
   window.addEventListener("message", (event) => {
     const message = event.data || {};
+    if (message.source === "teambuilding-workbench" && message.type === "tb-workbench-patrol-continue-request") {
+      executePatrolSingleStep({
+        targetUrl: String(message.targetUrl || ""),
+        denylist: Array.isArray(message.denylist) ? message.denylist : [],
+        confirmText: String(message.confirmText || "1"),
+        copyPrompt: String(message.copyPrompt || DEFAULT_PUBLISH_COPY_PROMPT),
+        generationRequestCount: Number(message.generationRequestCount || 0),
+        maximumGenerationRequests: Number(message.maximumGenerationRequests || 5),
+        requestId: String(message.productionRequestId || ""),
+        materialName: String(message.materialName || ""),
+        sourceMaterialPath: String(message.sourceMaterialPath || ""),
+        templateId: String(message.templateId || ""),
+        downloadRoot: String(message.downloadRoot || ""),
+        productRoot: String(message.productRoot || ""),
+        autoArchive: message.autoArchive !== false,
+        inspectOnly: Boolean(message.inspectOnly)
+      }).then((result) => window.postMessage({
+        source: "tb-gpt-production-extension",
+        type: "tb-workbench-patrol-continue-result",
+        requestId: String(message.requestId || ""),
+        ...result
+      }, "*")).catch((error) => window.postMessage({
+        source: "tb-gpt-production-extension",
+        type: "tb-workbench-patrol-continue-result",
+        requestId: String(message.requestId || ""),
+        ok: false,
+        acted: false,
+        error: String(error?.message || error || "巡检单步续接失败")
+      }, "*"));
+      return;
+    }
     if (message.source === "teambuilding-workbench" && message.type === "tb-workbench-patrol-discover-request") {
       discoverPatrolConversations({
-        allowlist: Array.isArray(message.allowlist) ? message.allowlist : [],
+        denylist: Array.isArray(message.denylist) ? message.denylist : [],
         maximumScrolls: Number(message.maximumScrolls || 16)
       }).then((result) => window.postMessage({
         source: "tb-gpt-production-extension",

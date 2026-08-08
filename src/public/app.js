@@ -449,6 +449,25 @@ const GPT_WORKFLOW_MODULES = Object.freeze({
 });
 // 兼容旧代码：保留 GPT_WORKFLOW_ACTIONS 名称
 const GPT_WORKFLOW_ACTIONS = GPT_WORKFLOW_MODULES;
+const GPT_MATERIAL_PLAN_PROMPT = "请完整读取全部附件，不要省略 TXT。本套迁移计划和最终成品都最多 10 张；素材超过 10 张时，必须先全部读取，再自行筛选、聚类、合并和取舍，只规划 P1-P10 以内。禁止第 11 页，禁止分批，禁止第二批，禁止把剩余素材留到下一批。先严格按既定格式输出最多 10 页的逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。";
+const LEGACY_GPT_MATERIAL_PLAN_PROMPTS = new Set([
+  "请读取全部附件，不要省略 TXT。先严格按既定格式输出逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。"
+]);
+function normalizeGptMaterialPlanPrompt(value) {
+  const prompt = String(value || "").trim();
+  return !prompt || LEGACY_GPT_MATERIAL_PLAN_PROMPTS.has(prompt) ? GPT_MATERIAL_PLAN_PROMPT : prompt;
+}
+function normalizeQueuedGptTaskPrompt(task = {}) {
+  if (String(task?.taskType || "") !== "material") return task;
+  const prompt = String(task?.prompt || "");
+  const legacyPrefix = [...LEGACY_GPT_MATERIAL_PLAN_PROMPTS]
+    .find((candidate) => prompt === candidate || prompt.startsWith(`${candidate}\n`));
+  if (!legacyPrefix) return task;
+  return {
+    ...task,
+    prompt: `${GPT_MATERIAL_PLAN_PROMPT}${prompt.slice(legacyPrefix.length)}`
+  };
+}
 const GPT_PUBLISH_COPY_PROMPT = "请只输出一份可直接复制发布的完整小红书文案。第一行直接写实际标题，随后直接写正文，末尾直接写话题标签。不要输出任何解释、开场白、总结，也不要输出“标题”“正文”“话题”“标签”等栏目名或 Markdown 标题。";
 const LEGACY_GPT_COPY_PROMPTS = new Set(["给我一份小红书文案"]);
 function normalizeGptCopyPrompt(value) {
@@ -463,7 +482,7 @@ function moduleHasProp(action, prop) {
 }
 function defaultGptWorkflowSteps() {
   return [
-    { action: "upload-material", text: "请读取全部附件，不要省略 TXT。先严格按既定格式输出逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。", timeoutSeconds: 120, enabled: true, autoDetect: true },
+    { action: "upload-material", text: GPT_MATERIAL_PLAN_PROMPT, timeoutSeconds: 120, enabled: true, autoDetect: true },
     { action: "wait-random", text: "", enabled: true, minSeconds: 1, maxSeconds: 5 },
     { action: "wait-plan", text: "", timeoutSeconds: 480, enabled: true, autoDetect: true },
     { action: "send-confirm", text: "1", timeoutSeconds: 20, enabled: true, autoDetect: false },
@@ -491,7 +510,9 @@ function normalizeGptWorkflowSteps(value) {
     const rawText = String(step?.text ?? "").trim();
     const text = action === "request-copy"
       ? normalizeGptCopyPrompt(rawText || defaultStep?.text)
-      : ((!rawText && defaultStep?.text) ? defaultStep.text : rawText);
+      : action === "upload-material"
+        ? normalizeGptMaterialPlanPrompt(rawText || defaultStep?.text)
+        : ((!rawText && defaultStep?.text) ? defaultStep.text : rawText);
     // 从模块定义读取可调参数的默认值
     const moduleDef = GPT_WORKFLOW_MODULES[action];
     const moduleParams = moduleDef?.params || {};
@@ -763,7 +784,7 @@ function renderGptModeWorkflow() {
       return `<label class="gpt-workflow-param" title="${escapeHtml(pdef.desc || "")}"><span>${escapeHtml(pdef.label)}</span><input type="number" data-workflow-field="${pk}" min="${pdef.min ?? 0}" max="${pdef.max ?? 9999}" value="${val}" aria-label="${escapeHtml(pdef.label)}" /></label>`;
     }).join("");
     const promptField = hasText
-      ? `<div class="gpt-workflow-text-cell">${hasDefaultPrompt ? `<select class="gpt-workflow-prompt-preset" data-workflow-field="textPreset" data-action="${step.action}" title="切换提示词来源"><option value="custom"${isUsingDefault ? "" : " selected"}>自定义</option><option value="default"${isUsingDefault ? " selected" : ""}>默认</option></select>` : ""}<textarea data-workflow-field="text" class="gpt-workflow-prompt-editor" rows="1" placeholder="${step.action === "upload-material" ? "点击编辑上传提示词" : "点击编辑发送文字"}" aria-label="${escapeHtml(`第${index + 2}个环节${step.action === "upload-material" ? "上传提示词" : "发送文字"}`)}">${escapeHtml(step.text)}</textarea><button type="button" class="gpt-workflow-prompt-edit-btn" data-workflow-prompt-edit title="点击放大并编辑提示词">编辑提示词</button></div>`
+      ? `<div class="gpt-workflow-text-cell gpt-workflow-text-cell-simple">${hasDefaultPrompt ? `<select class="gpt-workflow-prompt-preset gpt-workflow-source-data" data-workflow-field="textPreset" data-action="${step.action}" tabindex="-1" aria-hidden="true"><option value="custom"${isUsingDefault ? "" : " selected"}>自定义</option><option value="default"${isUsingDefault ? " selected" : ""}>默认</option></select>` : ""}<textarea data-workflow-field="text" class="gpt-workflow-prompt-editor gpt-workflow-prompt-data" rows="1" tabindex="-1" aria-hidden="true">${escapeHtml(step.text)}</textarea><span class="gpt-workflow-prompt-summary">${isUsingDefault ? "默认提示词" : "自定义提示词"} · ${String(step.text || "").length} 字</span><button type="button" class="gpt-workflow-prompt-edit-btn" data-workflow-prompt-edit title="查看并编辑真正发送给 GPT 的内容">查看 / 编辑</button></div>`
       : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`;
     const timingField = hasRandomRange
       ? `<label class="gpt-workflow-timeout gpt-workflow-random-inline"><input type="number" data-workflow-field="minSeconds" min="1" max="3600" value="${step.minSeconds}" aria-label="最小秒数" /><span>~</span><input type="number" data-workflow-field="maxSeconds" min="5" max="3600" value="${step.maxSeconds}" aria-label="最大秒数" /><span>秒</span></label>`
@@ -844,20 +865,73 @@ function loadGptPatrolSettings() {
     return value && typeof value === "object" ? value : {};
   } catch { return {}; }
 }
-function patrolAllowlist(accountId = activeGptAccountId) {
+function patrolDenylist(accountId = activeGptAccountId) {
   const settings = loadGptPatrolSettings();
-  const values = settings?.[String(accountId || "")]?.allowlist;
+  const values = settings?.[String(accountId || "")]?.denylist;
   return Array.isArray(values) ? values.map((value) => String(value || "").trim()).filter(Boolean) : [];
 }
-function savePatrolAllowlist(values, accountId = activeGptAccountId) {
+function savePatrolDenylist(values, accountId = activeGptAccountId) {
   const settings = loadGptPatrolSettings();
   settings[String(accountId || "")] = {
     ...(settings[String(accountId || "")] || {}),
-    allowlist: [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))],
+    denylist: [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))],
     updatedAt: new Date().toISOString()
   };
   localStorage.setItem(GPT_PATROL_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-  return settings[String(accountId || "")].allowlist;
+  return settings[String(accountId || "")].denylist;
+}
+function patrolCursor(accountId = activeGptAccountId) {
+  const settings = loadGptPatrolSettings();
+  return Math.max(0, Number(settings?.[String(accountId || "")]?.cursor || 0));
+}
+function savePatrolCursor(cursor, accountId = activeGptAccountId) {
+  const settings = loadGptPatrolSettings();
+  const key = String(accountId || "");
+  settings[key] = {
+    ...(settings[key] || {}),
+    cursor: Math.max(0, Number(cursor || 0)),
+    updatedAt: new Date().toISOString()
+  };
+  localStorage.setItem(GPT_PATROL_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  return settings[key].cursor;
+}
+async function preparePatrolTaskNavigation(task, accountId = activeGptAccountId) {
+  if (normalizeGptProductionMode(gptAutoSettings.mode) !== "patrol") return true;
+  if (!task || !window.TBGptPatrolScheduler || !window.gptWorkbench?.continuePatrolConversation) return false;
+  if (task.patrolConversationUrl) {
+    task.navigationUrl = task.patrolConversationUrl;
+    return true;
+  }
+  const discovery = await window.gptWorkbench.discoverPatrolConversations(accountId, {
+    denylist: patrolDenylist(accountId),
+    maximumScrolls: 20
+  }).catch(() => null);
+  const eligible = window.TBGptPatrolScheduler.eligibleConversations(discovery?.conversations || []);
+  const ordered = window.TBGptPatrolScheduler.orderedEligibleConversations(eligible, patrolCursor(accountId));
+  for (const candidate of ordered) {
+    updateGptTestQueueStatus(`正在核对多对话：${candidate.title}`);
+    const probe = await window.gptWorkbench.continuePatrolConversation(accountId, {
+      targetUrl: candidate.url,
+      denylist: patrolDenylist(accountId),
+      inspectOnly: true
+    }).catch(() => null);
+    if (!probe?.ok) continue;
+    const availability = window.TBGptPatrolScheduler.patrolProbeAvailability(probe);
+    if (!availability.available) continue;
+    task.patrolConversationUrl = candidate.url;
+    task.patrolConversationTitle = candidate.title;
+    task.navigationUrl = candidate.url;
+    const assignedIndex = eligible.findIndex((item) => item.url === candidate.url);
+    savePatrolCursor(window.TBGptPatrolScheduler.nextPatrolCursor(assignedIndex, eligible.length), accountId);
+    persistGptQueue();
+    return true;
+  }
+  task._status = "paused";
+  task._stage = "等待可用模板对话";
+  task._errorCode = "PATROL_NO_AVAILABLE_CONVERSATION";
+  task._error = "当前所有“模板/母版”对话都在处理中、待人工复核或尚未闭环；未上传下一套素材";
+  persistGptQueue();
+  return false;
 }
 function renderGptPatrolDiscovery() {
   const list = $("#gptPatrolConversationList");
@@ -866,14 +940,15 @@ function renderGptPatrolDiscovery() {
     ? gptPatrolDiscovery.conversations.filter((item) => item.titleMatched)
     : [];
   if (!conversations.length) {
-    list.innerHTML = '<div class="gpt-patrol-empty">尚未发现标题包含“模板”的历史对话。</div>';
+    list.innerHTML = '<div class="gpt-patrol-empty">尚未发现标题包含“模板”或“母版”的历史对话。</div>';
     return;
   }
   list.innerHTML = conversations.map((item, index) => `
     <article class="gpt-patrol-conversation ${item.eligible ? "eligible" : ""}">
       <div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.url)}</small>${item.currentState?.patrolState?.label ? `<small>当前对话：${escapeHtml(item.currentState.patrolState.label)}</small>` : ""}</div>
-      <span>${item.currentState?.patrolState?.label ? escapeHtml(item.currentState.patrolState.label) : (item.eligible ? "已准入" : "仅发现")}</span>
-      <button type="button" data-patrol-toggle="${index}">${item.eligible ? "取消准入" : "允许续接"}</button>
+      <span>${item.currentState?.patrolState?.label ? escapeHtml(item.currentState.patrolState.label) : (item.eligible ? "自动参与" : "已排除")}</span>
+      ${item.eligible ? `<button type="button" data-patrol-continue="${index}">单步续接</button>` : ""}
+      <button type="button" data-patrol-toggle="${index}">${item.explicitlyExcluded ? "取消手动排除" : "手动排除"}</button>
     </article>`).join("");
 }
 function renderGptPatrolSettings(modeKey = activeSettingsModeKey()) {
@@ -881,8 +956,8 @@ function renderGptPatrolSettings(modeKey = activeSettingsModeKey()) {
   if (!group) return;
   group.hidden = modeKey !== "patrol";
   if (group.hidden) return;
-  const input = $("#gptPatrolAllowlist");
-  if (input) input.value = patrolAllowlist().join("\n");
+  const input = $("#gptPatrolDenylist");
+  if (input) input.value = patrolDenylist().join("\n");
   renderGptPatrolDiscovery();
 }
 async function discoverCurrentAccountPatrolConversations() {
@@ -896,14 +971,14 @@ async function discoverCurrentAccountPatrolConversations() {
   if (status) status.textContent = `正在只读扫描 ${activeGptAccount()?.name || activeGptAccountId}…`;
   try {
     const result = await window.gptWorkbench.discoverPatrolConversations(activeGptAccountId, {
-      allowlist: patrolAllowlist(),
+      denylist: patrolDenylist(),
       maximumScrolls: 20
     });
     if (!result) throw new Error("GPT 页面尚未加载巡检扩展");
     if (result.error) throw new Error(result.error);
     gptPatrolDiscovery = result;
     renderGptPatrolDiscovery();
-    if (status) status.textContent = `发现 ${result.discoveredCount || 0} 个对话，其中模板 ${result.templateCount || 0} 个、已准入 ${result.eligibleCount || 0} 个；未发送任何消息`;
+    if (status) status.textContent = `发现 ${result.discoveredCount || 0} 个对话，其中“模板/母版” ${result.templateCount || 0} 个、自动参与 ${result.eligibleCount || 0} 个；含“游戏”和手动排除项不会参与`;
     return result;
   } catch (error) {
     if (status) status.textContent = `扫描失败：${error.message}`;
@@ -911,6 +986,76 @@ async function discoverCurrentAccountPatrolConversations() {
   } finally {
     if (button) button.disabled = false;
   }
+}
+function recordPatrolPackageResult(item, result = {}) {
+  const packagePath = String(result?.packagePath || result?.packageResult?.packagePath || "").trim();
+  if (!packagePath) return null;
+  const conversationUrl = String(item?.url || result?.snapshot?.candidate?.url || "").trim();
+  const requestId = String(result?.productionRequestId || `patrol-package:${conversationUrl || packagePath}`);
+  const existing = gptProductionHistory.find((entry) => entry.requestId === requestId) || {};
+  const finishedAt = new Date().toISOString();
+  const completed = {
+    ...existing,
+    id: requestId,
+    requestId,
+    accountId: String(activeGptAccountId || existing.accountId || ""),
+    accountName: String(gptAccounts.find((account) => account.id === activeGptAccountId)?.name || existing.accountName || "当前账号窗口"),
+    name: String(item?.title || existing.name || "巡检续接作品"),
+    status: "completed",
+    stage: "作品归档完成",
+    percent: 100,
+    finishedAt,
+    updatedAt: finishedAt,
+    packagePath,
+    productPath: packagePath,
+    packageValid: true,
+    downloadedImages: Number(result?.downloadedImages || existing.downloadedImages || 0),
+    copyTextLength: Number(result?.copyTextLength || existing.copyTextLength || 0),
+    conversationUrl,
+    error: ""
+  };
+  gptProductionHistory = gptProductionHistory.filter((entry) => entry.requestId !== requestId);
+  gptProductionHistory.unshift(completed);
+  gptProductionHistory = gptProductionHistory.slice(0, 200);
+  localStorage.setItem(GPT_HISTORY_STORAGE_KEY, JSON.stringify(gptProductionHistory));
+  renderGptProductionHistory();
+  return completed;
+}
+window.TBRecordPatrolPackageResult = recordPatrolPackageResult;
+
+async function continueCurrentAccountPatrolConversation(item) {
+  const status = $("#gptPatrolDiscoverStatus");
+  if (!item?.eligible || !item?.titleMatched || item?.excluded) {
+    if (status) status.textContent = "该对话标题不含“模板/母版”，或已被“游戏/手动排除”规则拦截";
+    return null;
+  }
+  if (gptAutoRunning) {
+    if (status) status.textContent = "当前已有作品在运行，请等安全检查点后再执行巡检单步";
+    return null;
+  }
+  if (!window.gptWorkbench?.continuePatrolConversation) {
+    if (status) status.textContent = "当前桌面版本不支持单步续接，请重启加载新版";
+    return null;
+  }
+  const profile = gptModeProfiles.patrol || {};
+  if (status) status.textContent = `正在打开“${item.title}”并重新核验阶段；本次最多执行一个动作…`;
+  const result = await window.gptWorkbench.continuePatrolConversation(activeGptAccountId, {
+    targetUrl: item.url,
+    denylist: patrolDenylist(),
+    confirmText: profile.confirmText || "1",
+    copyPrompt: profile.copyPrompt || GPT_PUBLISH_COPY_PROMPT,
+    maximumGenerationRequests: 5
+  }).catch((error) => ({ ok: false, acted: false, error: error.message }));
+  if (!result?.ok) {
+    if (status) status.textContent = `单步续接失败：${result?.error || result?.reason || "未知错误"}`;
+    return result;
+  }
+  recordPatrolPackageResult(item, result);
+  if (status) status.textContent = result.acted
+    ? `已安全执行 1 个动作：${GPT_WORKFLOW_ACTIONS[result.action]?.label || result.action}；不会自动执行第二步`
+    : `本次未操作：${result.reason || "当前阶段只读"}`;
+  await discoverCurrentAccountPatrolConversations();
+  return result;
 }
 function renderGptModeProfile() {
   const key = activeSettingsModeKey();
@@ -1170,6 +1315,11 @@ function restoreGptQueue() {
   try {
     const saved = JSON.parse(localStorage.getItem(GPT_QUEUE_STORAGE_KEY) || "null");
     if (!saved || !Array.isArray(saved.tasks) || !saved.tasks.length) return;
+    const originalPrompts = saved.tasks.map((task) => String(task?.prompt || ""));
+    saved.tasks = saved.tasks.map((task) => normalizeQueuedGptTaskPrompt(task));
+    if (saved.tasks.some((task, index) => String(task?.prompt || "") !== originalPrompts[index])) {
+      localStorage.setItem(GPT_QUEUE_STORAGE_KEY, JSON.stringify(saved));
+    }
     // 0.14.5 could stop after the first image while the same assistant
     // response was still adding more images. Rewind only that exact legacy
     // signature so 0.14.6 can recover the already-finished reply instead of
@@ -1368,6 +1518,18 @@ async function hydrateGptBrowserProfiles() {
     activeGptAccountId = gptAccounts.some((profile) => profile.id === state.activeId && !profile.hidden)
       ? state.activeId
       : gptAccounts.find((profile) => !profile.hidden)?.id || gptAccounts[0]?.id || "account-1";
+    // The active browser profile owns its production mode. Restore that mode
+    // during startup hydration as well as on manual tab switches; otherwise
+    // the UI can reopen in the last global mode and immediately snap back
+    // after the first account interaction.
+    const restoredAccount = gptAccounts.find((profile) => profile.id === activeGptAccountId);
+    const restoredMode = restoredAccount?.mode ? normalizeGptProductionMode(restoredAccount.mode) : String();
+    if (restoredMode && restoredMode !== normalizeGptProductionMode(gptAutoSettings.mode)) {
+      gptAutoSettings.mode = restoredMode;
+      applyGptModeProfile(restoredMode);
+      localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
+      renderGptAutoSettings();
+    }
     saveGptAccounts();
     renderGptAccountTabs();
     renderGptBrowserManager();
@@ -3141,11 +3303,26 @@ async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8
       }
     }
   }
+  const checkpointHistory = await api("/api/gpt-production/history").catch(() => null);
+  const recoverablePaths = new Set((window.TBGptAccountRotation?.recoverableMaterialPaths?.(
+    checkpointHistory?.items || [],
+    Date.now()
+  ) || []).map(normalizeGptAttachmentPath));
+  const completedMaterialKeys = new Set(window.TBGptAccountRotation?.recentSuccessfulMaterialKeys?.(
+    checkpointHistory?.items || [],
+    Date.now()
+  ) || []);
   const entries = (dashboard?.materials?.categories || [])
     .filter((category) => !isHiddenMaterialPath(category.path))
     .flatMap((category) => (category.items || [])
       .filter((item) => {
         if (isHiddenMaterialPath(item.path)) return false;
+        // A recent checkpoint owns this source until it is packaged or expires.
+        // This prevents another account or a restart from spending quota on the
+        // same material while the recovery path can still close it.
+        if (recoverablePaths.has(normalizeGptAttachmentPath(item.path))) return false;
+        const materialKey = window.TBGptAccountRotation?.materialIdentityKey?.(item.path);
+        if (materialKey && completedMaterialKeys.has(materialKey)) return false;
         // A post is a real production unit only when the scanner found both
         // images and a TXT reference. Never enqueue an empty parent folder or
         // an in-progress directory merely because it has a name.
@@ -3175,7 +3352,10 @@ async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8
   gptTestQueue = [];
   gptTestQueueIndex = 0;
   renderGptTestMaterials();
-  showWorkbenchAssistantBubble(`${label}已选 ${entries.length} 个素材，按使用次数从低到高排队。`, { duration: 0 });
+  const recoveryNote = recoverablePaths.size
+    ? `；另跳过 ${recoverablePaths.size} 个在途素材，避免跨账号重复消耗额度`
+    : "";
+  showWorkbenchAssistantBubble(`${label}已选 ${entries.length} 个素材，按使用次数从低到高排队${recoveryNote}。`, { duration: 0 });
   return true;
 }
 
@@ -3389,7 +3569,7 @@ function buildGptTestTask(entry, template = null) {
             : masterWithExtra,
         "本次附件全部是待迁移素材和 TXT 参考内容，不是新模板。",
         `当前素材文件夹：${entry.item.name}`,
-        "请读取全部附件，不要省略 TXT。先严格按既定格式输出逐页迁移计划，并在结尾等待我回复 1，暂时不要出图。",
+        GPT_MATERIAL_PLAN_PROMPT,
         extra ? `本次补充要求：\n${extra}` : ""
       ].filter(Boolean).join("\n\n");
   return {
@@ -4279,6 +4459,14 @@ async function switchGptAccount(accountId, options = {}) {
   saveGptAccounts();
   renderGptAccountTabs();
   gptLastShowSignature = "";
+  // A resize/restore from the previous account can still own the shared show
+  // promise. Await it before attaching the newly selected account; otherwise
+  // the tab label changes while the old BrowserView stays attached and the
+  // new account remains permanently reported as loaded=false.
+  if (gptShowInFlight) {
+    try { await gptShowInFlight; } catch {}
+    gptLastShowSignature = String();
+  }
   await showEmbeddedGptView();
   // Refresh the selected account before painting its assistant summary. The
   // profiles are isolated; do not briefly reuse the previous account's
@@ -4632,14 +4820,14 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   });
   showWorkbenchAssistantBubble(resumeCheckpoint.resuming
     ? `${account.name} 正在从当前素材的网页检查点继续，不会重复上传附件。`
-    : `${account.name} 已上传本帖 ${uploadImages} 张图片，等待 GPT 确认附件。`, { duration: 3600 });
+    : `${account.name} 正在上传本帖 ${uploadImages} 张图片，等待网页确认附件。`, { duration: 3600 });
   // Persist this before entering the bridge. A restart may safely resume from
   // the web stage only after this marker is true; it must never upload a
   // second copy of a post because the renderer disappeared mid-request.
   if (!resumeCheckpoint.resuming) task._submittedToGpt = false;
   persistGptQueue();
-  if (!resumeCheckpoint.resuming) recordGptQuotaConsumption(task, task.quotaAccountId, "upload");
   if (task.taskType === "material" && !resumeCheckpoint.resuming) await ensureGptTaskQuota(task, task.quotaAccountId);
+  if (!resumeCheckpoint.resuming) recordGptQuotaConsumption(task, task.quotaAccountId, "upload");
   if (!resumeCheckpoint.resuming && task.navigationUrl) {
     await window.gptWorkbench.navigate("url", account.id, task.navigationUrl);
     await new Promise((resolve) => setTimeout(resolve, 1800));
@@ -4730,6 +4918,7 @@ async function runGptTaskOnBrowser(task, account, tracker) {
     }
     persistGptQueue();
     const failure = new Error(`${account.name}：${task._error}`);
+    failure.code = task._errorCode;
     failure.gptLimit = actualLimit;
     failure.lowOutput = lowOutput;
     throw failure;
@@ -4815,6 +5004,17 @@ function persistGptRotationRun(patch = {}) {
   });
 }
 
+async function waitForGptProductionReadiness(accountId, timeoutMs = 12_000) {
+  const deadline = Date.now() + Math.max(500, Number(timeoutMs) || 12_000);
+  let readiness = null;
+  do {
+    readiness = await window.gptWorkbench.status(accountId).catch(() => null);
+    if (readiness?.productionReady || readiness?.authenticationRequired) return readiness;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  } while (Date.now() < deadline);
+  return readiness;
+}
+
 async function sendRotatingWindowGptTasks(options = {}) {
   if (gptAutoRunning) return;
   const groups = gptTaskGroupsForMultiWindow();
@@ -4864,6 +5064,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
     currentTask: "",
     completed: 0,
     failed: 0,
+    consecutiveFailures: 0,
     nextProbeAt: null,
     lastError: ""
   }]));
@@ -4946,6 +5147,53 @@ async function sendRotatingWindowGptTasks(options = {}) {
       if (activeGptAccountId !== account.id) {
         await switchGptAccount(account.id, { silent: true, resumeWindow: false });
       }
+      const readiness = await waitForGptProductionReadiness(account.id);
+      if (!readiness?.productionReady) {
+        blockedAccounts.add(account.id);
+        state.status = readiness?.authenticationRequired ? 'login-required' : 'not-ready';
+        state.lastError = Array.isArray(readiness?.notReadyReasons) && readiness.notReadyReasons.length
+          ? readiness.notReadyReasons.join('; ')
+          : 'GPT 页面、输入框或生产扩展尚未就绪';
+        state.currentTask = '';
+        accountCursor = (accountCursor + 1) % accounts.length;
+        const next = nextRotationAccount(accounts, accountCursor, blockedAccounts);
+        persistGptRotationRun({ workerState, currentAccountId: next.account?.id || account.id });
+        if (next.account) {
+          showWorkbenchAssistantBubble(`${account.name} 尚未就绪，当前素材已保留；正在切换到 ${next.account.name}。`, { duration: 3600, tone: 'warning' });
+          continue;
+        }
+        gptQueuePaused = true;
+        gptAutoPaused = true;
+        persistGptRotationRun({ status: 'paused-account-readiness', currentAccountId: account.id, workerState });
+        updateGptTestQueueStatus('所有轮换账号都尚未就绪；当前素材已保留，没有跳过或上传下一套。');
+        break;
+      }
+      // A ready composer can still belong to an unfinished older work (for
+      // example, a plan waiting for reply 1). Never stack the new material on
+      // that conversation. In rotation mode keep the task and try the next
+      // eligible account; a submitted checkpoint is allowed to resume its own
+      // conversation instead of being mistaken for foreign work.
+      if (task._submittedToGpt !== true) {
+        const admission = await window.gptWorkbench.inspectStatus(account.id).catch(() => null);
+        if (admission && admission.canInjectNext === false) {
+          blockedAccounts.add(account.id);
+          state.status = 'conversation-busy';
+          state.lastError = admission?.patrolState?.label || admission?.stage || '当前对话仍有未闭环作品';
+          state.currentTask = String();
+          accountCursor = (accountCursor + 1) % accounts.length;
+          const next = nextRotationAccount(accounts, accountCursor, blockedAccounts);
+          persistGptRotationRun({ workerState, currentAccountId: next.account?.id || account.id });
+          if (next.account) {
+            showWorkbenchAssistantBubble(`${account.name} 当前对话仍有未闭环作品；新素材保持原位，切换到 ${next.account.name}。`, { duration: 3600, tone: 'warning' });
+            continue;
+          }
+          gptQueuePaused = true;
+          gptAutoPaused = true;
+          persistGptRotationRun({ status: 'paused-conversation-busy', currentAccountId: account.id, workerState });
+          updateGptTestQueueStatus('所有轮换账号的当前对话都仍有未闭环作品；任务停在当前素材，没有覆盖任何对话。');
+          break;
+        }
+      }
       persistGptRotationRun({ workerState, currentAccountId: account.id });
       updateGptTestQueueStatus(`${account.name} 正在处理第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 帖：${task.name || "当前素材"}`);
       try {
@@ -4960,6 +5208,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
         if (task.taskType === "template-init" && task.templateId) readyTemplates.add(`${account.id}:${task.templateId}`);
         if (task.taskType === "material" && task.templateId) readyTemplates.add(`${account.id}:${task.templateId}`);
         state.completed += 1;
+        state.consecutiveFailures = 0;
         state.status = "running";
         state.currentTask = "";
         gptTestQueueIndex += 1;
@@ -4988,6 +5237,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
         persistGptQueue();
       } catch (error) {
         const message = String(task._error || error?.message || "未知错误");
+        const failureCode = String(task._errorCode || error?.code || '');
         state.lastError = message.slice(0, 500);
         state.currentTask = "";
         if (error?.gptLimit || isActualGptLimitMessage(message)) {
@@ -5011,7 +5261,28 @@ async function sendRotatingWindowGptTasks(options = {}) {
             : "所有账号窗口已触顶；轮换已暂停，等待下一次真实额度探测");
           break;
         }
-        if (integrityBoundaryCodes.has(String(task._errorCode || error?.code || ""))) {
+        if (isTransientGptWindowFailure({ code: failureCode, message })) {
+          state.failed += 1;
+          state.consecutiveFailures = Number(state.consecutiveFailures || 0) + 1;
+          state.status = 'not-ready';
+          blockedAccounts.add(account.id);
+          resetGptTaskForRotation(task, message);
+          accountCursor = (accountCursor + 1) % accounts.length;
+          const next = nextRotationAccount(accounts, accountCursor, blockedAccounts);
+          if (next.account) {
+            persistGptRotationRun({ workerState, currentAccountId: next.account.id });
+            showWorkbenchAssistantBubble(`${account.name} 暂时通信失败，当前素材已保留；切换到 ${next.account.name} 继续同一任务。`, { duration: 3600, tone: 'warning' });
+            persistGptQueue();
+            continue;
+          }
+          gptQueuePaused = true;
+          gptAutoPaused = true;
+          persistGptRotationRun({ status: 'paused-account-readiness', currentAccountId: account.id, workerState });
+          persistGptQueue();
+          updateGptTestQueueStatus('所有轮换账号都暂时不可用；已停在当前素材，没有跳过队列。');
+          break;
+        }
+        if (integrityBoundaryCodes.has(failureCode)) {
           state.status = "paused";
           task._status = "paused";
           gptQueuePaused = true;
@@ -5027,12 +5298,20 @@ async function sendRotatingWindowGptTasks(options = {}) {
           showWorkbenchAssistantBubble(`${account.name} 当前窗口存在未发送内容；已停在当前帖子，清理后可继续，不会丢素材。`, { duration: 0, tone: "warning" });
           break;
         }
-        state.status = "failed";
+        // Unknown failures are not proof that the material is bad. Stop on
+        // the current item so an account/bridge problem cannot burn through
+        // the queue and produce a false successful run.
+        state.status = 'failed';
         state.failed += 1;
-        task._status = "skipped";
-        gptTestQueueIndex += 1;
-        showWorkbenchAssistantBubble(`${task.name || "当前素材"} 失败，已跳过并继续多账号全自动下一帖。`, { duration: 4200, tone: "warning" });
+        state.consecutiveFailures = Number(state.consecutiveFailures || 0) + 1;
+        task._status = 'paused';
+        gptQueuePaused = true;
+        gptAutoPaused = true;
+        persistGptRotationRun({ status: 'paused-unknown-failure', currentAccountId: account.id, workerState });
         persistGptQueue();
+        updateGptTestQueueStatus(`${account.name} 当前任务失败，已停在本素材；不会自动跳到下一套。`);
+        showWorkbenchAssistantBubble(`${task.name || '当前素材'} 未完成，已安全暂停并保留现场。`, { duration: 0, tone: 'warning' });
+        break;
       }
     }
     const pending = gptTestQueue.filter((task) => !["completed", "skipped"].includes(task._status));
@@ -5041,7 +5320,10 @@ async function sendRotatingWindowGptTasks(options = {}) {
       persistGptRotationRun({ status: "completed", completed: tracker.completed, failed: tracker.failed, workerState, finishedAt: new Date().toISOString(), pending: [] });
       updateGptTestQueueStatus(`多账号全自动完成：成功 ${tracker.completed} 套，失败/跳过 ${tracker.failed} 套`);
     } else if (gptAutoPaused) {
-      persistGptRotationRun({ status: "paused", workerState, pending: pending.map((task) => task.requestId) });
+      const pausedStatus = String(gptMultiRunState?.status || '').startsWith('paused-')
+        ? gptMultiRunState.status
+        : 'paused';
+      persistGptRotationRun({ status: pausedStatus, workerState, pending: pending.map((task) => task.requestId) });
     }
   } finally {
     gptAutoRunning = false;
@@ -5315,6 +5597,11 @@ async function sendNextGptTestTask(options = {}) {
       const task = gptTestQueue[gptTestQueueIndex];
       hydrateGptTaskFromMaterialTree(task);
       task._startedAt ||= new Date().toISOString();
+      if (!await preparePatrolTaskNavigation(task, runAccountId)) {
+        const patrolError = new Error(task._error || "当前没有可安全注入素材的模板对话");
+        patrolError.code = "PATROL_NO_AVAILABLE_CONVERSATION";
+        throw patrolError;
+      }
       gptLastFailedStage = "";
       gptLastFailedPercent = 0;
       const reattachOnResume = resuming && shouldReattachGptTaskOnResume(task);
@@ -5388,7 +5675,7 @@ async function sendNextGptTestTask(options = {}) {
           expectedAttachments: uploadImages,
           uploadedAttachments: 0
         });
-        showWorkbenchAssistantBubble(`${runAccountName} 已上传本帖 ${uploadImages} 张图片，等待 GPT 出计划。`, { duration: 3600 });
+        showWorkbenchAssistantBubble(`${runAccountName} 正在上传本帖 ${uploadImages} 张图片，等待网页确认附件。`, { duration: 3600 });
         persistGptQueue();
         // Semi-auto mode: pass autoConfirm=false so the extension stops after
         // the plan is generated, waiting for the user to review and confirm.
@@ -8493,7 +8780,10 @@ function syncAssistantSettingsControls() {
   const values = {
     assistantCatVisible: assistantSettings.catVisible,
     assistantNotificationsEnabled: assistantSettings.notificationsEnabled,
+    assistantBubblePinned: assistantSettings.bubblePinned,
     assistantMotionEnabled: assistantSettings.motionEnabled,
+    assistantDetached: assistantSettings.detached,
+    assistantAlwaysOnTop: assistantSettings.alwaysOnTop,
     assistantCurrentDurationSeconds: assistantSettings.currentDurationMs / 1000,
     assistantOtherDurationSeconds: assistantSettings.otherDurationMs / 1000,
     assistantOtherMaxPerBatch: assistantSettings.otherMaxPerBatch
@@ -8504,6 +8794,16 @@ function syncAssistantSettingsControls() {
     if (input.type === "checkbox") input.checked = Boolean(value);
     else input.value = String(value);
   });
+  const alwaysOnTop = $("#assistantAlwaysOnTop");
+  if (alwaysOnTop) alwaysOnTop.disabled = !assistantSettings.detached;
+}
+
+function assistantBubbleShouldBeVisible() {
+  return assistantSettings.notificationsEnabled
+    && assistantSettings.catVisible
+    && Date.now() >= assistantMuteUntil
+    && !assistantChatOpen
+    && (assistantNoticeActive || assistantSettings.bubblePinned !== false);
 }
 
 function applyAssistantSettings(input = {}, { persist = true } = {}) {
@@ -8512,10 +8812,10 @@ function applyAssistantSettings(input = {}, { persist = true } = {}) {
   syncAssistantSettingsControls();
   const { launcher, bubble } = assistantElements();
   if (launcher) launcher.hidden = !assistantSettings.catVisible;
-  if (bubble && (!assistantSettings.notificationsEnabled || !assistantSettings.catVisible)) bubble.hidden = true;
+  if (bubble) bubble.hidden = !assistantBubbleShouldBeVisible();
   window.gptWorkbench?.updateAssistant?.({
     message: lastAssistantBubbleMessage || assistantPersistentMessage,
-    bubbleVisible: assistantSettings.notificationsEnabled && assistantNoticeActive && !assistantChatOpen,
+    bubbleVisible: assistantBubbleShouldBeVisible(),
     catVisible: assistantSettings.catVisible,
     settings: assistantSettings
   }).catch(() => {});
@@ -8550,10 +8850,10 @@ function presentNextAssistantNotice() {
   const entry = assistantNoticeQueue.shift();
   if (!entry || !assistantSettings.notificationsEnabled || !assistantSettings.catVisible || Date.now() < assistantMuteUntil) {
     assistantNoticeActive = false;
-    if (bubble) bubble.hidden = true;
+    if (bubble) bubble.hidden = !assistantBubbleShouldBeVisible();
     window.gptWorkbench?.updateAssistant?.({
       message: entry?.message || lastAssistantBubbleMessage,
-      bubbleVisible: false,
+      bubbleVisible: assistantBubbleShouldBeVisible(),
       catVisible: assistantSettings.catVisible,
       settings: assistantSettings
     }).catch(() => {});
@@ -8581,10 +8881,10 @@ function presentNextAssistantNotice() {
       presentNextAssistantNotice();
       return;
     }
-    bubble.hidden = true;
+    bubble.hidden = !assistantBubbleShouldBeVisible();
     window.gptWorkbench?.updateAssistant?.({
       message: entry.message,
-      bubbleVisible: false,
+      bubbleVisible: assistantBubbleShouldBeVisible(),
       catVisible: assistantSettings.catVisible,
       settings: assistantSettings
     }).catch(() => {});
@@ -8826,6 +9126,7 @@ function muteWorkbenchAssistant(minutes) {
   assistantMuteTimer = window.setTimeout(() => {
     assistantMuteUntil = 0;
     localStorage.removeItem("tb-workbench-assistant-muted-until");
+    applyAssistantSettings({}, { persist: false });
   }, Math.max(1000, assistantMuteUntil - Date.now()));
   openWorkbenchAssistantLog(false);
   const muteMenu = $("#workbenchAssistantMuteMenu");
@@ -8875,7 +9176,7 @@ async function toggleWorkbenchAssistant(open) {
     panel.hidden = true;
     window.gptWorkbench?.updateAssistant?.({
       message: assistantPersistentMessage || lastAssistantBubbleMessage,
-      bubbleVisible: assistantNoticeActive && assistantSettings.notificationsEnabled,
+      bubbleVisible: assistantBubbleShouldBeVisible(),
       catVisible: assistantSettings.catVisible,
       settings: assistantSettings
     }).catch(() => {});
@@ -11828,6 +12129,11 @@ function bindEvents() {
     if (currentAccount) {
       currentAccount.mode = key;
       saveGptAccounts();
+      // Electron owns the durable browser-profile list and rehydrates it on
+      // account switches/restarts. Persist the per-window mode there too;
+      // otherwise the next hydration silently replaces the local mode and a
+      // global rotation may wake with only one participating account.
+      window.gptWorkbench?.saveProfile?.({ ...currentAccount, active: false }).catch(() => {});
     }
     renderGptAutoSettings();
     showWorkbenchAssistantBubble(`已切换到“${gptModeProfiles[key]?.name || GPT_MODE_DEFINITIONS[key].defaultName}”。新任务会绑定当前账号窗口。`, { duration: 3600 });
@@ -11935,41 +12241,45 @@ function bindEvents() {
       updateModeQuickTabs(key);
     });
   });
-  $("#gptPatrolAllowlist")?.addEventListener("change", (event) => {
+  $("#gptPatrolDenylist")?.addEventListener("change", (event) => {
     const values = String(event.currentTarget.value || "").split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
-    savePatrolAllowlist(values);
+    savePatrolDenylist(values);
     gptPatrolDiscovery = null;
     renderGptPatrolDiscovery();
-    $("#gptPatrolDiscoverStatus").textContent = "准入名单已保存；请重新只读扫描";
+    $("#gptPatrolDiscoverStatus").textContent = "手动排除名单已保存；请重新只读扫描";
   });
   $("#gptPatrolDiscoverBtn")?.addEventListener("click", () => {
     discoverCurrentAccountPatrolConversations();
   });
   $("#gptPatrolConversationList")?.addEventListener("click", (event) => {
+    const continueButton = event.target.closest("[data-patrol-continue]");
+    if (continueButton && gptPatrolDiscovery) {
+      const templates = gptPatrolDiscovery.conversations.filter((item) => item.titleMatched);
+      const item = templates[Number(continueButton.dataset.patrolContinue || -1)];
+      if (item) continueCurrentAccountPatrolConversation(item);
+      return;
+    }
     const button = event.target.closest("[data-patrol-toggle]");
     if (!button || !gptPatrolDiscovery) return;
     const templates = gptPatrolDiscovery.conversations.filter((item) => item.titleMatched);
     const item = templates[Number(button.dataset.patrolToggle || -1)];
     if (!item) return;
-    const values = new Set(patrolAllowlist());
-    if (item.eligible) values.delete(item.url);
+    const values = new Set(patrolDenylist());
+    if (item.explicitlyExcluded) values.delete(item.url);
     else values.add(item.url);
-    const allowlist = savePatrolAllowlist([...values]);
-    $("#gptPatrolAllowlist").value = allowlist.join("\n");
+    const denylist = savePatrolDenylist([...values]);
+    $("#gptPatrolDenylist").value = denylist.join("\n");
     gptPatrolDiscovery.conversations = gptPatrolDiscovery.conversations.map((candidate) => ({
       ...candidate,
-      explicitlyAllowed: allowlist.includes(candidate.url) || allowlist.includes(candidate.title),
-      eligible: candidate.titleMatched && (allowlist.includes(candidate.url) || allowlist.includes(candidate.title))
+      explicitlyExcluded: denylist.includes(candidate.url) || denylist.includes(candidate.title),
+      excluded: candidate.excludedByKeyword || denylist.includes(candidate.url) || denylist.includes(candidate.title),
+      eligible: candidate.titleMatched && !candidate.excludedByKeyword && !denylist.includes(candidate.url) && !denylist.includes(candidate.title)
     }));
     gptPatrolDiscovery.eligibleCount = gptPatrolDiscovery.conversations.filter((candidate) => candidate.eligible).length;
     renderGptPatrolDiscovery();
-    $("#gptPatrolDiscoverStatus").textContent = `准入名单已更新：${gptPatrolDiscovery.eligibleCount} 个对话可续接；当前仍未执行任何对话动作`;
+    $("#gptPatrolDiscoverStatus").textContent = `排除名单已更新：${gptPatrolDiscovery.eligibleCount} 个对话可续接；当前仍未执行任何对话动作`;
   });
   $("#gptAddModeWorkflowStepBtn")?.addEventListener("click", () => {
-    if (gptAutoRunning) {
-      showWorkbenchAssistantBubble("本批任务正在执行，流程不能在运行中修改；暂停或完成后再添加环节。", { duration: 4200 });
-      return;
-    }
     const key = activeSettingsModeKey();
     const steps = normalizeGptWorkflowSteps(readGptModeWorkflowFromUi());
     steps.push({ action: "wait-plan", text: "", timeoutSeconds: 60, enabled: true, autoDetect: true });
@@ -11980,23 +12290,17 @@ function bindEvents() {
   });
   // ── Real-time save: any edit in the workflow editor immediately persists ──
   $("#gptModeWorkflowEditor")?.addEventListener("input", () => {
-    if (gptAutoRunning) return;
-    const key = activeGptModeKey();
+    const key = activeSettingsModeKey();
     const draft = readGptModeWorkflowFromUi();
     if (!draft.length) return;
     const validation = validateGptWorkflowSteps(draft);
     if (!validation.ok) return; // silent — let the user finish typing
     gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps, useCurrentSession: $("#gptModeStartBehavior")?.value !== "inject" };
     saveGptModeProfiles();
-    applyGptModeProfile(key);
+    if (!gptAutoRunning && key === activeGptModeKey()) applyGptModeProfile(key);
   });
   $("#gptModeWorkflowEditor")?.addEventListener("change", (event) => {
-    if (gptAutoRunning) {
-      renderGptAutoSettings();
-      showWorkbenchAssistantBubble("本批任务正在执行，生产设置已锁定；暂停或完成后再修改。", { duration: 4200 });
-      return;
-    }
-    const key = activeGptModeKey();
+    const key = activeSettingsModeKey();
     const draft = readGptModeWorkflowFromUi();
     if (!draft.length) return;
     const validation = validateGptWorkflowSteps(draft);
@@ -12006,8 +12310,10 @@ function bindEvents() {
     }
     gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps, useCurrentSession: $("#gptModeStartBehavior")?.value !== "inject" };
     saveGptModeProfiles();
-    applyGptModeProfile(key);
-    saveGptAutoSettings();
+    if (!gptAutoRunning && key === activeGptModeKey()) {
+      applyGptModeProfile(key);
+      saveGptAutoSettings();
+    }
     // 提示词预设选择器：选择「默认」时自动填充默认提示词
     if (event.target?.dataset?.workflowField === "textPreset") {
       const action = event.target.dataset.action || "";
@@ -12022,8 +12328,10 @@ function bindEvents() {
         if (validation.ok) {
           gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps: validation.steps, useCurrentSession: $("#gptModeStartBehavior")?.value !== "inject" };
           saveGptModeProfiles();
-          applyGptModeProfile(key);
-          saveGptAutoSettings();
+          if (!gptAutoRunning && key === activeGptModeKey()) {
+            applyGptModeProfile(key);
+            saveGptAutoSettings();
+          }
         }
       }
     }
@@ -12050,7 +12358,7 @@ function bindEvents() {
     if (existing) {
       existing.remove();
       const btn = row.querySelector("[data-workflow-prompt-edit]");
-      if (btn) btn.textContent = "编辑提示词";
+      if (btn) btn.textContent = "查看 / 编辑";
       return;
     }
     const wrapper = document.createElement("div");
@@ -12092,18 +12400,29 @@ function bindEvents() {
       charCount.textContent = `${ta.value.length} 字`;
     });
     const presetEl = wrapper.querySelector(".gpt-workflow-prompt-expanded-preset-select");
+    const action = row.querySelector('[data-workflow-field="action"]')?.value || "";
+    const defaultText = defaultGptWorkflowSteps().find((step) => step.action === action)?.text || "";
+    presetEl.addEventListener("change", () => {
+      if (presetEl.value === "default" && defaultText) {
+        ta.value = defaultText;
+        charCount.textContent = `${ta.value.length} 字`;
+      }
+    });
     const save = () => {
       editor.value = ta.value;
       if (presetSelect) presetSelect.value = presetEl.value;
       editor.dispatchEvent(new Event("input", { bubbles: true }));
+      const summary = row.querySelector(".gpt-workflow-prompt-summary");
+      if (summary) summary.textContent = `${presetEl.value === "default" ? "默认提示词" : "自定义提示词"} · ${ta.value.length} 字`;
       wrapper.remove();
       const btn = row.querySelector("[data-workflow-prompt-edit]");
-      if (btn) btn.textContent = "编辑提示词";
+      if (btn) btn.textContent = "查看 / 编辑";
+      toast(gptAutoRunning ? "提示词已保存，将从下一套任务生效" : "提示词已保存并生效");
     };
     const cancel = () => {
       wrapper.remove();
       const btn = row.querySelector("[data-workflow-prompt-edit]");
-      if (btn) btn.textContent = "编辑提示词";
+      if (btn) btn.textContent = "查看 / 编辑";
     };
     wrapper.querySelector(".gpt-workflow-prompt-expanded-save").addEventListener("click", save);
     wrapper.querySelector(".gpt-workflow-prompt-expanded-cancel").addEventListener("click", cancel);
@@ -12125,10 +12444,9 @@ function bindEvents() {
       const presetSelect = row.querySelector('[data-workflow-field="textPreset"]');
       const stepIndex = Number(row.dataset.workflowIndex) + 2;
       const actionLabel = row.querySelector('[data-workflow-field="action"]')?.selectedOptions?.[0]?.textContent || "";
-      togglePromptExpand(row, editor, presetSelect, stepIndex, actionLabel, { readOnly: gptAutoRunning });
+      togglePromptExpand(row, editor, presetSelect, stepIndex, actionLabel, { readOnly: false });
       return;
     }
-    if (gptAutoRunning) return;
     const remove = event.target.closest("[data-workflow-remove]");
     if (!remove) return;
     const steps = normalizeGptWorkflowSteps(readGptModeWorkflowFromUi());
@@ -12136,16 +12454,15 @@ function bindEvents() {
     if (!Number.isInteger(index) || !steps[index]) return;
     if (steps.length <= 1) return;
     steps.splice(index, 1);
-    const key = activeGptModeKey();
+    const key = activeSettingsModeKey();
     gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps };
     saveGptModeProfiles();
-    applyGptModeProfile(key);
+    if (!gptAutoRunning && key === activeGptModeKey()) applyGptModeProfile(key);
     renderGptModeWorkflow();
   });
   // ── Drag-and-drop reordering ──
   let gptWorkflowDragSrc = null;
   $("#gptModeWorkflowEditor")?.addEventListener("dragstart", (event) => {
-    if (gptAutoRunning) { event.preventDefault(); return; }
     // Don't start drag from inside inputs, selects, or textareas — let users select text
     if (event.target.matches("input, select, textarea")) { event.preventDefault(); return; }
     const row = event.target.closest(".gpt-workflow-step");
@@ -12161,7 +12478,7 @@ function bindEvents() {
     document.querySelectorAll("#gptModeWorkflowEditor .gpt-workflow-step.drag-over").forEach((el) => el.classList.remove("drag-over"));
   });
   $("#gptModeWorkflowEditor")?.addEventListener("dragover", (event) => {
-    if (gptAutoRunning || !gptWorkflowDragSrc) return;
+    if (!gptWorkflowDragSrc) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     const row = event.target.closest(".gpt-workflow-step");
@@ -12170,7 +12487,7 @@ function bindEvents() {
     row.classList.add("drag-over");
   });
   $("#gptModeWorkflowEditor")?.addEventListener("drop", (event) => {
-    if (gptAutoRunning || !gptWorkflowDragSrc) return;
+    if (!gptWorkflowDragSrc) return;
     event.preventDefault();
     const targetRow = event.target.closest(".gpt-workflow-step");
     if (!targetRow || targetRow === gptWorkflowDragSrc) return;
@@ -12180,10 +12497,10 @@ function bindEvents() {
     if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex === toIndex) return;
     const [moved] = steps.splice(fromIndex, 1);
     steps.splice(toIndex, 0, moved);
-    const key = activeGptModeKey();
+    const key = activeSettingsModeKey();
     gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps };
     saveGptModeProfiles();
-    applyGptModeProfile(key);
+    if (!gptAutoRunning && key === activeGptModeKey()) applyGptModeProfile(key);
     renderGptModeWorkflow();
     toast("环节顺序已更新");
   });
@@ -12563,7 +12880,7 @@ function bindEvents() {
     await checkDistributionDevices();
   });
   $("#openPublishRootBtn")?.addEventListener("click", () => openPath(dashboard?.distribution?.workflowRoot || dashboard?.distribution?.libraryRoot));
-  $("#workbenchAssistantLauncher")?.addEventListener("click", () => {
+  $("#workbenchAssistantLauncher")?.addEventListener("dblclick", () => {
     if (Date.now() < assistantSuppressClickUntil) return;
     toggleWorkbenchAssistant();
   });
@@ -12578,11 +12895,14 @@ function bindEvents() {
   document.querySelectorAll("[data-assistant-mute]").forEach((button) => button.addEventListener("click", () => {
     muteWorkbenchAssistant(Number(button.dataset.assistantMute || 1));
   }));
-  ["#assistantCatVisible", "#assistantNotificationsEnabled", "#assistantMotionEnabled", "#assistantCurrentDurationSeconds", "#assistantOtherDurationSeconds", "#assistantOtherMaxPerBatch"]
+  ["#assistantCatVisible", "#assistantNotificationsEnabled", "#assistantBubblePinned", "#assistantMotionEnabled", "#assistantDetached", "#assistantAlwaysOnTop", "#assistantCurrentDurationSeconds", "#assistantOtherDurationSeconds", "#assistantOtherMaxPerBatch"]
     .forEach((selector) => $(selector)?.addEventListener("change", () => applyAssistantSettings({
       catVisible: $("#assistantCatVisible")?.checked !== false,
       notificationsEnabled: $("#assistantNotificationsEnabled")?.checked !== false,
+      bubblePinned: $("#assistantBubblePinned")?.checked !== false,
       motionEnabled: $("#assistantMotionEnabled")?.checked !== false,
+      detached: $("#assistantDetached")?.checked === true,
+      alwaysOnTop: $("#assistantAlwaysOnTop")?.checked === true,
       currentDurationMs: Number($("#assistantCurrentDurationSeconds")?.value || 9) * 1000,
       otherDurationMs: Number($("#assistantOtherDurationSeconds")?.value || 3) * 1000,
       otherMaxPerBatch: Number($("#assistantOtherMaxPerBatch")?.value || 0)

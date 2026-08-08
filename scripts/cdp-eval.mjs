@@ -16,6 +16,7 @@ const expressionAliases = {
   "restart-with-login-backup": `window.gptWorkbench.createLoginRecovery(${JSON.stringify(actionAccountId)})`
 };
 const expression = expressionAliases[expressionInput] || expressionInput;
+const requestTimeoutMs = Math.max(1_000, Number(process.env.TB_CDP_TIMEOUT_MS || 15_000));
 const cdpRequest = expressionInput === "dismiss-dialog"
   ? { method: "Page.handleJavaScriptDialog", params: { accept: false } }
   : expressionInput === "accept-dialog"
@@ -37,7 +38,7 @@ await new Promise((resolve, reject) => {
 
 const id = 1;
 const resultPromise = new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error("CDP 执行超时")), 15_000);
+  const timer = setTimeout(() => reject(new Error(`CDP 执行超过 ${requestTimeoutMs}ms`)), requestTimeoutMs);
   socket.addEventListener("message", async (event) => {
     try {
       const raw = typeof event.data === "string"

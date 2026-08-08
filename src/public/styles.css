@@ -9567,6 +9567,42 @@ body[data-theme] :is(.production-workbench-shell, .distribution-layout, .plugin-
   overflow: hidden;
   line-height: 1.45;
 }
+.gpt-workflow-text-cell-simple {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+}
+.gpt-workflow-text-cell-simple .gpt-workflow-prompt-data,
+.gpt-workflow-text-cell-simple .gpt-workflow-source-data {
+  display: none;
+}
+.gpt-workflow-prompt-summary {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gpt-workflow-prompt-edit-btn {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent, #2d7c65) 30%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #2d7c65) 8%, transparent);
+  color: var(--accent, #2d7c65);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.gpt-workflow-prompt-edit-btn:hover {
+  background: color-mix(in srgb, var(--accent, #2d7c65) 14%, transparent);
+}
 .gpt-workflow-text-cell:focus-within .gpt-workflow-prompt-editor,
 .gpt-workflow-prompt-editor.is-expanded {
   min-height: 92px;

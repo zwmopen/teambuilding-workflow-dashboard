@@ -47,6 +47,37 @@
     };
   }
 
+  function validatePlanPageCap(options = {}) {
+    const maximum = Math.max(1, Number(options.maximum || 10));
+    const planned = Math.max(0, Number(options.plannedImageCount || 0));
+    const text = String(options.text || "");
+    if (planned > maximum) {
+      return { valid: false, code: "PLAN_PAGE_CAP_EXCEEDED" };
+    }
+    // A compliant plan often repeats the guardrail itself (for example
+    // “不做 P11 / 不开第二批”).  Those negative statements are evidence of
+    // compliance, not a request for another batch.  Remove only the local
+    // negated clause before looking for an affirmative P11/second-batch plan.
+    const actionableText = text.replace(
+      /(?:禁止|严禁|不得|不做|不会|不再|没有|无|取消)[^\n。；]{0,40}(?:P\s*11\b|第\s*二\s*批)[^\n。；]*/giu,
+      ""
+    );
+    const proposesAnotherBatch = /P\s*11\b|第二批\s*[:：]?\s*P|第二批.{0,24}(?:继续|生成|出图|剩余)|(?:继续|再出).{0,24}P\s*11/iu.test(actionableText);
+    if (proposesAnotherBatch) {
+      return { valid: false, code: "PLAN_BATCHING_FORBIDDEN" };
+    }
+    return { valid: true, code: "" };
+  }
+
+  function resolveEntryInstruction(entry = {}) {
+    if (String(entry.customPrompt || "").trim()) return String(entry.customPrompt).trim();
+    if (String(entry.prompt || "").trim()) return String(entry.prompt).trim();
+    return [
+      "请沿用当前对话已经确定的母版与规则，处理刚上传的这组团建素材。",
+      `内容名称：${String(entry.name || "").trim()}`
+    ].filter(Boolean).join("\n");
+  }
+
   function shouldRecoverSilentAssistant(options = {}) {
     const elapsedMs = Math.max(0, Number(options.elapsedMs || 0));
     const thresholdMs = Math.max(1, Number(options.thresholdMs || 60_000));
@@ -88,12 +119,14 @@
   function classifyPatrolConversationCandidate(options = {}) {
     const title = String(options.title || "").replace(/\s+/g, " ").trim();
     const url = String(options.url || "").trim();
-    const allowlist = (Array.isArray(options.allowlist) ? options.allowlist : [])
+    const denylist = (Array.isArray(options.denylist) ? options.denylist : [])
       .map((value) => String(value || "").replace(/\s+/g, " ").trim())
       .filter(Boolean);
-    const titleMatched = /模板/i.test(title);
-    const explicitlyAllowed = Boolean(url && allowlist.includes(url)) || Boolean(title && allowlist.includes(title));
-    return { title, url, titleMatched, explicitlyAllowed, eligible: titleMatched && explicitlyAllowed };
+    const titleMatched = /模板|母版/i.test(title);
+    const excludedByKeyword = /游戏/i.test(title);
+    const explicitlyExcluded = Boolean(url && denylist.includes(url)) || Boolean(title && denylist.includes(title));
+    const excluded = excludedByKeyword || explicitlyExcluded;
+    return { title, url, titleMatched, excludedByKeyword, explicitlyExcluded, excluded, eligible: titleMatched && !excluded };
   }
 
   function uniqueGeneratedImageUrls(urls) {
@@ -301,6 +334,8 @@
     requiresPlannedImageCount,
     isArchivedAutomationBoundary,
     firstBatchChoice,
+    validatePlanPageCap,
+    resolveEntryInstruction,
     shouldRecoverSilentAssistant,
     shouldRecoverSilentImageGeneration,
     shouldRetryThreadError,

@@ -69,7 +69,10 @@
       <h2>小猫与通知</h2>
       <p>当前界面重点显示；其他界面只作短提醒。六边形项链会完整跟随头颈层。</p>
       <label><span>显示通知</span><input id="menuNotificationsEnabled" type="checkbox" checked /></label>
+      <label><span>保持气泡打开</span><input id="menuBubblePinned" type="checkbox" checked /></label>
       <label><span>动态跟随</span><input id="menuMotionEnabled" type="checkbox" checked /></label>
+      <label><span>脱离工作台显示</span><input id="menuDetached" type="checkbox" /></label>
+      <label><span>脱离后始终置顶</span><input id="menuAlwaysOnTop" type="checkbox" disabled /></label>
       <label><span>当前界面（秒）</span><input id="menuCurrentSeconds" type="number" min="1" max="30" value="9" /></label>
       <label><span>其他界面（秒）</span><input id="menuOtherSeconds" type="number" min="1" max="30" value="3" /></label>
       <label><span>其他界面每批最多</span><input id="menuOtherMax" type="number" min="0" max="5" value="1" /></label>
@@ -97,7 +100,11 @@
       document.documentElement.style.setProperty("--head-y", `${(cursorY * .8).toFixed(2)}px`);
       document.documentElement.style.setProperty("--head-angle", `${(cursorX * 3).toFixed(2)}deg`);
       document.getElementById("menuNotificationsEnabled").checked = settings.notificationsEnabled !== false;
+      document.getElementById("menuBubblePinned").checked = settings.bubblePinned !== false;
       document.getElementById("menuMotionEnabled").checked = settings.motionEnabled !== false;
+      document.getElementById("menuDetached").checked = settings.detached === true;
+      document.getElementById("menuAlwaysOnTop").checked = settings.alwaysOnTop === true;
+      document.getElementById("menuAlwaysOnTop").disabled = settings.detached !== true;
       document.getElementById("menuCurrentSeconds").value = String(Number(settings.currentDurationMs || 9000) / 1000);
       document.getElementById("menuOtherSeconds").value = String(Number(settings.otherDurationMs || 3000) / 1000);
       document.getElementById("menuOtherMax").value = String(Number(settings.otherMaxPerBatch ?? 1));
@@ -123,7 +130,7 @@
       if (drag.moved) suppressClickUntil = Date.now() + 350;
       drag = null;
     });
-    cat.addEventListener("click", () => {
+    cat.addEventListener("dblclick", () => {
       if (Date.now() < suppressClickUntil) return;
       window.assistantOverlay?.action({ type: "chat" });
     });
@@ -138,11 +145,19 @@
       menu.hidden = true;
       window.assistantOverlay?.action({ type: "settings-update", settings: {
         notificationsEnabled: document.getElementById("menuNotificationsEnabled").checked,
+        bubblePinned: document.getElementById("menuBubblePinned").checked,
         motionEnabled: document.getElementById("menuMotionEnabled").checked,
+        detached: document.getElementById("menuDetached").checked,
+        alwaysOnTop: document.getElementById("menuAlwaysOnTop").checked,
         currentDurationMs: Number(document.getElementById("menuCurrentSeconds").value || 9) * 1000,
         otherDurationMs: Number(document.getElementById("menuOtherSeconds").value || 3) * 1000,
         otherMaxPerBatch: Number(document.getElementById("menuOtherMax").value || 0)
       } });
+    });
+    document.getElementById("menuDetached").addEventListener("change", (event) => {
+      const alwaysOnTop = document.getElementById("menuAlwaysOnTop");
+      alwaysOnTop.disabled = !event.currentTarget.checked;
+      if (!event.currentTarget.checked) alwaysOnTop.checked = false;
     });
     document.getElementById("hideCat").addEventListener("click", () => window.assistantOverlay?.action({ type: "settings-update", settings: { catVisible: false } }));
     document.getElementById("openFullSettings").addEventListener("click", () => {

@@ -83,8 +83,27 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   discoverPatrolConversations(accountId = "", options = {}) {
     return ipcRenderer.invoke("desktop:gpt-patrol-discover", {
       accountId: String(accountId || ""),
-      allowlist: Array.isArray(options.allowlist) ? options.allowlist.map(String) : [],
+      denylist: Array.isArray(options.denylist) ? options.denylist.map(String) : [],
       maximumScrolls: Number(options.maximumScrolls || 16)
+    });
+  },
+  continuePatrolConversation(accountId = "", options = {}) {
+    return ipcRenderer.invoke("desktop:gpt-patrol-continue", {
+      accountId: String(accountId || ""),
+      targetUrl: String(options.targetUrl || ""),
+      denylist: Array.isArray(options.denylist) ? options.denylist.map(String) : [],
+      confirmText: String(options.confirmText || "1"),
+      copyPrompt: String(options.copyPrompt || ""),
+      generationRequestCount: Number(options.generationRequestCount || 0),
+      maximumGenerationRequests: Number(options.maximumGenerationRequests || 5),
+      productionRequestId: String(options.productionRequestId || ""),
+      materialName: String(options.materialName || ""),
+      sourceMaterialPath: String(options.sourceMaterialPath || ""),
+      templateId: String(options.templateId || ""),
+      downloadRoot: String(options.downloadRoot || ""),
+      productRoot: String(options.productRoot || ""),
+      autoArchive: options.autoArchive !== false,
+      inspectOnly: Boolean(options.inspectOnly)
     });
   },
   diagnostic(accountId = "") {
@@ -137,6 +156,9 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
       ? input
       : { title: String(input || ""), body: String(body || "") };
     return ipcRenderer.invoke("desktop:notify", payload);
+  },
+  restartApp() {
+    return ipcRenderer.invoke("desktop:restart-app");
   },
   onPauseProduction(callback) {
     if (typeof callback !== "function") return () => {};

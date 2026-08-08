@@ -12,9 +12,22 @@ const {
 test("assistant notification defaults favor the current page without flashing other-page notices", () => {
   assert.equal(DEFAULT_ASSISTANT_SETTINGS.notificationsEnabled, true);
   assert.equal(DEFAULT_ASSISTANT_SETTINGS.catVisible, true);
+  assert.equal(DEFAULT_ASSISTANT_SETTINGS.bubblePinned, true);
+  assert.equal(DEFAULT_ASSISTANT_SETTINGS.detached, false);
+  assert.equal(DEFAULT_ASSISTANT_SETTINGS.alwaysOnTop, false);
   assert.equal(DEFAULT_ASSISTANT_SETTINGS.currentDurationMs, 9000);
   assert.equal(DEFAULT_ASSISTANT_SETTINGS.otherDurationMs, 3000);
   assert.equal(DEFAULT_ASSISTANT_SETTINGS.otherMaxPerBatch, 1);
+});
+
+test("assistant stays inside the workbench unless desktop floating is explicitly enabled", () => {
+  assert.deepEqual(
+    normalizeAssistantSettings({ detached: false, alwaysOnTop: true }),
+    { ...DEFAULT_ASSISTANT_SETTINGS }
+  );
+  const detached = normalizeAssistantSettings({ detached: true, alwaysOnTop: true });
+  assert.equal(detached.detached, true);
+  assert.equal(detached.alwaysOnTop, true);
 });
 
 test("assistant settings are clamped to usable, stable durations", () => {
