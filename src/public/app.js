@@ -103,6 +103,19 @@ let assistantDragState = null;
 const assistantEventLog = [];
 let assistantMuteUntil = Number(localStorage.getItem("tb-workbench-assistant-muted-until") || 0);
 let assistantMuteTimer = null;
+const ASSISTANT_SETTINGS_STORAGE_KEY = "tb-workbench-assistant-settings-v2";
+const assistantPolicy = window.AssistantNotificationPolicy;
+let assistantSettings = (() => {
+  try {
+    return assistantPolicy.normalizeAssistantSettings(JSON.parse(localStorage.getItem(ASSISTANT_SETTINGS_STORAGE_KEY) || "{}"));
+  } catch {
+    return assistantPolicy.normalizeAssistantSettings({});
+  }
+})();
+const assistantNoticeQueue = [];
+const assistantRecentNoticeKeys = new Map();
+const assistantOtherBatchCounters = new Map();
+let assistantNoticeActive = false;
 
 const WORKBENCH_ASSISTANT_PAGE_TIPS = {
   dashboardView: "当前生产状态：已暂停。左侧可选择素材，右侧查看历史记录。",
@@ -124,7 +137,7 @@ function showAssistantTipForActiveView() {
   const now = Date.now();
   if (activeView === lastAssistantTipViewId && now - lastAssistantTipTime < 10000) return;
   if (Date.now() < assistantMuteUntil) return;
-  showWorkbenchAssistantBubble(tip, { duration: 8000, transient: true });
+  showWorkbenchAssistantBubble(tip, { sourceView: activeView, transient: true, notificationKey: `page-tip:${activeView}` });
   lastAssistantTipTime = now;
   lastAssistantTipViewId = activeView;
 }
@@ -2305,7 +2318,12 @@ function renderDistributionReserveAlert() {
   if (!shouldNotify) return;
 
   const message = `电脑作品集储备不足：${reserveCategoryLabel(category)}只有 ${reserve} 个，低于安全线 ${threshold} 个，请继续批量制作作品集。`;
-  showWorkbenchAssistantBubble(message, { duration: 0, tone: "warning", persistent: true });
+  showWorkbenchAssistantBubble(message, {
+    sourceView: "distributionView",
+    notificationKey: `distribution-reserve:${category}:${reserve}:${threshold}`,
+    dedupeMs: 5 * 60_000,
+    tone: "warning"
+  });
 }
 
 function closeImageLightbox() {
@@ -8471,47 +8489,138 @@ function setupWorkbenchAssistantDrag() {
   restoreWorkbenchAssistantDock();
 }
 
-function showWorkbenchAssistantBubble(message, options = {}) {
-  const { bubble } = assistantElements();
-  if (!bubble || !message) return;
-  const page = document.querySelector(".view.active")?.id || "global";
-  const entry = { page, message: String(message), at: new Date().toISOString(), tone: String(options.tone || "") };
-  assistantEventLog.push(entry);
-  if (assistantEventLog.length > 300) assistantEventLog.splice(0, assistantEventLog.length - 300);
-  renderWorkbenchAssistantLog();
-  lastAssistantBubbleMessage = entry.message;
-  if (options.persistent !== false && options.transient !== true) {
-    assistantPersistentMessage = entry.message;
-    localStorage.setItem(ASSISTANT_PERSISTENT_MESSAGE_KEY, assistantPersistentMessage);
+function syncAssistantSettingsControls() {
+  const values = {
+    assistantCatVisible: assistantSettings.catVisible,
+    assistantNotificationsEnabled: assistantSettings.notificationsEnabled,
+    assistantMotionEnabled: assistantSettings.motionEnabled,
+    assistantCurrentDurationSeconds: assistantSettings.currentDurationMs / 1000,
+    assistantOtherDurationSeconds: assistantSettings.otherDurationMs / 1000,
+    assistantOtherMaxPerBatch: assistantSettings.otherMaxPerBatch
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const input = $(`#${id}`);
+    if (!input) return;
+    if (input.type === "checkbox") input.checked = Boolean(value);
+    else input.value = String(value);
+  });
+}
+
+function applyAssistantSettings(input = {}, { persist = true } = {}) {
+  assistantSettings = assistantPolicy.normalizeAssistantSettings({ ...assistantSettings, ...input });
+  if (persist) localStorage.setItem(ASSISTANT_SETTINGS_STORAGE_KEY, JSON.stringify(assistantSettings));
+  syncAssistantSettingsControls();
+  const { launcher, bubble } = assistantElements();
+  if (launcher) launcher.hidden = !assistantSettings.catVisible;
+  if (bubble && (!assistantSettings.notificationsEnabled || !assistantSettings.catVisible)) bubble.hidden = true;
+  window.gptWorkbench?.updateAssistant?.({
+    message: lastAssistantBubbleMessage || assistantPersistentMessage,
+    bubbleVisible: assistantSettings.notificationsEnabled && assistantNoticeActive && !assistantChatOpen,
+    catVisible: assistantSettings.catVisible,
+    settings: assistantSettings
+  }).catch(() => {});
+}
+
+function assistantNoticeKey(entry) {
+  return String(entry.notificationKey || `${entry.sourceView}:${entry.message}`);
+}
+
+function canQueueAssistantNotice(entry, activeView) {
+  const now = Date.now();
+  const key = assistantNoticeKey(entry);
+  const dedupeMs = Math.max(1000, Number(entry.dedupeMs || 60_000));
+  if (now - Number(assistantRecentNoticeKeys.get(key) || 0) < dedupeMs) return false;
+  assistantRecentNoticeKeys.set(key, now);
+  const relation = assistantPolicy.classifyAssistantNotice(entry, activeView);
+  if (relation === "current") return true;
+  const batchKey = `${activeView}:${entry.sourceView}`;
+  const batch = assistantOtherBatchCounters.get(batchKey);
+  if (!batch || now - batch.startedAt >= 30_000) {
+    assistantOtherBatchCounters.set(batchKey, { startedAt: now, count: 1 });
+    return assistantSettings.otherMaxPerBatch >= 1;
   }
-  if (Date.now() < assistantMuteUntil) {
-    bubble.hidden = true;
-    window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: false }).catch(() => {});
+  if (batch.count >= assistantSettings.otherMaxPerBatch) return false;
+  batch.count += 1;
+  return true;
+}
+
+function presentNextAssistantNotice() {
+  const { bubble } = assistantElements();
+  if (assistantNoticeActive || !bubble) return;
+  const entry = assistantNoticeQueue.shift();
+  if (!entry || !assistantSettings.notificationsEnabled || !assistantSettings.catVisible || Date.now() < assistantMuteUntil) {
+    assistantNoticeActive = false;
+    if (bubble) bubble.hidden = true;
+    window.gptWorkbench?.updateAssistant?.({
+      message: entry?.message || lastAssistantBubbleMessage,
+      bubbleVisible: false,
+      catVisible: assistantSettings.catVisible,
+      settings: assistantSettings
+    }).catch(() => {});
+    if (assistantNoticeQueue.length && assistantSettings.notificationsEnabled) presentNextAssistantNotice();
     return;
   }
+  assistantNoticeActive = true;
+  const activeView = document.querySelector(".view.active")?.id || "global";
+  const duration = assistantPolicy.assistantNoticeDuration(entry, activeView, assistantSettings);
   const content = $("#workbenchAssistantBubbleContent");
   if (content) content.textContent = entry.message;
   else bubble.textContent = entry.message;
   bubble.hidden = false;
   requestAnimationFrame(() => resyncWorkbenchAssistantDockFromLauncher());
-  window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: !assistantChatOpen }).catch(() => {});
+  window.gptWorkbench?.updateAssistant?.({
+    message: entry.message,
+    bubbleVisible: !assistantChatOpen,
+    catVisible: assistantSettings.catVisible,
+    settings: assistantSettings
+  }).catch(() => {});
   clearTimeout(assistantBubbleTimer);
-  if (Number(options.duration || 0) > 0) {
-    assistantBubbleTimer = window.setTimeout(() => {
-      if (options.transient === true && assistantPersistentMessage && assistantPersistentMessage !== entry.message) {
-        const content = $("#workbenchAssistantBubbleContent");
-        if (content) content.textContent = assistantPersistentMessage;
-        bubble.hidden = false;
-        window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage, visible: !assistantChatOpen }).catch(() => {});
-      } else if (options.transient === true && assistantPersistentMessage) {
-        bubble.hidden = false;
-        window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage, visible: !assistantChatOpen }).catch(() => {});
-      } else {
-        bubble.hidden = true;
-        window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: false }).catch(() => {});
-      }
-    }, Number(options.duration));
+  assistantBubbleTimer = window.setTimeout(() => {
+    assistantNoticeActive = false;
+    if (assistantNoticeQueue.length) {
+      presentNextAssistantNotice();
+      return;
+    }
+    bubble.hidden = true;
+    window.gptWorkbench?.updateAssistant?.({
+      message: entry.message,
+      bubbleVisible: false,
+      catVisible: assistantSettings.catVisible,
+      settings: assistantSettings
+    }).catch(() => {});
+  }, duration);
+}
+
+function showWorkbenchAssistantBubble(message, options = {}) {
+  const { bubble } = assistantElements();
+  if (!bubble || !message) return;
+  const activeView = document.querySelector(".view.active")?.id || "global";
+  const sourceView = String(options.sourceView || activeView);
+  const entry = {
+    page: sourceView,
+    sourceView,
+    message: String(message),
+    at: new Date().toISOString(),
+    tone: String(options.tone || ""),
+    notificationKey: options.notificationKey,
+    dedupeMs: options.dedupeMs
+  };
+  assistantEventLog.push(entry);
+  if (assistantEventLog.length > 300) assistantEventLog.splice(0, assistantEventLog.length - 300);
+  renderWorkbenchAssistantLog();
+  lastAssistantBubbleMessage = entry.message;
+  if (options.persistent === true) {
+    assistantPersistentMessage = entry.message;
+    localStorage.setItem(ASSISTANT_PERSISTENT_MESSAGE_KEY, assistantPersistentMessage);
   }
+  if (!assistantSettings.notificationsEnabled || !canQueueAssistantNotice(entry, activeView)) return;
+  assistantNoticeQueue.push(entry);
+  assistantNoticeQueue.sort((left, right) => {
+    const leftCurrent = assistantPolicy.classifyAssistantNotice(left, activeView) === "current" ? 0 : 1;
+    const rightCurrent = assistantPolicy.classifyAssistantNotice(right, activeView) === "current" ? 0 : 1;
+    return leftCurrent - rightCurrent;
+  });
+  presentNextAssistantNotice();
 }
 
 function appendGptProductionHistory(task, status, result = {}, error = "") {
@@ -8705,12 +8814,18 @@ function muteWorkbenchAssistant(minutes) {
   localStorage.setItem("tb-workbench-assistant-muted-until", String(assistantMuteUntil));
   const { bubble } = assistantElements();
   if (bubble) bubble.hidden = true;
-  window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage || lastAssistantBubbleMessage, visible: false }).catch(() => {});
+  assistantNoticeActive = false;
+  assistantNoticeQueue.splice(0);
+  window.gptWorkbench?.updateAssistant?.({
+    message: assistantPersistentMessage || lastAssistantBubbleMessage,
+    bubbleVisible: false,
+    catVisible: assistantSettings.catVisible,
+    settings: assistantSettings
+  }).catch(() => {});
   clearTimeout(assistantMuteTimer);
   assistantMuteTimer = window.setTimeout(() => {
     assistantMuteUntil = 0;
     localStorage.removeItem("tb-workbench-assistant-muted-until");
-    if (assistantPersistentMessage || lastAssistantBubbleMessage) showWorkbenchAssistantBubble(assistantPersistentMessage || lastAssistantBubbleMessage, { duration: 0, persistent: true });
   }, Math.max(1000, assistantMuteUntil - Date.now()));
   openWorkbenchAssistantLog(false);
   const muteMenu = $("#workbenchAssistantMuteMenu");
@@ -8758,7 +8873,12 @@ async function toggleWorkbenchAssistant(open) {
   } else {
     assistantChatOpen = false;
     panel.hidden = true;
-    window.gptWorkbench?.updateAssistant?.({ message: assistantPersistentMessage || lastAssistantBubbleMessage, visible: true }).catch(() => {});
+    window.gptWorkbench?.updateAssistant?.({
+      message: assistantPersistentMessage || lastAssistantBubbleMessage,
+      bubbleVisible: assistantNoticeActive && assistantSettings.notificationsEnabled,
+      catVisible: assistantSettings.catVisible,
+      settings: assistantSettings
+    }).catch(() => {});
   }
   launcher.setAttribute("aria-expanded", String(shouldOpen));
   if (!shouldOpen && $("#gptProductionTestView")?.classList.contains("active")) restoreEmbeddedGptView();
@@ -12447,12 +12567,26 @@ function bindEvents() {
     if (Date.now() < assistantSuppressClickUntil) return;
     toggleWorkbenchAssistant();
   });
+  $("#workbenchAssistantLauncher")?.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    activateTab("settings");
+    window.setTimeout(() => $("#assistantSettingsCard")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+  });
   $("#workbenchAssistantBubble")?.addEventListener("click", (event) => event.preventDefault());
   $("#workbenchAssistantBubble")?.addEventListener("contextmenu", openWorkbenchAssistantMuteMenu);
   $("#closeWorkbenchAssistantLog")?.addEventListener("click", () => openWorkbenchAssistantLog(false));
   document.querySelectorAll("[data-assistant-mute]").forEach((button) => button.addEventListener("click", () => {
     muteWorkbenchAssistant(Number(button.dataset.assistantMute || 1));
   }));
+  ["#assistantCatVisible", "#assistantNotificationsEnabled", "#assistantMotionEnabled", "#assistantCurrentDurationSeconds", "#assistantOtherDurationSeconds", "#assistantOtherMaxPerBatch"]
+    .forEach((selector) => $(selector)?.addEventListener("change", () => applyAssistantSettings({
+      catVisible: $("#assistantCatVisible")?.checked !== false,
+      notificationsEnabled: $("#assistantNotificationsEnabled")?.checked !== false,
+      motionEnabled: $("#assistantMotionEnabled")?.checked !== false,
+      currentDurationMs: Number($("#assistantCurrentDurationSeconds")?.value || 9) * 1000,
+      otherDurationMs: Number($("#assistantOtherDurationSeconds")?.value || 3) * 1000,
+      otherMaxPerBatch: Number($("#assistantOtherMaxPerBatch")?.value || 0)
+    })));
   document.addEventListener("pointerdown", (event) => {
     const menu = $("#workbenchAssistantMuteMenu");
     if (!menu || menu.hidden || menu.contains(event.target)) return;
@@ -12690,6 +12824,7 @@ function bindEvents() {
 
 bindEvents();
 if (window.gptWorkbench?.assistantOverlay) document.body.classList.add("native-assistant-overlay");
+applyAssistantSettings(assistantSettings, { persist: false });
 // Keep the lightweight address bar in sync with navigation that happens
 // inside the embedded WebContentsView. Clicking a GPT conversation or an
 // online template does not call navigateEmbeddedGpt(), so polling only on tab
@@ -12702,6 +12837,11 @@ window.gptWorkbench?.onUrlChanged?.((input = {}) => {
 window.gptWorkbench?.onAssistantAction?.((input = {}) => {
   if (input.type === "chat") toggleWorkbenchAssistant();
   if (input.type === "mute") muteWorkbenchAssistant(Number(input.minutes || 1));
+  if (input.type === "settings-update") applyAssistantSettings(input.settings || {});
+  if (input.type === "open-settings") {
+    activateTab("settings");
+    window.setTimeout(() => $("#assistantSettingsCard")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+  }
 });
 window.gptWorkbench?.onPauseProduction?.(() => {
   if (!gptAutoRunning) return;

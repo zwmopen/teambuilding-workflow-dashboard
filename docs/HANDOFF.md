@@ -1,5 +1,13 @@
 # 交接
 
+## 0.15.1 小猫页面通知与分层动画（2026-08-08）
+
+- `public/assistant-notification-policy.js` 是通知默认值、页面归属、时长和批次筛选的独立真源：当前页 9000ms，其他页 3000ms，其他页同批最多 1 条。
+- `showWorkbenchAssistantBubble` 现在使用稳定队列、60 秒同消息去重和 30 秒跨页批次限流；分发储备提醒显式标记 `distributionView`，并按库存状态 5 分钟去重。
+- 原生悬浮窗把 `catVisible` 与 `bubbleVisible` 分开；右键猫可快捷设置。猫图按 66%/67% 交界拆成身体与头颈层，完整项链位于头颈层；主进程每 50ms 读取屏幕鼠标方向，CSS 140ms 平滑跟随。
+- 设置保存在工作台 localStorage 的 `tb-workbench-assistant-settings-v2`。隐藏猫后从左侧底部设置中心重新打开。生产队列和账号运行数据没有迁移或改写。
+- 全量自动回归 `337 pass / 0 fail / 0 skip`。桌面已重启到 `0.15.1`，右键菜单、通知关闭但猫保留、整猫隐藏后设置页恢复、头颈 CSS 实际 transform 均已通过 CDP 实机复验；队列重启前后都保持 `2/8`、暂停、未运行、未武装。
+
 ## 0.15.0 渐进式架构升级基线（2026-08-08）
 
 - 架构结论：需要升级，但禁止整体重写。当前 `app.js` 约 1.30 万行、`styles.css` 约 1.13 万行、扩展 `sidebar.js` 约 4,900 行，是主要维护风险；`server.js` 已把 8 个业务域路由拆到 `src/server/routes/`，这条渐进迁移方向继续沿用。

@@ -27,7 +27,16 @@ const GPT_PENDING_RESTORE_FILE = path.join(GPT_LOGIN_RECOVERY_ROOT, "pending-res
 let serverProcess = null;
 let mainWindow = null;
 let assistantOverlayWindow = null;
-let assistantOverlayState = { message: "", visible: true, theme: "neo" };
+let assistantOverlayState = {
+  message: "",
+  bubbleVisible: true,
+  catVisible: true,
+  theme: "neo",
+  cursorX: 0,
+  cursorY: 0,
+  settings: {}
+};
+let assistantCursorTimer = null;
 let tray = null;
 let isExplicitQuit = false;
 let quitFlushStarted = false;
@@ -42,13 +51,13 @@ const WORKBENCH_PARTITION = "persist:teambuilding-workbench-0.12.2";
 const GPT_URL = "https://chatgpt.com/";
 const GPT_BROWSER_PROFILES_FILE = "gpt-browser-profiles.json";
 const ASSISTANT_OVERLAY_POSITION_FILE = "assistant-overlay-position.json";
-const ASSISTANT_OVERLAY_SIZE = { width: 420, height: 190 };
+const ASSISTANT_OVERLAY_SIZE = { width: 460, height: 330 };
 const ASSISTANT_OVERLAY_CAT_BOUNDS = {
   width: 96,
   height: 116,
   top: 37,
   leftWhenBubbleRight: 4,
-  leftWhenBubbleLeft: 320
+  leftWhenBubbleLeft: 360
 };
 
 function assistantOverlayPositionFile() {
@@ -100,6 +109,27 @@ function sendAssistantOverlayState() {
   assistantOverlayWindow.webContents.send("assistant-overlay:state", assistantOverlayState);
 }
 
+function updateAssistantCursorDirection() {
+  if (!assistantOverlayWindow || assistantOverlayWindow.isDestroyed()) return;
+  const motionEnabled = assistantOverlayState.settings?.motionEnabled !== false;
+  let cursorX = 0;
+  let cursorY = 0;
+  if (assistantOverlayState.catVisible !== false && motionEnabled) {
+    const bounds = assistantOverlayWindow.getBounds();
+    const dockSide = assistantOverlayState.dockSide === "right" ? "right" : "left";
+    const catLeft = dockSide === "right" ? ASSISTANT_OVERLAY_CAT_BOUNDS.leftWhenBubbleRight : ASSISTANT_OVERLAY_CAT_BOUNDS.leftWhenBubbleLeft;
+    const centerX = bounds.x + catLeft + ASSISTANT_OVERLAY_CAT_BOUNDS.width / 2;
+    const centerY = bounds.y + ASSISTANT_OVERLAY_CAT_BOUNDS.top + ASSISTANT_OVERLAY_CAT_BOUNDS.height * 0.42;
+    const cursor = screen.getCursorScreenPoint();
+    cursorX = Math.max(-1, Math.min(1, (cursor.x - centerX) / 260));
+    cursorY = Math.max(-1, Math.min(1, (cursor.y - centerY) / 220));
+  }
+  if (Math.abs(cursorX - Number(assistantOverlayState.cursorX || 0)) < 0.025
+    && Math.abs(cursorY - Number(assistantOverlayState.cursorY || 0)) < 0.025) return;
+  assistantOverlayState = { ...assistantOverlayState, cursorX, cursorY };
+  sendAssistantOverlayState();
+}
+
 async function ensureAssistantOverlay() {
   if (!mainWindow || assistantOverlayWindow && !assistantOverlayWindow.isDestroyed()) return assistantOverlayWindow;
   const initialBounds = clampAssistantOverlayBounds(readAssistantOverlayBounds());
@@ -140,10 +170,15 @@ async function ensureAssistantOverlay() {
     event.preventDefault();
     overlay.hide();
   });
-  overlay.on("closed", () => { assistantOverlayWindow = null; });
+  overlay.on("closed", () => {
+    assistantOverlayWindow = null;
+    if (assistantCursorTimer) clearInterval(assistantCursorTimer);
+    assistantCursorTimer = null;
+  });
   await overlay.loadURL(`${APP_URL}assistant-overlay.html?appVersion=${encodeURIComponent(APP_VERSION)}`);
   sendAssistantOverlayState();
-  if (mainWindow.isVisible()) overlay.showInactive();
+  if (!assistantCursorTimer) assistantCursorTimer = setInterval(updateAssistantCursorDirection, 50);
+  if (mainWindow.isVisible() && assistantOverlayState.catVisible !== false) overlay.showInactive();
   return overlay;
 }
 
@@ -983,14 +1018,17 @@ ipcMain.handle("desktop:notify", async (_event, input = {}) => {
 });
 
 ipcMain.handle("desktop:assistant-update", async (_event, input = {}) => {
+  const legacyBubbleVisible = Object.prototype.hasOwnProperty.call(input, "visible") ? input.visible !== false : undefined;
   assistantOverlayState = {
     ...assistantOverlayState,
     message: String(input.message || assistantOverlayState.message || ""),
-    visible: input.visible !== false
+    bubbleVisible: input.bubbleVisible == null ? (legacyBubbleVisible ?? assistantOverlayState.bubbleVisible) : input.bubbleVisible !== false,
+    catVisible: input.catVisible == null ? assistantOverlayState.catVisible !== false : input.catVisible !== false,
+    settings: input.settings && typeof input.settings === "object" ? { ...assistantOverlayState.settings, ...input.settings } : assistantOverlayState.settings
   };
   const overlay = await ensureAssistantOverlay();
   sendAssistantOverlayState();
-  if (assistantOverlayState.visible && mainWindow?.isVisible()) overlay.showInactive();
+  if (assistantOverlayState.catVisible && mainWindow?.isVisible()) overlay.showInactive();
   else overlay.hide();
   return { ok: true };
 });
@@ -1529,7 +1567,7 @@ function notifyWindowRestored(reason = "show") {
       }
     }
     mainWindow.webContents.send("desktop:window-restored", { reason });
-    if (assistantOverlayState.visible) assistantOverlayWindow?.showInactive();
+    if (assistantOverlayState.catVisible) assistantOverlayWindow?.showInactive();
   }, 140);
 }
 

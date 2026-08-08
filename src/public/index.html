@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-  <link rel="stylesheet" href="/styles.css?v=0.15.0" />
+  <link rel="stylesheet" href="/styles.css?v=0.15.1" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -632,6 +632,19 @@
               <progress id="largeCloudBackupBar" max="100" value="0"></progress>
             </div>
           </section>
+          <section class="settings-card assistant-settings-card" id="assistantSettingsCard">
+            <div class="settings-card-heading"><div><p class="label">全局小猫</p><h3>小猫与通知</h3></div><span class="version-status">右键小猫也可修改</span></div>
+            <p class="path-line">本页面的消息重点显示，跨页面消息只作短暂提醒；关闭通知不会隐藏小猫。</p>
+            <div class="assistant-settings-grid">
+              <label class="switch-setting"><span><b>显示小猫</b><small>关闭后可在这里重新打开</small></span><input id="assistantCatVisible" type="checkbox" checked /></label>
+              <label class="switch-setting"><span><b>显示通知</b><small>只关闭气泡，不影响生产和日志</small></span><input id="assistantNotificationsEnabled" type="checkbox" checked /></label>
+              <label class="switch-setting"><span><b>动态跟随</b><small>头部随鼠标方向自然转动</small></span><input id="assistantMotionEnabled" type="checkbox" checked /></label>
+              <label><span>当前界面（秒）</span><input id="assistantCurrentDurationSeconds" type="number" min="1" max="30" value="9" /></label>
+              <label><span>其他界面（秒）</span><input id="assistantOtherDurationSeconds" type="number" min="1" max="30" value="3" /></label>
+              <label><span>其他界面每批最多</span><input id="assistantOtherMaxPerBatch" type="number" min="0" max="5" value="1" /></label>
+            </div>
+            <p class="settings-footnote">默认：当前界面 9 秒并逐条显示；其他界面 3 秒、同批最多 1 条。相同提醒会自动去重，避免闪烁。</p>
+          </section>
           <section class="settings-card version-card">
             <div class="version-summary">
               <div><p class="label">软件与诊断</p><h3 id="settingsVersion">读取中…</h3><p id="settingsVersionChannel">本地开发版</p></div>
@@ -891,11 +904,12 @@
       <button id="contextDeleteMode" type="button" class="danger-action">删除模式配置</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-  <script src="/gpt-prompt-registry.js?v=0.15.0"></script>
-  <script src="/gpt-account-rotation.js?v=0.15.0"></script>
-  <script src="/gpt-runtime-recovery.js?v=0.15.0"></script>
-  <script src="/distribution-ui.js?v=0.15.0"></script>
-  <script src="/material-workspace.js?v=0.15.0"></script>
-  <script src="/app.js?v=0.15.0"></script>
+  <script src="/assistant-notification-policy.js?v=0.15.1"></script>
+  <script src="/gpt-prompt-registry.js?v=0.15.1"></script>
+  <script src="/gpt-account-rotation.js?v=0.15.1"></script>
+  <script src="/gpt-runtime-recovery.js?v=0.15.1"></script>
+  <script src="/distribution-ui.js?v=0.15.1"></script>
+  <script src="/material-workspace.js?v=0.15.1"></script>
+  <script src="/app.js?v=0.15.1"></script>
   </body>
 </html>

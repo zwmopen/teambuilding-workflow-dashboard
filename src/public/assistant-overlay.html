@@ -32,9 +32,9 @@
     }
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; font-family: "Microsoft YaHei UI", sans-serif; }
-    .dock { position: relative; display: flex; align-items: center; justify-content: flex-end; width: 100%; height: 100%; padding: 10px 4px 10px 8px; pointer-events: none; }
-    :root[data-side="right"] .dock { justify-content: flex-start; padding: 10px 8px 10px 4px; }
-    .bubble { position: relative; width: 308px; max-height: 166px; margin-right: 2px; overflow: visible; color: var(--bubble-fg); border: 1px solid var(--bubble-border); border-radius: 20px; background: var(--bubble-bg); box-shadow: var(--bubble-shadow); pointer-events: auto; }
+    .dock { position: relative; display: flex; align-items: flex-start; justify-content: flex-end; width: 100%; height: 100%; padding: 37px 4px 10px 8px; pointer-events: none; }
+    :root[data-side="right"] .dock { justify-content: flex-start; padding: 37px 8px 10px 4px; }
+    .bubble { position: relative; width: 348px; max-height: 166px; margin-right: 2px; overflow: visible; color: var(--bubble-fg); border: 1px solid var(--bubble-border); border-radius: 20px; background: var(--bubble-bg); box-shadow: var(--bubble-shadow); pointer-events: auto; }
     :root[data-side="right"] .bubble { order: 2; margin-right: 0; margin-left: 2px; }
     .bubble::after { content: ""; position: absolute; right: -7px; top: 50%; width: 13px; height: 13px; background: var(--bubble-bg); border-top: 1px solid var(--bubble-border); border-right: 1px solid var(--bubble-border); transform: translateY(-50%) rotate(45deg); }
     .bubble::before { content: ""; position: absolute; left: -7px; top: 50%; display: none; width: 13px; height: 13px; background: var(--bubble-bg); border-left: 1px solid var(--bubble-border); border-bottom: 1px solid var(--bubble-border); transform: translateY(-50%) rotate(45deg); }
@@ -44,22 +44,36 @@
     .cat { width: 96px; height: 116px; padding: 0; border: 0; background: transparent; cursor: grab; touch-action: none; pointer-events: auto; }
     :root[data-side="right"] .cat { order: 1; }
     .cat:active { cursor: grabbing; }
-    .cat img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 10px 14px var(--cat-shadow)); transform-origin: 50% 58%; backface-visibility: hidden; will-change: transform; animation: bounce 4.8s ease-in-out infinite; pointer-events: none; }
+    .cat-figure { position: relative; display: block; width: 100%; height: 100%; animation: bounce 4.8s ease-in-out infinite; }
+    .cat-layer { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; backface-visibility: hidden; pointer-events: none; }
+    .cat-body { clip-path: inset(66% 0 0 0); filter: drop-shadow(0 10px 14px var(--cat-shadow)); }
+    .cat-head { clip-path: inset(0 0 33% 0); transform-origin: 50% 63%; transform: translate(var(--head-x, 0px), var(--head-y, 0px)) rotate(var(--head-angle, 0deg)); transition: transform 140ms cubic-bezier(.2,.75,.25,1); will-change: transform; filter: drop-shadow(0 5px 8px var(--cat-shadow)); }
     @keyframes bounce { 0%,100%{transform:translateY(0) rotate(0deg)} 25%{transform:translateY(-1px) rotate(-.6deg)} 50%{transform:translateY(-2px) rotate(0deg)} 75%{transform:translateY(-1px) rotate(.6deg)} }
-    .menu { position: absolute; z-index: 5; display: grid; min-width: 138px; padding: 6px; color: var(--menu-fg); border: 1px solid var(--bubble-border); border-radius: 12px; background: var(--menu-bg); box-shadow: var(--bubble-shadow); pointer-events: auto; }
+    .menu { position: absolute; z-index: 5; left: 30px; top: 8px; display: grid; width: 318px; gap: 8px; padding: 14px; color: var(--menu-fg); border: 1px solid var(--bubble-border); border-radius: 16px; background: var(--menu-bg); box-shadow: var(--bubble-shadow); pointer-events: auto; }
+    :root[data-side="right"] .menu { left: 108px; }
     .menu[hidden], .dock[hidden] { display: none; }
-    .menu button { padding: 8px 10px; color: var(--menu-fg); border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; }
+    .menu h2 { margin: 0; font-size: 15px; }
+    .menu p { margin: 0 0 2px; opacity: .7; font-size: 11px; line-height: 1.45; }
+    .menu label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; }
+    .menu label input[type="number"] { width: 70px; padding: 5px 7px; color: var(--menu-fg); border: 1px solid var(--bubble-border); border-radius: 7px; background: transparent; }
+    .menu-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 3px; }
+    .menu button { padding: 7px 10px; color: var(--menu-fg); border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
     .menu button:hover { background: var(--menu-hover); }
   </style>
 </head>
 <body>
   <main class="dock" id="dock">
     <section class="bubble" id="bubble"><div class="message" id="message">团建工作台已就绪</div></section>
-    <button class="cat" id="cat" type="button" aria-label="打开小猫助手"><img src="assets/assistant-black-cat-v3.png" alt="" /></button>
+    <button class="cat" id="cat" type="button" aria-label="打开小猫助手"><span class="cat-figure"><img class="cat-layer cat-body" src="assets/assistant-black-cat-v3.png" alt="" /><img class="cat-layer cat-head" src="assets/assistant-black-cat-v3.png" alt="" /></span></button>
     <div class="menu" id="menu" hidden>
-      <button data-minutes="1" type="button">关闭 1 分钟</button>
-      <button data-minutes="5" type="button">关闭 5 分钟</button>
-      <button data-minutes="60" type="button">关闭 1 小时</button>
+      <h2>小猫与通知</h2>
+      <p>当前界面重点显示；其他界面只作短提醒。六边形项链会完整跟随头颈层。</p>
+      <label><span>显示通知</span><input id="menuNotificationsEnabled" type="checkbox" checked /></label>
+      <label><span>动态跟随</span><input id="menuMotionEnabled" type="checkbox" checked /></label>
+      <label><span>当前界面（秒）</span><input id="menuCurrentSeconds" type="number" min="1" max="30" value="9" /></label>
+      <label><span>其他界面（秒）</span><input id="menuOtherSeconds" type="number" min="1" max="30" value="3" /></label>
+      <label><span>其他界面每批最多</span><input id="menuOtherMax" type="number" min="0" max="5" value="1" /></label>
+      <div class="menu-actions"><button id="openFullSettings" type="button">完整设置</button><button id="hideCat" type="button">隐藏小猫</button><button id="saveSettings" type="button">保存</button></div>
     </div>
   </main>
   <script>
@@ -70,10 +84,23 @@
     const menu = document.getElementById("menu");
     let drag = null;
     let suppressClickUntil = 0;
+    let settings = {};
     window.assistantOverlay?.onState((state) => {
-      dock.hidden = state.visible === false;
+      settings = state.settings || settings;
+      dock.hidden = state.catVisible === false;
+      bubble.hidden = state.bubbleVisible === false;
       document.documentElement.dataset.theme = state.theme || "neo";
       document.documentElement.dataset.side = state.dockSide === "right" ? "right" : "left";
+      const cursorX = state.settings?.motionEnabled === false ? 0 : Number(state.cursorX || 0);
+      const cursorY = state.settings?.motionEnabled === false ? 0 : Number(state.cursorY || 0);
+      document.documentElement.style.setProperty("--head-x", `${(cursorX * 1.8).toFixed(2)}px`);
+      document.documentElement.style.setProperty("--head-y", `${(cursorY * .8).toFixed(2)}px`);
+      document.documentElement.style.setProperty("--head-angle", `${(cursorX * 3).toFixed(2)}deg`);
+      document.getElementById("menuNotificationsEnabled").checked = settings.notificationsEnabled !== false;
+      document.getElementById("menuMotionEnabled").checked = settings.motionEnabled !== false;
+      document.getElementById("menuCurrentSeconds").value = String(Number(settings.currentDurationMs || 9000) / 1000);
+      document.getElementById("menuOtherSeconds").value = String(Number(settings.otherDurationMs || 3000) / 1000);
+      document.getElementById("menuOtherMax").value = String(Number(settings.otherMaxPerBatch ?? 1));
       if (state.message) message.textContent = state.message;
     });
     cat.addEventListener("pointerdown", (event) => {
@@ -101,16 +128,27 @@
       window.assistantOverlay?.action({ type: "chat" });
     });
     bubble.addEventListener("click", (event) => event.preventDefault());
-    bubble.addEventListener("contextmenu", (event) => {
+    function openMenu(event) {
       event.preventDefault();
       menu.hidden = false;
-      menu.style.left = `${Math.max(6, Math.min(260, event.clientX))}px`;
-      menu.style.top = `${Math.max(6, Math.min(100, event.clientY))}px`;
-    });
-    menu.querySelectorAll("[data-minutes]").forEach((button) => button.addEventListener("click", () => {
+    }
+    cat.addEventListener("contextmenu", openMenu);
+    bubble.addEventListener("contextmenu", openMenu);
+    document.getElementById("saveSettings").addEventListener("click", () => {
       menu.hidden = true;
-      window.assistantOverlay?.action({ type: "mute", minutes: Number(button.dataset.minutes || 1) });
-    }));
+      window.assistantOverlay?.action({ type: "settings-update", settings: {
+        notificationsEnabled: document.getElementById("menuNotificationsEnabled").checked,
+        motionEnabled: document.getElementById("menuMotionEnabled").checked,
+        currentDurationMs: Number(document.getElementById("menuCurrentSeconds").value || 9) * 1000,
+        otherDurationMs: Number(document.getElementById("menuOtherSeconds").value || 3) * 1000,
+        otherMaxPerBatch: Number(document.getElementById("menuOtherMax").value || 0)
+      } });
+    });
+    document.getElementById("hideCat").addEventListener("click", () => window.assistantOverlay?.action({ type: "settings-update", settings: { catVisible: false } }));
+    document.getElementById("openFullSettings").addEventListener("click", () => {
+      menu.hidden = true;
+      window.assistantOverlay?.action({ type: "open-settings" });
+    });
     document.addEventListener("pointerdown", (event) => {
       if (!menu.hidden && !menu.contains(event.target)) menu.hidden = true;
     });

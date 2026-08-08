@@ -820,6 +820,33 @@ test("cat idle motion is continuous instead of whipping through all turns at the
   assert.match(assistantOverlay, /75%\{transform:translateY\(-1px\) rotate\(\.6deg\)\}/);
 });
 
+test("assistant notifications are page-aware, stable, configurable, and independent from cat visibility", () => {
+  assert.match(html, /assistant-notification-policy\.js/);
+  assert.match(html, /id="assistantCatVisible"/);
+  assert.match(html, /id="assistantNotificationsEnabled"/);
+  assert.match(html, /id="assistantCurrentDurationSeconds"[^>]*value="9"/);
+  assert.match(html, /id="assistantOtherDurationSeconds"[^>]*value="3"/);
+  assert.match(html, /id="assistantOtherMaxPerBatch"[^>]*value="1"/);
+  assert.match(app, /sourceView:\s*"distributionView"/);
+  assert.match(app, /distribution-reserve:/);
+  assert.match(app, /assistantNoticeQueue/);
+  assert.match(app, /bubbleVisible:/);
+  assert.match(desktopMain, /catVisible:/);
+  assert.match(desktopMain, /bubbleVisible:/);
+  assert.doesNotMatch(desktopMain, /assistantOverlayState\.visible/);
+});
+
+test("native cat uses a separate head-neck layer with an intact pendant and follows the screen cursor", () => {
+  assert.match(assistantOverlay, /cat-layer cat-body/);
+  assert.match(assistantOverlay, /cat-layer cat-head/);
+  assert.match(assistantOverlay, /\.cat-body\s*\{[^}]*clip-path:\s*inset\(66% 0 0 0\)/);
+  assert.match(assistantOverlay, /\.cat-head\s*\{[^}]*clip-path:\s*inset\(0 0 33% 0\)/);
+  assert.match(assistantOverlay, /--head-angle/);
+  assert.match(assistantOverlay, /cat\.addEventListener\("contextmenu", openMenu\)/);
+  assert.match(desktopMain, /screen\.getCursorScreenPoint\(\)/);
+  assert.match(desktopMain, /setInterval\(updateAssistantCursorDirection, 50\)/);
+});
+
 test("paused queue recovery is loaded as a module and awaits confirmed readiness", () => {
   const recoveryIndex = html.indexOf("/gpt-runtime-recovery.js");
   const appIndex = html.indexOf("/app.js");

@@ -1,5 +1,10 @@
 # 架构
 
+## 小猫通知边界
+
+- `public/assistant-notification-policy.js` 只负责纯通知策略；`public/app.js` 负责队列、去重、页面来源与设置持久化；`desktop/main.js` 只负责原生悬浮窗生命周期和屏幕鼠标方向。
+- 原生状态必须区分 `catVisible` 与 `bubbleVisible`。业务页面只能通过 `sourceView` 声明通知归属，不能直接让某个业务提醒永久占据全局小猫。
+
 ## 0.15.0 渐进式模块化边界
 
 - 架构升级采用 strangler/渐进迁移：`server.js`、`app.js` 和 `styles.css` 继续作为兼容入口，新服务先以独立文件接入，测试和实机通过后再移除旧内联实现。

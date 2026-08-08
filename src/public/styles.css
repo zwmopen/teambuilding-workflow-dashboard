@@ -5260,6 +5260,43 @@ body[data-theme="midnight-glass"] .gpt-browser-addressbar input {
   grid-column: 1 / -1;
 }
 
+.settings-layout > .assistant-settings-card {
+  grid-column: 1 / -1;
+}
+
+.workbench-assistant-launcher[hidden] {
+  display: none !important;
+}
+
+.assistant-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.assistant-settings-grid > label:not(.switch-setting) {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.assistant-settings-grid > label:not(.switch-setting) input {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+@media (max-width: 900px) {
+  .assistant-settings-grid { grid-template-columns: 1fr; }
+}
+
 .plugin-market-hero {
   padding: 20px 22px;
 }
