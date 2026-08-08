@@ -820,6 +820,14 @@ test("cat idle motion is continuous instead of whipping through all turns at the
   assert.match(assistantOverlay, /75%\{transform:translateY\(-1px\) rotate\(\.6deg\)\}/);
 });
 
+test("paused queue recovery is loaded as a module and awaits confirmed readiness", () => {
+  const recoveryIndex = html.indexOf("/gpt-runtime-recovery.js");
+  const appIndex = html.indexOf("/app.js");
+  assert.ok(recoveryIndex > 0 && recoveryIndex < appIndex);
+  assert.match(app, /TBGptRuntimeRecovery\?\.createController/);
+  assert.doesNotMatch(app, /const stillReady = window\.gptWorkbench\?\.status/);
+});
+
 test("workbench keeps a single explicit renderer layer contract", () => {
   assert.match(css, /--tb-layer-gpt:\s*10/);
   assert.match(css, /--tb-layer-assistant-bubble:\s*1000/);

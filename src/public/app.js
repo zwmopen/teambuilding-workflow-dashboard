@@ -12949,26 +12949,28 @@ function scheduleGptProductionRetry(accountId, attempt = 1) {
   }, GPT_PRODUCTION_RETRY_DELAY);
 }
 
-// Queue auto-recovery: check every 2 minutes if GPT is ready but queue is paused
-let gptQueueRecoveryTimer = null;
-window.setInterval(async () => {
-  if (!gptQueuePaused || gptAutoRunning || gptAutoPaused) return;
-  if (!isContinuousGptMode() || !isContinuousGptProductionArmed()) return;
-  if (gptProductionRetryTimer) return; // retry already in progress
-  if (gptWindowIsUserStopped(activeGptAccountId) || gptWindowIsUserPaused(activeGptAccountId)) return;
-  const preflight = await window.gptWorkbench.status(activeGptAccountId).catch(() => null);
-  if (preflight?.productionReady) {
-    gptQueueRecoveryTimer = setTimeout(() => {
-      gptQueueRecoveryTimer = null;
-      if (!gptQueuePaused || gptAutoRunning) return;
-      const stillReady = window.gptWorkbench?.status?.(activeGptAccountId).catch(() => null);
-      if (stillReady?.productionReady) {
-        showWorkbenchAssistantBubble("检测到 GPT 已就绪，自动恢复暂停的队列。", { duration: 4000, tone: "success" });
-        gptQueuePaused = false;
-        gptProductionRetryCount = 0;
-        persistGptQueue();
-        sendNextGptTestTask({ userInitiated: false, continuousResume: true }).catch(() => {});
-      }
-    }, 3000);
-  }
+// Queue auto-recovery lives in an isolated controller so readiness checks can
+// be tested without loading the entire renderer. The controller deliberately
+// awaits a second status check before it resumes a persisted queue.
+const gptRuntimeRecoveryController = window.TBGptRuntimeRecovery?.createController({
+  getActiveAccountId: () => activeGptAccountId,
+  getState: () => ({
+    queuePaused: gptQueuePaused,
+    autoRunning: gptAutoRunning,
+    autoPaused: gptAutoPaused,
+    continuousMode: isContinuousGptMode(),
+    continuousArmed: isContinuousGptProductionArmed(),
+    retryPending: Boolean(gptProductionRetryTimer),
+    windowStopped: gptWindowIsUserStopped(activeGptAccountId),
+    windowPaused: gptWindowIsUserPaused(activeGptAccountId)
+  }),
+  status: (accountId) => window.gptWorkbench?.status?.(accountId),
+  setQueuePaused: (value) => { gptQueuePaused = Boolean(value); },
+  resetRetryCount: () => { gptProductionRetryCount = 0; },
+  persistQueue: () => persistGptQueue(),
+  showBubble: (message, options) => showWorkbenchAssistantBubble(message, options),
+  sendNext: (options) => sendNextGptTestTask(options)
+});
+window.setInterval(() => {
+  gptRuntimeRecoveryController?.checkPausedQueue().catch(() => {});
 }, 120_000);
