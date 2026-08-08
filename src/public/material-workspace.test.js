@@ -43,14 +43,15 @@ test("流量转化作为同源模块融入工作台，不暴露独立服务地�
   const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
   const app = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
   assert.match(html, /data-tab="conversion"/);
-  assert.match(html, /id="conversionAppFrame"[^>]+src="\/conversion-integrated\/\?embedded=1"/);
-  assert.doesNotMatch(html, /id="conversionAppFrame"[^>]+src="http:\/\/127\.0\.0\.1:8765/);
+  assert.doesNotMatch(html, /id="conversionAppFrame"/);
+  assert.doesNotMatch(html, /src="http:\/\/127\.0\.0\.1:8765/);
+  assert.match(html, /class="conversion-native-shell"/);
+  assert.match(html, /id="conversionContent"/);
+  assert.match(html, /data-conversion-module="search"/);
   assert.match(html, /id="globalThemeCycleBtn"/);
   assert.doesNotMatch(html, /rail-theme-switch[^]*data-theme="glass"/);
-  assert.match(app, /postMessage\(\{ type: "jianghu-theme", theme \}, window\.location\.origin\)/);
-  assert.match(app, /\/conversion-integrated\/\?embedded=1&theme=/);
-  assert.doesNotMatch(html, /id="conversionContent"/);
-  assert.doesNotMatch(html, /data-conversion-module=/);
+  assert.match(app, /loadConversionHub\(\)/);
+  assert.doesNotMatch(app, /\/conversion-integrated\/\?embedded=1&theme=/);
   assert.match(html, /id="conversionMobileEntryBtn"/);
   assert.match(app, /\/api\/conversion\/mobile-link/);
   assert.match(app, /手机与电脑连接同一 Wi-Fi/);
@@ -61,7 +62,8 @@ test("流量转化状态不再暴露旧版独立助手措辞", () => {
   const appSource = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
   assert.doesNotMatch(html, /正在连接江湖团建转化助手/);
   assert.doesNotMatch(appSource, /转化助手暂时没有连接/);
-  assert.match(html, /id="conversionEmbeddedStatus" hidden/);
+  assert.match(html, /id="conversionServiceStatus"/);
+  assert.doesNotMatch(html, /id="conversionEmbeddedStatus"/);
   assert.doesNotMatch(html, /正在加载流量转化/);
 });
 

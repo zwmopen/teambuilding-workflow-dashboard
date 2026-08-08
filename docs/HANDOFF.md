@@ -1,6 +1,570 @@
 # 交接
 
+## 0.14.92 小猫连续轻摆修复（2026-08-08）
+
+- 卡顿不是渲染掉帧：120Hz、240 帧采样平均约 8.31ms、P95 约 8.5ms、最大约 8.7ms；根因是旧关键帧在前 88% 静止，只在最后 12% 完成左右旋转。
+- 原生 `assistant-overlay.html` 与 `styles.css` 回退层都改为 4.8 秒全周期缓慢插值，位移上限 2px、旋转上限 ±0.6°，并增加合成层提示。桌面重启后已实际返回工作台 `0.14.92`，小猫图片层计算样式为 `4.8s ease-in-out infinite bounce`；队列仍暂停在 2/8、任务未运行、连续生产未武装。
+- 源码版本：工作台 `0.14.92` / 扩展 `0.2.55`；全量回归 `327 pass / 0 fail / 0 skip`。独立头部跟随仍未实现，目前是整只小猫的轻微自然摆动；如继续做头部鼠标跟随，应使用真正分层且完整保留项链的素材。
+- 最近可靠恢复点仍为 0.14.91 验证快照：`D:\AICode\备份\teambuilding-workflow-dashboard\teambuilding-workflow-dashboard-0.14.91-verified-20260808-173231.7z`。
+
+## 0.14.91 单账号多对话当前页阶段识别（2026-08-08）
+
+- 在 0.14.90 稳定恢复点之后，新增了不执行任何网页动作的阶段分类器；当前打开的模板对话会在巡检结果中显示待素材、待计划、待 `1`、正在出图、图片不足、待文案、待下载归档等状态。
+- 这只是“当前页只读识别”，尚未逐个打开准入对话；未开放自动回复 `1`、重新出图、请求文案或下载归档。下一步必须继续使用 ZWMRPG，以隐藏/旁路读取方式验证多个准入对话，不能影响当前窗口。
+- 源码版本：工作台 `0.14.91` / 扩展 `0.2.55`。0.14.90 的已验证压缩包仍是本轮功能前恢复点。
+- 2026-08-08 17:29 后已安全重启实机：桌面返回 `0.14.91`，内嵌扩展返回 `0.2.55`；当前账号 `1-zwmrpg`，当前模板对话只读识别为“待上传素材”。生产模式仍为 `single`，队列保持暂停，连续调度未武装。
+- 设置页实机 DOM 复核：V4.5 初始化提示词全文 14,168 字可见且默认展开；复制、恢复、保存按钮存在；上传提示词与小红书成稿提示词均为真实可编辑字段。全量回归 `326 pass / 0 fail / 0 skip`。
+- 0.14.91 验证后源码快照：`D:\AICode\备份\teambuilding-workflow-dashboard\teambuilding-workflow-dashboard-0.14.91-verified-20260808-173231.7z`；7-Zip 完整性测试通过，SHA-256 `8EC61FDFBE03B851A9F3095933E73CC4CA46A68A16A758F8B2E5C84E1F639336`。
+- ZWMRPG 左侧栏真实只读扫描：2 次滚动遍历共发现 35 个对话，其中标题命中“模板”11 个；当前账号准入名单为空，因此 `eligibleCount=0`，没有任何对话被自动接管。扫描前后仍停留在原 URL，未点击候选、未发消息。
+- 后续新增的明确顺序：先完成 ZWMRPG 单账号多对话闭环，再组合为“三账号 × 多对话”两层串行调度。当前三个可用账号为 `account-1 / account-2 / account-4`；账号 2 目前尚未加入真实轮换名单，必须等组合模式通过安全测试后再加入。
+- 模板策略：先消费本地有图模板；当前 16 个本地模板中 12 个有图、4 个为空，需新增模板使用账本后按少用优先，空模板跳过。当前在线模板库为空。分享链接仅作初始化参考/复制种子，不能当作跨账号原会话续接。
+- AI Agent 边界：用户希望日常巡视优先使用低成本 Agent“Luna”；工作台生产状态不能依赖子代理或特定模型，Agent 只负责启动、巡视、诊断和修复。当前运行环境尚未发现可直接选择的 Luna，禁止伪称已经切换。
+- 模型路由需分层：Agent 模型和 ChatGPT 网页生产模型互不混用。后续为每个账号增加“沿用当前模型 / 指定模型”及不可用时的降级策略，首版只读校验，自动切网页模型需独立实测后开放。
+
+## 0.14.90 提示词、分发与启动性能收口（2026-08-08）
+
+- 当前源码版本：工作台 `0.14.90` / 扩展 `0.2.54`；全量回归 `322 pass / 0 fail / 0 skip`。生产已安全停在单账号模式，没有活动作品，连续调度未武装。
+- 设置中心的“实际提示词”已是真实配置入口：V4.5 初始化提示词可展开、复制、粘贴修改、恢复默认和保存；每个工作流环节也可展开编辑。上传素材默认提示严格要求读取全部附件和 TXT、先输出逐页计划、结尾等待 `1`，素材文件夹名由程序动态追加。
+- 本轮真实生产完成 1 套闭环：7 图、847 字文案、7 个下载文件、TXT/JSON 与正式作品文件夹。模式切换已现场验证人工 → 选材后 → 单账号，切换后不会被旧连续调度弹回。
+- 手动分发已改为发送工作台库存快照中精确选中的真实源目录，不再调用 Junction 移除前的旧随机扫描器；重启后用不存在作品集做无副作用验证，服务正确拒绝且任务数保持 0。当前 8 台登记设备均离线，仍需设备在线后做一次真实签收验收，自动分发暂不启用。
+- 启动慢根因不是登录缓存，而是后端误扫 `.暂时不制作` 的 757 个素材帖。现已改为启动只加载分类索引、点开可用分类再按需扫描；冷启动 dashboard 从约 11.8 秒 / 11.4 MB 降到约 1.3 秒 / 0.52 MB。登录态、Cookies、账号档案均未清理。
+- Chrome `Profile 4 / Jennifer RodriguezCPD` 迁移已取消，禁止操作。GitHub 尚未推送：用户要求本地模式和真实分发验收稳定后再推送。
+- 本轮验证后源码快照：`D:\AICode\备份\teambuilding-workflow-dashboard\teambuilding-workflow-dashboard-0.14.90-verified-20260808-172314.7z`；7-Zip 完整性测试通过，SHA-256 `880C5A1F3B670BADA4240E1CE07E61B9D785A701B633E3DA97E1569CEF8087C9`。已排除 `.git`、依赖、构建产物和历史测试临时目录。
+- 下一顺序：手机在线后完成手动分发真实签收 → 验证自动分发库存规则 → 单账号多对话阶段识别/安全单步续接后续阶段 → 最终备份、文档与 GitHub 推送。
+
+## 0.14.86 安全暂停与只读巡检实测（2026-08-08）
+
+- ZWMRPG 真实只读巡检已通过：扫描 62 个历史对话、22 个标题含“模板”；空准入为 0，精确准入当前 URL 后为 1。扫描未切换对话、未发消息、未上传附件。
+- 实测暴露并修复一项模式切换问题：账号重新附着或切换时不得越过 `gptQueuePaused` 安全检查点。只有用户显式点“启动/继续”（`force=true`）才可恢复。
+- 源码版本已推进至工作台 `0.14.86` / 扩展 `0.2.54`；全量回归 `317 pass / 0 fail / 0 skip`。
+- 本次实测期间旧队列意外恢复了第 7/8 套并已发送 `1`；已设置“本套闭环后暂停”，禁止自动注入第 8 套。待本套安全收口后重启 0.14.86 做跨重启复验。
+- Chrome `Profile 4 / Jennifer RodriguezCPD` 迁移任务已取消，不得继续操作。
+
+## 0.14.85 单账号多对话只读巡检 P0（2026-08-08）
+
+- 源码版本：工作台 `0.14.85` / 扩展 `0.2.54`；全量回归 `316 pass / 0 fail / 0 skip`。下一步必须重启桌面后，仅用 `1-zwmrpg` 做真实只读扫描。
+- 巡检设置新增账号级准入名单；扫描会向下滚动加载左侧历史并恢复原位置。候选必须同时满足标题含“模板”和工作台显式准入。
+- 当前 P0 不点击候选、不切换对话、不发送消息、不上传附件、不消耗额度。真实发现结果通过后才开发跨对话阶段读取与单步续接。
+- 修复模板对话误判：只按当前 URL 对应侧栏标题判断，不再把侧栏其他“模板”标题混入当前对话。
+- Chrome `Profile 4 / Jennifer RodriguezCPD` 迁移已被用户明确取消：账号已过期并封禁；不得再备份、复制、打开或加入任务序列。
+- 后续顺序：真实只读巡检 → 阶段识别 → 单步续接 → 原模式回归 → 手动分发真机复验 → 自动分发 → 启动性能和缓存治理。
+
+## 当前安全基线与后续任务顺序（2026-08-08 11:46）
+
+- 所有开发和真实测试必须旁路、可回滚，不覆盖现有工作台账号、登录态、队列或外部 Chrome 原始数据；新功能先独立、先只读，证据充分后才允许消耗额度。
+- 当前可靠源码恢复点：`D:\AICode\备份\teambuilding-workflow-dashboard\teambuilding-workflow-dashboard-pre-patrol-0.14.84-clean-20260808-114558.7z`，已通过 7-Zip 完整性测试；SHA-256 `C2BAD66031D577434FB97A36885EC539A60B41E0F674F1C833E5347EDF7517D1`。
+- 当前顺序：开发单账号多对话只读识别 → 自动测试 → 重启 → 仅用 `1-zwmrpg` 实测 → 放开单步续接并迭代 → 回归原有模式与设置切换 → 备份并推送 GitHub → 手动分发真机复验 → 自动分发 → 性能与缓存治理。
+- 外部 Chrome 迁移任务已于 2026-08-08 被用户取消，原因是源账号已过期并封禁；不得继续操作 `Profile 4`。
+
+## 0.14.84 小红书成稿提示词收口（2026-08-08）
+
+- 源码已升级为工作台 `0.14.84` / 扩展 `0.2.53`，全量回归 `314 pass / 0 fail / 0 skip`；当前安全暂停的桌面仍是上一加载版本，等下一项“单账号多对话”形成可测批次后再统一重启，禁止为这条提示词补丁单独恢复生产。
+- 默认文案请求现为：只输出可直接发布的完整小红书成稿；首行真实标题、随后正文、末尾话题标签；禁止解释、开场白、总结及“标题 / 正文 / 话题 / 标签”等栏目名和 Markdown 标题。
+- 旧默认短提示词“给我一份小红书文案”会在工作台配置和扩展执行端双重迁移；用户主动填写的个性化提示词不覆盖。
+- 归档标题解析兜底继续保留，用于兼容历史作品和 GPT 偶发不遵守格式的回复。
+- 下一开发项及测试账号不变：单账号多对话只用 `1-zwmrpg`，先做侧栏滚动候选与只读阶段识别。
+
+## 0.14.83 双账号轮换真实闭环（2026-08-08）
+
+- 当前已加载：工作台 `0.14.83` / 扩展 `0.2.52`；全量回归 `313 pass / 0 fail / 0 skip`。
+- “全局多账号自动轮换生产模式”已用账号 `1-zwmrpg` 与 `4-日抛-Hazel Sanchez` 完成真实跨账号验收：账号 1 完成安吉漂流 7 图作品后账本达到 `41/45`，下一套需要 7 图、仅剩 4 图容量，系统在上传前让位；账号 4 随后完成杭州漂流的 8 附件、7 页计划、一次 `1`、7 图、文案、下载、TXT/JSON 和正式归档。
+- 本轮正式作品：`成品库（GPT+本地脚本制作）\抖音小红书\作品集_060[转]\20260808_110822_安吉漂流团建怎么选？这3个更适合公司团队`（7 PNG + TXT + JSON）；`成品库（GPT+本地脚本制作）\20260808_112500_标题`（7 PNG + TXT + JSON）。后者内容完整，但旧命名器误取文案栏目“标题”为文件夹名，0.14.83 已修复后续命名。
+- 新修复：已归档边界不会阻塞下一帖；超过 10 页时明确回复 `先出 P1-P10`；归档后网页维护 20 秒超时；旧未归档帖子触发 `WINDOW_STAGE_PENDING` 时暂停并保留素材，不再跳过；素材归档确认 90 秒超时并保持可恢复；作品标题跳过“标题/正文/话题”栏目标签。
+- 当前运行状态：双账号一轮测试已按要求停止；队列索引 `6`，剩余两套为 queued，`gptAutoRunning=false`、`gptQueuePaused=true`，不得在交接时自动续跑。账号 1 等待额度恢复，账号 4 当前 `7/45`。
+- 下一唯一开发项：“单账号多对话无缝续接模式”，只用 `1-zwmrpg` 测试。左侧历史对话必须滚动/持续加载，只允许标题含“模板”且工作台显式准入的候选；进入后按附件、计划、`1`、图片、文案、下载/归档证据二次判阶段。先做只读识别面板，再做安全续接，禁止影响现有主链。
+- GitHub 尚未推送；用户要求本地各种模式全部测稳后再推送。大版本前备份仍为 `D:\AICode\备份\teambuilding-workflow-dashboard\teambuilding-workflow-dashboard-pre-0.14.79-20260808-092943.zip`。
+
+## 0.14.78 全局轮换网页异常自愈（2026-08-08）
+
+- 全量测试：`306 pass / 0 fail / 0 skip`。
+- 未完成的全局轮换运行态现在优先于旧 `single` 配置，暂停、重启和额度等待后仍由轮换调度器接管。
+- 扩展增加“同一占位行重复 8 次”看门狗，自动停止异常回复并恢复当前素材。
+- 第 `15/676` 套已在账号 2 完成真实闭环：10 图、622 字文案、图片下载、TXT 与正式归档；队列准确推进到第 `16/676` 套。
+- 跨重启恢复新增两层保护：已提交素材不会再次初始化模板或重复上传；确认出图后网页无助手首包、0 张图且已停止时，最多两次原地续接，仍失败只暂停当前套。
+- 最新真实耐久结果：账号 2 又连续完成第 16、17、18 套，分别归档 6、5、10 张图及对应文案；账号 2 滚动额度到达 `42/45` 后，下一套预计 7 张、仅剩 3 张空间，系统在素材上传前进入额度等待，没有打断或产生半成品。
+- 全局轮换已经完成首次真实跨账号接管：生产权从账号 2 切到账号 4；账号 4 自动初始化同一母版，并成功上传下一套 7 图 + 1 TXT、识别 7 页计划、自动发送一次 `1`，当前正在出图。账号 3 仍保持禁用，账号 6 未参与。
+
+- 当前模式正式名称：“全局多账号自动轮换生产模式”；内部键仍为 `rotate`。当前只放行账号 `1 / 2 / 4`，账号 3 禁用，其他账号不参与。
+- 真实轮换证据：账号 1 对第 14/676 套只生成 1/5 张后进入冷却；同一素材恢复为待处理并交给账号 2。账号 2 完成模板初始化、上传 5 图 + 1 TXT、计划、自动 `1`、5/5 生图、528 字文案、下载和正式归档，队列严格进入 15/676。
+- 正式成品：`D:\AICode\项目推进\projects\江湖有旅人\主项目\成品库（GPT+本地脚本制作）\20260808_002555_杭州一日团建｜人均188+，山野里从早玩到晚🌿`，磁盘核验为 5 PNG + 1 TXT + 1 JSON。
+- 新故障 1：素材用户消息已成功发送但 ChatGPT 无助手回复。0.14.78 将计划无回复恢复从完整 8 分钟等待改为稳定空闲 60 秒后续接同一素材。
+- 新故障 2：ChatGPT 同时显示“出了点问题，请重试”和“停止回答”。0.14.78 在无新助手回复 15 秒后只点击一次原生重试，不能把残留停止按钮当成永久生成中。
+- 当前运行版本：工作台 `0.14.78` / 扩展 `0.2.48`；全量回归已通过 `306/306`。源码中的最新“无首包生图自愈”改动仍待当前作品闭环后的安全重载，禁止在账号 4 正在出图时重启。
+- 用户新增的全局设置需求已写入 `docs/superpowers/specs/2026-08-07-global-account-rotation-design.md`：运行 1/N/无限轮、工作时段、账号额度与周期、恢复参数、新建/延续会话、本地/链接模板、单模板共用/多模板随机分配、V4.5 提示词候选。开发顺序仍以当前轮换耐久为先。
+
+## 2026-08-08 红米实机分发闭环
+
+- 按“手机库存低于 7 个时补到 7 个”的团建分发规则，从 `成品库（GPT+本地脚本制作）\抖音小红书\作品集_058[转]` 发送整批 7 个完整作品到红米 Note 8（A2）。源批次共 58 个文件、122,199,466 字节，Wi‑Fi 传输任务 `task-skill-20260808001550`，接收端提交成功。
+- 发送前红米作品数为 0，发送后通过 `/v2/info` 核验为 7，设备在线，Android 客户端版本为 0.6.16。
+- 已在红米上真实打开第一条作品的“复制并分享”，系统分享面板正常出现，并进入小红书发布编辑页（5 张图片已加载）；未点击“发布笔记”，没有执行实际发布。
+- 接收确认后，已按既有状态机把整个 `作品集_058[转]` 从“抖音小红书”移动到“微信公众号”，目标目录保留 7 个作品、58 个文件、122,199,466 字节；原目录不再保留，未删除内容。
+
+## 0.14.76 作品边界额度硬保护（2026-08-07）
+
+- 现场结果：上一套“杭州团建怎么玩”已于 22:31 完整归档（10 PNG + 1 TXT，磁盘校验通过）；下一套在上传 6 个附件时被 ChatGPT 静默拒收，队列安全暂停在 14/676，没有发送纯提示词。
+- 根因：`account-6` 是后加账号，未被补入服务端账号额度设置，仍沿用旧 50 张生图线；上传账本只统计图片、漏掉每套 TXT；自动额度预检此前仅提醒不拦截。现场账本为 73 次图片上传、49 张生图，已不适合再启动一套 5 图作品。
+- 修复：新增账号自动继承 80 附件/45 生图/3 小时；上传记账包含全部附件；自动模式只在作品边界做整套额度判断，越线等待或轮换，人工模式保留手动操作能力。
+- 当前队列任务必须保留并原地重试：`航拍路线节点封面 × 评0赞0杭州一日高品质团建✅人均188+任吃任玩`。升级重启后应显示额度等待，不应再次向 account-6 上传；额度恢复后从该任务继续。
+- 版本：工作台 `0.14.76` / 扩展 `0.2.46`。
+- 自动回归：`npm test` 为 296 pass / 0 fail / 0 skip。桌面已重启到 `0.14.76 / 0.2.46` 并完成真实验收：account-6 为 `49/45`，第 14/676 套保持未提交，ChatGPT 输入框为 0 文字/0 附件；等待状态记录 6 个附件、预计 5 图，`nextProbeAt=2026-08-07 23:34:41`，再次重启后定时器成功恢复。
+- 运行状态：无需人工点击。工作台正等待 23:34:41 自动额度探测；任务仍是“航拍路线节点封面 × 评0赞0杭州一日高品质团建✅人均188+任吃任玩”。
+
+## 无人值守最终目标与唯一推进顺序（2026-08-07）
+
+- 最终目标不是单纯的网页点击脚本，而是软件 UI、开机自动任务和任意 AI Agent 共用同一套可观察、幂等、可恢复的生产/分发控制面。
+- 主线顺序固定为：P0 单账号真实主链耐久 → P1 单账号无人值守 → P2 多账号轮换 → P3 库存驱动设备分发 → P4 Agent 技能入口 → P5 正式打包发布。
+- 素材规则：点开头、隐藏、禁用或不完整文件夹跳过；文件夹数字代表使用次数，无数字按 0 次；自动选择最低使用次数的有效素材。
+- 分发规则：设备离线不推；在线且库存够不推；在线且缺货只补缺口；成品不足先形成生产需求，作品闭环后再推送。
+- 每个大版本只有在自动测试、真实桌面闭环、重启恢复、源码推送和安装包构建全部完成后才算正式发布。
+- 完整路线图见 `docs/superpowers/specs/2026-08-07-unattended-production-distribution-roadmap.md`。
+
+## 0.14.75 真实计划断点禁止重传（2026-08-07）
+
+- `0.14.74` 首次现场重试暴露了桌面 IPC 未传递 `planSubmitted` 的真实分支缺口，导致已有完整 10 页计划仍误走上传。`0.14.75 / 0.2.45` 已补齐该恢复凭据并将计划断点标记为已提交。
+- 当前队列仍固定在 12/676，网页已有“本轮规划总页数：10页”且等待回复 `1`；升级后应原地恢复，验收标准是附件上传数保持 0、直接识别 10 页计划并发送一次 `1`。
+
+## 0.14.74 全局账号轮换与安全断点续跑（2026-08-07）
+
+- 已按账号生产单元落地全局轮换：仅 `mode=rotate` 且未禁用、未人工暂停/停止的窗口参与；`manual`、`single` 和 `disabled` 均跳过，用户手动切换页面不会中断其他生产窗口。
+- 默认安全线为每账号 3 小时 45 张图。安全线只决定“下一套由谁生产”，绝不打断已启动作品；当前作品完成文案、下载、正式归档后才切换账号。
+- 计划识别现在必须得到可解析页数；只返回标题或半截计划不会发送 `1`，也不会上传下一套。续接重试复用当前帖子和附件，不重复上传。
+- 当前真实生产停在安全边界：队列 12/676，旧进程因“计划已返回但无法解析预计页数”暂停；升级到 `0.14.74 / 0.2.44` 后应点击一次继续/重试，从现有计划断点恢复并观察是否进入发 `1`，不得清空队列或重传附件。
+- 全局轮换设置入口：账号标签右键 → “账号生产与额度设置”。未明确改成全局轮换的账号保持原模式，不会被调度器擅自使用。
+
+## 0.14.73 账号禁用持久化与7套自动作品集（2026-08-07）
+
+- `account-3`（未充值）与 `account-6`（未登录）应保持暂时禁用；`disabled` 已升级为 Electron 档案持久字段。
+- 作品集每 7 套自动成组，打包器直接输出到成品库的“抖音小红书”阶段目录。
+- 两条历史漏单均已恢复并真实归档：桐庐 8 图，西山岛 7 图，均有 TXT 和完整归档日志。
+- 桌面实测已通过软件内置登录恢复通道重启到 `0.14.73`；`account-3`、`account-6` 重启后仍为禁用，证明禁用状态跨重启持久化生效。
+- 运行配置实测为 `batchSize=7`、`autoGroup=true`、`autoZip=true`，作品集阶段目录为 `成品库（GPT+本地脚本制作）\抖音小红书`。
+- 旧西山岛任务已经真实归档，但扩展在重载后留下 `completed-copy-pending-package` 旧断点；现场按磁盘归档证据只跳过该旧队列项，队列从索引 17 推进到 18。下一套“成都团建｜8个玩水主题团建”已恢复运行并进入“等待图片”。
+- `scripts/cdp-eval.mjs` 新增只读/受控诊断入口，用于核对桌面版本、账号档案、工作包配置、网页阶段和安全重启；不得把它当成绕过生产状态机的常规入口。
+
+## 0.14.72 运行中热更新保护（2026-08-07）
+
+- `desktop/main.js` 维护活动 GPT 任务账号集合。扩展文件变化遇到活动任务时记录 `gpt-extension-auto-reload-deferred`，待全部任务结束后再刷新视图。
+- 这修复了开发态修改扩展源码会直接 reload ChatGPT、导致当前队列项孤立在“运行中”的可靠性问题。
+- 连续模式的计划无响应采用三级恢复：同一附件消息续接两次 → 清理网页并完整重传同一素材两次 → 保留素材并顺延队列重试，同时继续生产下一套。只有会导致串帖/混批的边界才保留人工暂停。
+- 真实验收：队列第 15 套首轮计划只返回半句，自动续接成功后完整跑通 `1 → 10 张生图 → 文案 → 下载 → 正式归档`。作品目录为 `20260807_140358_被BOSS狂赞的西山岛团建🔥两天一夜这样安排`，含 10 PNG、1 TXT、1 JSON。
+- 工作台 `0.14.72` / 内嵌扩展 `0.2.43` 已在安全边界重启生效；两条历史漏单已克隆到当前队列最前。第一条重传真实触发 8/9 附件上传额度边界，系统已保留当前索引并按 `nextProbeAt` 自动等待，不需要人工点击。
+
+## 0.14.71 计划无响应自动续接（2026-08-07）
+
+- 现场证据：队列第 11、12 套的附件用户消息真实存在，但两条消息之后均无 assistant turn；第三套才恢复正常，因此主因是 ChatGPT 未响应，不是计划关键词漏识别。
+- 根因补充：旧检测依赖全会话 assistant turn 的动态编号；ChatGPT 长会话重排节点后，旧产物可能被误判为本轮新回复，导致等待提前结束。
+- 新行为：以当前附件用户消息为 DOM 锚点，只识别它之后的回复；无有效计划时在同一上下文自动补发最多两次恢复指令；最终失败才暂停当前索引，禁止上传下一帖。
+- 待真实验收：安全重启到工作台 `0.14.71` / 扩展 `0.2.43` 后，重跑两条历史失败素材并观察 `plan-recovery-sent`、`plan-received`、归档事件。
+
 > 开发和交付前必须同时读取 `docs/REGRESSION-CHECKLIST.md`。历史问题是永久回归门禁，不能只修当前现象后交付。
+> 视觉布局规则参见 `D:\AICode\AI\memory\开发项目默认交付标准.md` §1.6。
+
+## 下一步计划：单账号多窗口无缝续接模式（尚未开发，禁止提前合并）
+
+- 当前“单账号全自动”主链保持不变，继续完成连续生产耐久验收；新能力必须使用独立模式和独立开关，不能修改主模式的调度、上传、下载或归档行为。
+- 新模式名称固定为“单账号多对话无缝续接模式”。适用场景：同一 ChatGPT 账号档案下，轮询左侧多个候选对话，识别每个对话已进行到的阶段并从下一安全动作续接；这里的“多对话”不是多个账号并行，也不等于现有全局账号轮换。
+- 第一阶段只做状态识别和展示，不自动接管。需要展示的证据链为：附件数量 → 计划页数 → 是否已回复 `1` → 已生成图片数 → 是否正在/已经生成小红书文案 → 是否已下载 → 是否已创建作品文件夹。
+- 目标动作状态机：待上传素材 → 计划完成待发 `1` → 图片不足（例如仅 3 张）待整批重新生成 → 图片完成待请求小红书文案 → 图片与文案完成待下载/写 TXT/创建作品文件夹 → 已闭环。每一步都必须以当前对话 URL、当前素材批次和 DOM 证据绑定，禁止仅凭最新一条文字猜测。
+- 本模式独立使用滚动预算：全部候选对话合计上传附件不超过 80；“发送 `1` 触发生图”和“整批重新生成图片”合计最多 5 次。已经启动的单个作品允许安全收尾，预算只在下一动作边界阻止新消耗。
+- 左侧历史对话必须先经过候选筛选，不能遍历并点击所有历史聊天。当前待用户确认的推荐规则是“双重准入”：标题包含“模板”且在工作台显式标记为“允许自动续接”；未标记对话永久只读。
+- 只允许读取工作台内嵌的 ChatGPT 账号窗口；外部 Chrome 不在首版范围。无法确认素材批次、对话归属或图片边界时必须显示“待确认”，禁止猜测完成、重复回复 `1`、重复下载或混入历史图片。
+- 第二阶段再增加“安全续接”：只有对话 URL、素材批次和阶段证据能够绑定时，才允许从下一安全步骤继续；否则保持只读。每次续接都必须幂等，刷新、切换窗口和重启不得重复动作。
+- 第三阶段在独立模式真实验收稳定后，才评估是否把状态识别能力复用到主模式；未经真实多窗口验收，不得合并。
+- 开发顺序：设计批准 → 为阶段推断、防重复、左侧准入、预算和窗口切换编写失败测试 → 最小只读面板 → 单动作人工确认接管 → 独立模式全自动 → 多个真实 GPT 对话逐阶段复验。任何阶段失败都不得改变现有单账号主链默认行为。
+- 启动条件：当前单账号主链完成连续多套作品、重启续跑和异常恢复验收后再开始。当前状态为“已记录计划，未改生产代码，未测试”。
+
+## 0.14.70 单账号主链真实闭环（2026-08-07）
+
+- 用户最终目标已收敛：只保留“当前手动窗口 → 自动选材 → 上传提示词 → 计划 → `1` → 生图 → 文案 → 下载 → TXT → 正式作品文件夹 → 下一帖”。统计和诊断只服务于可靠运行与断点恢复。
+- 真实验收任务 `gpt-first-msifneh7` 已完成。素材为 6 张图片 + 1 份 TXT；ChatGPT 返回 6 页计划和 6/6 张成图，文案 792 字。
+- 正式成品：`D:\AICode\项目推进\projects\江湖有旅人\主项目\成品库（GPT+本地脚本制作）\20260807_122849_苏州西山岛两天一夜团建怎么玩`。磁盘核验为 6 张 PNG、1 份 TXT、`GPT作品记录.json`，记录状态 `completed`。
+- 本轮修复：配置下载根目录授权、禁用停止按钮误判、附件部分上传边界、日志/完成记账作用域错误，以及单账号手动窗口的下一帖接力。
+- 队列已按真实磁盘证据修复到 `7/692`，上一帖状态 `completed`；重启后不得重新生成第 7 帖。
+- 工作包已使用成品库内 `.workpkg_staging_*` 事务目录，并在核验后原子移动为正式文件夹，无需另造一套直接落正式目录的逻辑。
+- “停止 → 启动”现在会同时解除账号级和队列级暂停，再从保留的安全检查点真正续跑。
+- 版本：工作台 `0.14.70` / 扩展 `0.2.42`。
+
+## 0.14.68 自动选材—上传—处理—下载主链收口（2026-08-07）
+
+### 当前唯一目标
+
+先跑通“自动选择素材 → 自动上传 → GPT 自动处理 → 自动下载/保存”的单账号连续生产主链。分发、转化、界面扩展和其他增强暂不提高优先级。
+
+### 本轮修复
+
+- 修复对话日志函数访问未声明变量 `task`：现场持久队列中的真实错误为 `task is not defined`，发生在第一套素材发送后的日志节点。现在全局日志函数只读取显式参数，工作流包装器统一补入请求 ID 和素材名。
+- 恢复部分附件上传的安全分类：三种上传方式顺序尝试后，若只出现部分附件，抛 `UPLOAD_LIMIT_SIGNAL` 并暂停；若一个附件都没有，抛 `ATTACHMENT_UPLOAD_NOT_READY`。
+- 保留 0.14.67 的空文件夹 `NO_ATTACHMENTS` 防线，以及新版 ChatGPT 统一编辑器的提示词补注入和发送按钮等待。
+
+### 当前运行快照与下一步
+
+- 源码版本：工作台 `0.14.68` / 扩展 `0.2.41`。
+- 修复后全量测试：`272 pass / 0 fail / 0 skip`。
+- 修复前运行实例仍为 `0.14.66 / 0.2.39`；自动队列暂停在 `6/692`，GPT 输入框残留 9 个附件，页面没有生成中任务。
+- 下一步必须完整重启 Electron，确认加载 `0.14.68 / 0.2.41`，再通过“重试当前任务”清理旧输入框并只跑一套真实素材。
+- 单套验收标准：自动选到有效素材；附件全部进入输入框；计划、确认、生图和文案按顺序完成；图片与 TXT 落入下载/成品目录；不得混入下一套素材。
+
+## 0.14.57 移除文件分发 junction link 兼容逻辑（2026-08-06）
+
+### 背景
+
+文件分发现已由软件内直接控制三阶段池子流转：抖音小红书（手机分发池）→ 微信公众号（公众号池）→ 已发送（已使用池）。分发到设备成功后自动从手机池移动到公众号池；点击"使用"后从公众号池移动到已使用池。junction link（Windows 软链接）是早期为平台目录创建兼容入口的遗留机制，现在手势软件直接操作，不再需要。
+
+### 本轮完成
+
+- **移除 4 个 junction 相关函数**（`distribution-data.js`）：
+  - `replaceDirectoryLink`：创建/替换/删除 junction 的核心函数
+  - `syncLegacyLinksForStage`：按阶段同步平台目录 junction
+  - `removeMatchingLink`：清理匹配的 junction
+  - `ensureWorkflowCompatibilityLinks`：分发前批量创建兼容 junction
+- **移除 4 处调用点**：
+  - `moveCollectionSourceToStage` 内部不再调用 `syncLegacyLinksForStage`
+  - `renameCollectionType` 内部不再调用 `syncLegacyLinksForStage`
+  - `reconcileWorkflowFolders` 内部不再调用 `syncLegacyLinksForStage`
+  - `server.js` 的 `startDistributionTask` 不再导入和调用 `ensureWorkflowCompatibilityLinks`
+- **保留的兼容能力**：`getDistributionSnapshot` 仍能读取已存在的遗留 junction（向后兼容已有数据），但所有写操作不再创建新 junction。
+- **不影响的功能**：`server.js` 中的 `createDirectoryJunction`（素材筛选整合功能）保留，与分发流程无关。
+- **测试更新**：
+  - 删除 `lib/replace-directory-link.test.js`（被测函数已移除）
+  - 新增 `lib/junction-removal.test.js`（7 个测试 T1-T7）：
+    - T1: `moveCollectionSourceToStage` → official 不创建 junction
+    - T2: `moveCollectionSourceToStage` → used 不创建 junction
+    - T3: `renameCollectionType` 不创建 junction
+    - T4: `reconcileWorkflowFolders` 移动散落文件夹不创建 junction
+    - T5: `getDistributionSnapshot` 仍能正确读取遗留 junction
+    - T6: `getDistributionSnapshot` 在无 junction 环境下正常工作
+    - T7: `markOfficialUsed` 不创建 junction
+  - `package.json` test 脚本更新引用
+- **测试计划文档**：`docs/JUNCTION_REMOVAL_TEST_PLAN.md`
+
+### 验证
+
+- 全量 `npm test` → **268 pass / 0 fail / 0 skip**。
+- `distribution-data.js` 中无 `junction`/`replaceDirectoryLink`/`syncLegacyLinksForStage`/`removeMatchingLink`/`ensureWorkflowCompatibilityLinks` 残留引用。
+- `server.js` 中仅保留 `createDirectoryJunction`（素材整合功能，非分发流程）。
+
+### 分发流程确认
+
+当前分发流程完全由软件内直接控制，不依赖 junction link：
+1. **手机分发**：点击分发到设备 → 作品集从`抖音小红书`移动到`微信公众号`（自动）
+2. **公众号使用**：点击使用 → 作品集从`微信公众号`归档移动到`已发送`（自动压缩为 .zip）
+
+### 未完成 / 下一轮待处理
+
+1. **copyTitle 的 [object Object] 根因**（多轮遗留）：已创建 `work-package-title.js` 归一化函数，但尚未找到写入点。
+2. **端口 4327 崩溃防护**（多轮遗留）：已创建 `workbench-port.js`，桌面实测未做。
+3. **用户需手动重启 Electron** 让 0.14.57 的分发逻辑变更生效。
+
+## 0.14.55 GPT 生产测试断言修复 + 测试并发竞态修复（2026-08-06）
+
+### 本轮完成
+
+- **3 个预已存在的测试失败修复**：`workbench-ui.test.js` 中 3 个测试断言在 0.14.50 工作流重构后未同步更新，导致持续失败：
+  1. `GPT production exposes editable current-session and injected-prompt profiles`：断言 `select.id === "gptProductionMode" || select.id === "gptProductionModeSetting"` 中的 `gptProductionModeSetting` 元素从未存在于 `index.html`，简化为只检查 `select.id === "gptProductionMode"`。
+  2. `GPT 自动生产 downloads and packages only the current verified batch`：断言 `expectedImageCount: downloadedImages` 在重构后变量名变为 `expectedImageCount: downloadResult.count`（`sidebar.js` 第 2727 行），更新断言匹配新变量名。
+  3. `generated quota is recorded when the current reply is confirmed, before download`：断言 `recordWorkbenchQuota(task.entry, "generated", imageUrls.length)` 在重构后变量名变为 `detected.length`（`sidebar.js` 第 2657 行，`detected` 来自 `imageDetection.urls`），更新断言匹配新变量名。同时更新 `doesNotMatch` 断言从 `downloadedImages` 改为 `downloadResult.count`，确保额度不在下载阶段误记。
+- **测试并发竞态修复**：`npm test` 默认并发执行导致 `node --test` spec reporter 的错误输出从 3 个真实失败"溢出"到其他 6 个测试，造成 9 个假失败。在 `package.json` 的 test 脚本中添加 `--test-concurrency=1` 强制串行执行，消除竞态。
+
+### 验证
+
+- 全量 `npm test` → **262 pass / 0 fail / 4 skip**（4 skip 为沙箱无法创建 junction 的测试）。
+- 此前为 258 pass / 4 fail / 4 skip（并发模式 9 fail）。
+
+### 未完成 / 下一轮待处理
+
+1. **copyTitle 的 [object Object] 根因**（上一轮遗留）：已创建 `work-package-title.js` 归一化函数，但尚未找到 `GPT作品记录.json` 中 `copyTitle` 写入 `[object Object]` 的真正写入点。
+2. **端口 4327 崩溃防护**（上一轮遗留）：已创建 `workbench-port.js` 并集成到 `server.js`，但桌面实测未做。
+3. **用户需手动重启 Electron** 让 0.14.54 的 main.js 托盘菜单和 distribution-data.js 的 EEXIST 修复生效。
+
+## server.js 路由模块化拆分完成（2026-08-06）
+
+### 本轮完成
+
+- **目标**：将 monolithic `server.js`（原 6265 行）按 8 个功能域拆分为独立路由模块，使多窗口并行维护不同模块时物理上零冲突。
+- **拆分结果**：`server.js` 从 6265 行降至 5114 行（减少 1151 行），8 个路由模块共计 1500 行：
+  | 模块 | 行数 | 匹配路由 |
+  |---|---|---|
+  | `juguang.js` | 20 | `/api/juguang/*` |
+  | `wechat-draft.js` | 331 | `/api/wechat-draft/*`, `/api/draft/*` |
+  | `backup.js` | 107 | `/api/cloud-backup/*`, `/api/backup/*` |
+  | `settings.js` | 49 | `/api/workspace-settings`, `/api/page-settings` |
+  | `distribution.js` | 261 | `/api/distribution/*`, `/api/device/*`, `/api/transfer/*` |
+  | `production.js` | 298 | `/api/production/*`, `/api/image-api/*`, `/api/text-api/*`, `/api/workbench-assistant/*` |
+  | `gpt-extension.js` | 307 | `/api/gpt-online-templates`, `/api/extension/*`, `/api/gpt-production/*`, `/api/dedup/*` |
+  | `conversion.js` | 127 | `/mobile-conversion/*`（handleEarly）, `/conversion-integrated/*`, `/api/conversion/*`（handle） |
+- **架构模式**：
+  - 每个路由模块导出 `handle(req, res, pathname, parsed, ctx)` 函数，返回 `true` 表示已匹配并处理，`false` 表示不匹配。
+  - `conversion.js` 额外导出 `handleEarly()`，在远程访问安全检查之前执行（手机端转化入口需要绕过本机限制）。
+  - `server.js` 构造一次性 `routeCtx` 共享上下文对象，传入所有工具函数、路径常量、数据文件路径和运行时状态引用。
+  - 路由调用顺序：`conversionRoute.handleEarly()` → 远程访问检查 → `conversionRoute.handle()` → OPTIONS → dashboard/materials → `gptExtensionRoute.handle()` → `juguangRoute.handle()` → state/prompts/rename → `settingsRoute.handle()` → `productionRoute.handle()` → `backupRoute.handle()` → `distributionRoute.handle()` → `wechatDraftRoute.handle()` → 静态文件。
+- **测试适配**：`workbench-ui.test.js` 更新为同时搜索 `server.js` 和 `server/routes/*.js` 的源码，确保路由端点检测覆盖拆分后的模块。
+
+### 验证
+
+- 语法检查：`node --check server.js` + 8 个路由模块全部通过。
+- 全量 `npm test`：**262 pass / 0 fail / 4 skip**。
+- `workbench-ui.test.js`：106/106 通过。
+
+### 架构意义
+
+- `server.js` 路由层拆分完成，多窗口并行维护后端不同功能域不再冲突。
+- 下一阶段可按同样模式拆分 `app.js`（11883 行）和 `styles.css`（9896 行），详见 `docs/MODULAR-MAINTENANCE-ANALYSIS.md`。
+- 过渡期协议：`app.js`/`server.js`/`styles.css` 同一时刻仍只允许一个窗口写；`lib/*.js` 和 `server/routes/*.js` 可自由并行。
+
+## 0.14.54 文件分发 EEXIST 修复 + 托盘重启菜单（2026-08-06）
+
+### 本轮完成
+
+- **根因：文件分发 EEXIST 崩溃**：用户报告中控软件发送文件失败。日志 `desktop.log` 在 `2026-08-06T02:50:27` 记录 `EEXIST` 错误。链条：第一次分发时 Electron 创建了 Windows junction（`发布空间\小红书\作品集_054[转]` → `抖音小红书\作品集_054[转]`），源目录后来被移动/删除导致 junction 悬空；第二次分发时 `lstatSync` 对悬空 junction 抛 ENOENT（Windows 特有行为——即使 junction 本身存在，目标不存在时 lstat 可能报 ENOENT），ENOENT 被 catch 块抑制，清理逻辑被跳过，`symlinkSync` 遇到已存在的 junction → EEXIST 崩溃。
+- **修复 `replaceDirectoryLink`**（`src/lib/distribution-data.js` 第 332 行）：在 `symlinkSync` 外层增加 EEXIST 捕获，命中后先 `unlinkSync` 清除旧 junction，再重试创建。如果 `unlinkSync` 也失败（说明是真实目录不是 junction），抛出"兼容入口被真实文件夹占用"错误。
+- **即时清理**：用 `fsutil reparsepoint delete` 清除了发布空间中 2 个悬空 junction（`作品集_054[转]` 和 `_portfolio_move_logs[转]`），用户无需重启即可重新发送文件。
+- **缓存版本不同步修复**：`index.html` 中 `distribution-ui.js` 和 `material-workspace.js` 的缓存版本仍停留在 0.14.44，与 VERSION（当时 0.14.52）不同步，导致版本同步测试失败。已统一修复。
+- **托盘右键菜单增加"重启工作台"**（`src/desktop/main.js`）：新增 `restartApp()` 函数，复用已有的 `app.relaunch()` + `app.exit(0)` 模式。自动生产运行时弹确认框防止误触中断。托盘菜单现在是：打开团建工作台 → 暂停自动生产 → **重启工作台**（新增）→ 彻底退出。
+- **导出 `replaceDirectoryLink`**：加入 `module.exports` 以便单元测试。
+- **新增测试文件** `src/lib/replace-directory-link.test.js`：5 个测试用例覆盖正常创建、幂等重复创建、替换 junction、真实目录冲突、删除 junction。因 TRAE 沙箱无法创建 junction，4 个跳过，1 个通过（真实目录冲突）。
+
+### 验证
+
+- 语法：`node -c desktop/main.js` 通过。
+- 新测试：`node --test lib/replace-directory-link.test.js` → 1 pass, 4 skip, 0 fail。
+- 全量 `npm test` → 258 pass, 4 fail, 4 skip。4 个失败均为预已存在（与本轮修复无关）：版本同步已修好（1 个），另外 3 个是 GPT 生产功能测试（`exposes editable current-session`、`downloads and packages only the current verified batch`、`generated quota is recorded`），需要下一轮排查。
+- 桌面实测：悬空 junction 已清除，用户可直接重试发送文件。代码修复需要重启 Electron 生效（main.js 主进程代码不支持热更新）。
+
+### 未完成 / 下一轮待处理
+
+1. **3 个预已存在的测试失败**需要排查：
+   - `GPT production exposes editable current-session and injected-prompt profiles`
+   - `GPT 自动生产 downloads and packages only the current verified batch`
+   - `generated quota is recorded when the current reply is confirmed, before download`
+2. **copyTitle 的 [object Object] 根因**（上一轮遗留）：已创建 `work-package-title.js` 归一化函数，但尚未找到 `GPT作品记录.json` 中 `copyTitle` 写入 `[object Object]` 的真正写入点。
+3. **端口 4327 崩溃防护**（上一轮遗留）：已创建 `workbench-port.js` 并集成到 `server.js`，但桌面实测未做。
+4. **用户需要手动重启 Electron 应用**让 main.js 托盘菜单和 distribution-data.js 的 EEXIST 修复生效。
+
+## 0.14.44 GPT 生产就绪检测与素材加载性能修复（2026-08-05）
+
+### 本轮完成
+
+- **根因：GPT 生产就绪检测漏判 `www.chatgpt.com`**：用户报告在 ChatGPT 对话界面点击"开始自动生产"无反应。代码排查发现 `main.js` 的 `chatConversation` 检测只认 `hostname === "chatgpt.com"`，不认 `"www.chatgpt.com"`。`productionReady` 必须同时满足六个条件（`contents`、`domReady`、`extensionReady`、`composerReady`、`chatConversation`、`!authenticationRequired`），其中 `chatConversation` 是硬门槛——hostname 对不上就静默退出，不报错不触发。同样的问题存在于 `safeGptUrl()` 的 URL 验证里。
+- **根因：素材区展开极慢**：`prepareAutoGptQueue`（自动选素材）和手动点击展开分类都走 `loadDashboard(false, categoryPath)`，每次都重算完整 dashboard（分发数据、成品库、日志、生产任务索引等）。N 个分类 = N 次串行完整请求，肉眼可见的卡顿。
+- **修复 1（检测机制）**：`main.js` 第 235 行 `safeGptUrl` 和第 1010 行 `chatConversation` 同时加入 `"www.chatgpt.com"` 判断。
+- **修复 2（轻量素材接口）**：`server.js` 的 `getMaterialLibrary` 新增 `loadAll` 选项，一次加载所有分类；新增 `/api/materials` 轻量路由（带 `library` 参数加载单分类，不带则加载全部）。
+- **修复 3（前端改用轻量接口）**：`app.js` 新增 `loadMaterialCategory()` 函数，GPT 素材区展开/勾选改用它；`prepareAutoGptQueue` 改用 `/api/materials` 一次加载所有分类，回退才走旧的逐个 `loadDashboard`。
+- **好状态保持**：`prepareAutoGptQueue` 原有的自动选素材逻辑（按使用次数从低到高排序、跳过隐藏文件夹、只选同时含图片和 TXT 的帖子）保持不变，只优化了加载路径。
+
+### 验证
+
+- 语法：`node --check` 待跑（main.js 是 Electron 主进程，不参与 node --check）。
+- `app.js` 版本号升至 `0.14.45` 以刷新浏览器缓存。
+- 桌面实测：应用已完全重启（main.js 改动必须完全重启 Electron，不能只刷新）；GPT 扩展 0.2.28 已加载到 account-4。待用户确认点击"开始"能触发、素材展开变快。
+
+### 后续注意
+
+- 如果仍然不触发，下一个可疑点是 `composerReady` 的输入框选择器 `#prompt-textarea, textarea[data-id="root"], [contenteditable="true"]`——ChatGPT 改版可能换了选择器。
+- `productionReady` 的六个条件缺一不可，排查时必须逐个打印 `preflight` 对象确认哪个为 false。
+
+## 0.14.43 流量转化原生四模块内容复核（2026-08-05）
+
+### 本轮完成
+
+- **根因复核**：用户指出不能只看测试通过；真实工作台打开“流量转化”后先复现为“转化知识库未连接”。根因是 `8765` 上仍跑着 8 月 1 日启动的旧 `pythonw` 服务，未加载当前 `本地知识库服务.py` 的 `/api/搜索快照`、`/api/方案索引` 路由；重启后又发现历史问答快照真实加载约 23.8 秒，工作台原 `12s` 聚合超时会误判离线。
+- **搜索模块补齐**：`renderConversionSearch()` 增加聊天来源统计、`conversionHistoryResults` 历史回答列表；`查历史回答` 按当前身份和客户原话从本地 3,520 条候选中匹配；字段映射补齐 `客户原话`、`历史回复原话`、`分桶`、`环节`、`回复人`。
+- **方案模块补齐**：`renderConversionProposal()` 增加方案库统计和 `conversionProposalLocalResults`；默认展示 12 张方案卡，`匹配方案` 和筛选标签从 729 份方案索引中本地匹配；保留 AI 策划匹配入口。
+- **旅程模块补齐**：空画板时不再退化为 SOP 环节列表，改用原版 8 个 `DEFAULT_CONVERSION_JOURNEY_STAGES`，展示进入信号、是/否分支、下一步、可复制话术和背后判断。
+- **性能边界**：工作台聚合 `/api/搜索快照` 超时提高到 45 秒，`/api/方案索引` 提高到 30 秒，覆盖当前真实数据加载时间。
+
+### 验证
+
+- 红灯：`node --test public\workbench-ui.test.js` 先失败在“流量转化原生模块不得丢失原版搜索、方案和旅程内容”，因为 `conversionHistoryResults` 缺失且本地按钮仍是占位 toast。
+- 语法：`node --check public\app.js; node --check public\workbench-ui.test.js; node --check server.js` 通过。
+- 回归：`node --test public\workbench-ui.test.js` 106/106 通过。
+- 接口：`/api/conversion/snapshot` 返回 `ok=true`，历史问答 3,520 条、方案索引 729 份。
+- 桌面实测：真实 Electron 窗口截图保存到 `src/.work/conversion-search-window.png`、`src/.work/conversion-sop-window.png`、`src/.work/conversion-proposal-window.png`、`src/.work/conversion-journey-window.png`；DOM 复核显示搜索 25 张历史卡、SOP 当前环节 14 条问答、方案 12 张默认方案卡、旅程 8 个原版节点。
+
+## 0.14.40 工作流编辑器与顶部 UI 现场反馈修复（2026-08-05）
+
+### 本轮完成
+
+- **工作流提示词编辑**：提示词输入从单行 `input` 改为可点击放大的 `textarea`，新增“编辑提示词”按钮，默认/自定义来源下拉改为文字选项，避免只显示图标导致不知道怎么新增/修改。
+- **等待参数收口**：`wait-random` 的 `minSeconds/maxSeconds` 直接显示在主行，不再在下面额外开一条“随机”参数行；失败重试参数包成独立 `gpt-workflow-retry-group`，与等待/时间模块视觉分开。
+- **数字框修复**：随机等待、检测延迟、重试延迟输入框宽度统一放宽到 68px，修复 `retryDelayMax=300` 显示不完整。
+- **导航改名**：侧栏与页面标题已改为“生产（暂停）”“内容生产”“设置中心”，清除旧的“素材生产（暂不开发）/内容生产（自动）/设置”残留。
+- **GPT 工具栏视觉**：`gpt-browser-toolbar` 和账号按钮改成透明扁平样式，active 账号用底线表示，不再一排黑框。
+- **小猫气泡定位**：气泡显示后调用 `resyncWorkbenchAssistantDockFromLauncher()` 按真实高度重新定位；小猫在左侧时气泡放在右侧并用左箭头指向小猫，避免落到小猫底部。
+
+### 验证
+
+- 新增 UI 回归测试先失败后修复。
+- `node --check public/app.js; node --check public/workbench-ui.test.js` 通过。
+- `node --test public/workbench-ui.test.js` 97/97 通过。
+- `npm test` 245/245 通过。
+- 桌面实测待做：真实界面复查提示词展开、随机等待参数位置、重试数字框、导航文案、GPT 工具栏和小猫左侧气泡。
+
+## 0.14.40 纯脚本触顶 mock 工作流与日志增强（2026-08-05）
+
+### 本轮完成
+
+- **mock 工作流验证**：`gpt-automation-core.test.js` 新增 `mock工作流:纯脚本/沙盒输出会返回触顶暂停决策`，模拟 `scriptOutputLimitSignal=true`、`latestImageCount=0` 的纯脚本/沙盒输出场景。
+- **暂停决策统一**：`classifyAutomationBoundaryPause` 把 `scriptOutputLimitSignal` 判定为 `GENERATION_LIMIT_SIGNAL`，`riskReason=script-output-limit`，并返回“检测到纯脚本/沙盒产物输出，按生图触顶处理，停止当前帖子”。
+- **主工作流接入**：`sidebar.js` 在 `stateSnapshot` 边界检查里调用 `classifyAutomationBoundaryPause`，命中后抛错暂停，阻止继续下载、文案、打包和归档。
+- **日志增强**：`generated-output-risk`、`wait-images-hard-failure`、`state-snapshot-boundary-pause` 等关键分支输出 `[TB_GPT_LIMIT]`，便于排查真实页面中的图片数、产物数、脚本信号、风险原因和最近回复片段。
+
+### 验证
+
+- `VERSION`：0.14.40
+- `src/package.json`：0.14.40
+- `node --check src/integrations/gpt-production-extension/gpt-automation-core.js; node --check src/integrations/gpt-production-extension/sidebar.js; node --check src/public/app.js` 通过
+- `node --test integrations/gpt-production-extension/gpt-automation-core.test.js` 19/19 通过
+- `npm test` 240/240 通过
+- 桌面实测待做：真实 GPT Plus 窗口触顶后出现纯脚本/沙盒产物时，确认自动暂停且界面显示触顶原因。
+
+## 0.14.39 纯脚本/沙盒输出归入生图触顶（2026-08-05）
+
+### 本轮完成
+
+- **纯脚本/沙盒输出也算触顶**：没有原生生图,但出现代码解释器、脚本文件、压缩包、批量下载等产物时,判定为 GPT 生图触顶特征。
+- **新增检测函数**：`detectScriptOutputLimitSignal` 返回 `script-output-limit`。
+- **错误码调整**：`script-output-limit` 抛出 `GENERATION_LIMIT_SIGNAL`,不再作为普通 `SCRIPT_GENERATED_OUTPUT` 处理。
+- **状态快照增强**：`generatedOutputRisk` 和 `conversationStateSnapshot` 新增 `scriptOutputLimitSignal`。
+- **自动测试**：新增 4 个纯脚本/沙盒触顶测试。
+
+### 验证
+
+- `node --check` 三文件通过
+- `node --test gpt-automation-core.test.js` 18/18 通过
+- 全量 `npm test` 235/235 通过
+
+## 0.14.38 PY脚本兜底拼图与低图触顶补充特征（2026-08-05）
+
+### 本轮完成
+
+- **PY脚本兜底拼图检测**：GPT Plus 账号撞到 50 张生图上限后，不用 DALL-E 原生出图，而是用 py/代码解释器拼接垃圾图敷衍。新增 `detectPyScriptFallbackSignal`（有图+脚本特征=PY兜底拼图），在 `generatedOutputRisk` 中返回 `pyScriptFallbackSignal`，`hardFailure` 包含此信号。
+- **低图触顶检测**：只出 4 张及以下也是撞上限特征。新增 `detectLowImageLimit`（≤4张）。图片检测完成后 `detected.length<=4 && expectedImages>4` 判定为 `GENERATION_LIMIT_SIGNAL`。
+- **错误消息明确化**：PY 脚本兜底拼图的错误消息明确指出"PY代码兜底拼接垃圾图而非大模型原生生图，疑似撞到生图上限"。
+- **状态快照增强**：`conversationStateSnapshot` 返回 `pyScriptFallbackSignal` 和 `lowImageLimit`；`stateSnapshot` 检查加入 `pyScriptFallbackSignal`。
+- **自动测试**：新增 10 个测试用例覆盖 PY 脚本兜底拼图和低图触顶的各种边界。
+
+### 已修改
+
+- `src/integrations/gpt-production-extension/gpt-automation-core.js`（新增 `detectPyScriptFallbackSignal`、`detectLowImageLimit`）
+- `src/integrations/gpt-production-extension/gpt-automation-core.test.js`（新增 10 个测试）
+- `src/integrations/gpt-production-extension/sidebar.js`（`generatedOutputRisk`、`generatedImageCompletionEvidence`、`waitForGeneratedImageGrowth`、`conversationStateSnapshot`、`stateSnapshot` 检查）
+- `src/integrations/gpt-production-extension/manifest.json`（版本→0.2.26）
+- `src/public/index.html`（缓存版本→0.14.38）
+- `src/package.json`（版本→0.14.38）
+- `VERSION`（→0.14.38）
+- `README.md`、`CHANGELOG.md`、`docs/REGRESSION-CHECKLIST.md`
+
+### 验证
+
+- `node --check` 三文件通过
+- `node --test gpt-automation-core.test.js` 14/14 通过
+- 全量 `npm test` 235/235 通过
+- 桌面实测待做：真实 GPT Plus 窗口撞到生图上限后验证
+
+## 0.14.37 GPT 等待关键词检测（2026-08-05）
+
+### 本轮完成
+
+- **三个等待环节支持关键词完成信号**：`wait-plan`、`wait-images`、`wait-copy` 新增可编辑 `keywordPattern` 参数，UI 默认显示“计划完成 / 出图完毕 / 文案完成”相关正则，用户可改成工作流强制回复的固定关键词。
+- **执行层实际读取 UI 参数**：计划等待、图片等待、文案等待均读取 `keywordPattern`；关键词命中后作为完成证据之一结束等待，原有签名稳定、生成停止、图片数量、文案质量检测继续保留。
+- **修复 detect-plan 半成品**：`detect-plan` 不再硬编码 `/迁移计划|逐页|P\s*1/i`，改为读取步骤里的 `pattern` 参数。
+- **模拟测试数据**：新增 `integrations/gpt-production-extension/gpt-automation-core.test.js`，构造计划、图片、文案三段模拟回复，验证关键词正则能触发完成检测，并验证无效正则不会抛异常。
+
+### 已修改
+
+- `src/integrations/gpt-production-extension/gpt-automation-core.js`
+- `src/integrations/gpt-production-extension/gpt-automation-core.test.js`
+- `src/integrations/gpt-production-extension/sidebar.js`
+- `src/integrations/gpt-production-extension/manifest.json`
+- `src/public/app.js`
+- `src/package.json`
+- `README.md`
+- `CHANGELOG.md`
+
+### 验证
+
+- 新增模拟测试先红后绿：初次运行因 `keywordPatternMatches/defaultKeywordPattern/completionKeywordDetected is not a function` 失败；实现后 `node --test integrations/gpt-production-extension/gpt-automation-core.test.js` 4/4 通过。
+- 语法检查：`node --check integrations/gpt-production-extension/gpt-automation-core.js; node --check integrations/gpt-production-extension/sidebar.js; node --check public/app.js` 通过。
+- 全量回归：`npm test` 225/225 通过。
+
+## 0.14.36 作品集空文件夹扫描修复（2026-08-05）
+
+### 本轮完成
+
+- **根因确认**：内容分发库存由 `src/lib/distribution-data.js` 的 `getDistributionSnapshot()` 生成，具体有效性来自 `inspectSource()`。旧逻辑只要作品集下存在子目录就设置 `valid=true`，没有检查子目录里是否有真实图片，因此“空子目录”和“只有 TXT 文案”的作品集会被误计入可发库存。
+- **扫描修复**：`inspectSource()` 现在会检查每个子作品目录的图片数量，只把 `imageCount > 0` 的子目录计入 `itemCount`；`sourceValid` 和 `automaticEligible` 由真实含图子作品决定。
+- **大目录边界**：有效性统计扫描全部子目录，界面 `items` 仍只截取前 50 个用于预览，避免有效作品排在第 51 个之后时被误判为空。
+
+### 已修改
+
+- `src/lib/distribution-data.js`：修复作品集有效性判定。
+- `src/lib/distribution-scan-validity.test.js`：新增空作品集扫描回归测试。
+- `src/package.json`：加入新测试文件并同步版本到 0.14.36。
+- `src/public/index.html`：静态资源缓存版本号更新到 0.14.36。
+- `VERSION`：0.14.35 → 0.14.36。
+- `CHANGELOG.md`：新增 0.14.36 条目。
+- `docs/REGRESSION-CHECKLIST.md`：新增 DATA-DISTRIBUTION-007 永久回归项。
+
+### 验证
+
+- `node --test lib/distribution-scan-validity.test.js`：2/2 通过。
+- `node --check lib/distribution-data.js`：通过。
+- `node --check public/distribution-ui.js`：通过。
+- 全量 `npm test`：221/221 通过。
+
+### 当前状态
+
+- 空作品集、只有空子目录、只有文案没有图片的目录不会再作为“抖音小红书可发”库存。
+- 真实含图片的作品集仍可正常进入可发库存；即使有效子作品排在第 50 个预览项之后，也能正确识别。
+- 尚未做桌面人工复验：需要打开内容分发页，确认实际业务目录中空文件夹不再显示为可发库存。
+
+## 0.14.35 分发统计布局修复 + 视觉规则沉淀（2026-08-05）
+
+### 本轮完成
+
+- **移除冗余统计卡**：分发设备页面的"待手机分发"统计卡与抖音小红书 tab 内容重复，已移除。保留 3 个统计卡：可信设备在线、陌生设备、进行中任务。
+- **统计卡紧凑化**：分发面板内的 `.distribution-stats .summary-card` 覆盖为紧凑样式（min-height: 0, padding: 10px 12px, font-size: 20px），不再使用主页面的 92px/28px 大尺寸。
+- **网格列数匹配**：`.distribution-stats` 保持 `repeat(3, 1fr)` 匹配 3 个子元素。
+- **视觉布局防回归规则**：在开发标准文档新增 §1.6，包含 6 条强制检测清单和禁止行为，防止同类问题复发。
+
+### 已修改
+
+- `src/public/app.js`：移除"待手机分发"统计卡。
+- `src/public/styles.css`：新增 `.distribution-stats .summary-card` 紧凑样式覆盖。
+- `src/public/index.html`：缓存版本号更新为 0.14.35。
+- `VERSION`：0.14.34 → 0.14.35。
+- `CHANGELOG.md`：新增 0.14.35 条目。
+- `D:\AICode\AI\memory\开发项目默认交付标准.md`：新增 §1.6 视觉布局防回归规则。
+
+### 验证
+
+- 全量 `npm test`：219/219 通过。
+- 浏览器截图验证：3 个统计卡在同一行显示，不换行。
+
+### 当前状态
+
+- 分发设备页面统计区：3 卡 3 列，紧凑显示，无冗余信息。
+- 通知系统：所有通知统一通过小猫助手气泡展示。
+- 交接文档：本文件 + `docs/wechat-draft-publisher-handoff.md` 均已更新。
+- 作品集扫描逻辑的空文件夹显示问题已在 0.14.36 修复；桌面人工复验待补。
+
+## 0.14.33 储备不足通知改为小猫气泡（2026-08-05）
+
+- 储备不足通知从独立浮动条改为小猫助手气泡。
+- 旧浮动条 `#distributionReserveAlert` 保留但始终隐藏。
+
+## 0.14.32 微信公众号草稿发布器 UI 重构（2026-08-05）
+
+- 批量操作栏分离到独立子头部，不随列表滚动。
+- 按钮尺寸统一（min-height: 30px, font-size: 11px, border-radius: 9px）。
+- 侧边栏宽度 340-420px，最小高度 520px。
+- 空状态隐藏批量操作栏。
+
+## 0.14.28 批量草稿队列 + 图片素材复用（2026-08-04）
+
+- 新增批量草稿队列（多选、串行处理、进度面板、持久化）。
+- 新增图片素材复用函数（SHA-256 哈希匹配，按账号隔离）。
+- 新增 5 个 API 路由和 8 个单元测试。
 
 ## 0.14.27 automatic 模式边界测试与版本号同步（2026-08-03）
 

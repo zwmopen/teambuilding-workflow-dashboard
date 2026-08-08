@@ -12,5 +12,8 @@ contextBridge.exposeInMainWorld("assistantOverlay", {
   },
   move(dx = 0, dy = 0) {
     ipcRenderer.send("assistant-overlay:move", { dx: Number(dx || 0), dy: Number(dy || 0) });
+  },
+  setIgnoreMouseEvents(ignore) {
+    ipcRenderer.send("assistant-overlay:set-mouse-events", { ignore: Boolean(ignore) });
   }
 });

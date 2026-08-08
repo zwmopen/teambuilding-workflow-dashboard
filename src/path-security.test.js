@@ -6,6 +6,7 @@ const test = require('node:test');
 const { PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const childProcess = require('node:child_process');
+const { resolveAuthorizedDownloadRoot } = require('./lib/gpt-download-root');
 
 const server = require('./server');
 
@@ -162,6 +163,38 @@ test('isPathInside rejects sibling paths that share a prefix', () => {
     assert.equal(server.isPathInside(root, nested), true);
     assert.equal(server.isPathInside(root, sibling), false);
     assert.equal(server.isPathInside(root, path.join(root, '..', 'escape')), false);
+  } finally {
+    cleanup(parent);
+  }
+});
+
+test('GPT download accepts the configured image inbox and rejects unrelated roots', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-gpt-download-root-'));
+  const runtimeRoot = path.join(parent, 'runtime-download');
+  const configuredRoot = path.join(parent, 'configured-download');
+  const unrelatedRoot = path.join(parent, 'unrelated-download');
+  try {
+    assert.equal(
+      resolveAuthorizedDownloadRoot(configuredRoot, {
+        defaultRoot: runtimeRoot,
+        configuredRoot
+      }),
+      path.resolve(configuredRoot)
+    );
+    assert.equal(
+      resolveAuthorizedDownloadRoot(path.join(configuredRoot, 'batch'), {
+        defaultRoot: runtimeRoot,
+        configuredRoot
+      }),
+      path.resolve(configuredRoot, 'batch')
+    );
+    assert.throws(
+      () => resolveAuthorizedDownloadRoot(unrelatedRoot, {
+        defaultRoot: runtimeRoot,
+        configuredRoot
+      }),
+      /下载目录未获授权/
+    );
   } finally {
     cleanup(parent);
   }

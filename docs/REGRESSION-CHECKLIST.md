@@ -1,5 +1,164 @@
 # 团建工作台问题回归库
 
+## GPT-WEB-RECOVERY-014｜素材发送后网页静默或原生重试必须原地自愈（2026-08-08）
+
+- [x] 真实复现：账号 2 的素材消息已包含 5 图 + TXT，但没有任何助手回复且网页不再生成；旧实现等待完整 8 分钟才续接。
+- [x] 真实复现：下一套 10 图 + TXT 返回“出了点问题，请重试”，网页同时残留可用的“停止回答”按钮；点击原生重试后只返回半截计划。
+- [x] 根因：通用完成等待只有“有回复稳定”和“总超时”两端，没有已提交但零回复的中间恢复点；生成中判断无法覆盖 ChatGPT 的错误页双按钮状态。
+- [x] 自动测试：稳定空闲未满 60 秒不恢复，满 60 秒且零新回复/输入框为空才恢复；原生线程错误满 15 秒只重试一次，有新回复或已重试时不重复点击。
+- [ ] 桌面验收：安全重启到 0.14.78 / 0.2.48 后，用同一素材分别验证静默 60 秒续接、原生重试一次、半截计划补全，并完成 `1 → 生图 → 文案 → 下载 → 归档`。
+
+## GPT-ROTATION-RESUME-015｜全局轮换跨暂停/重启不能回落为单账号（2026-08-08）
+
+- 现象：账号窗口均标记为“多账号全自动”，持久化轮换运行也仍在，但主选择器和继续入口显示 `single`，重启后可能由单账号调度器接管未完成队列。
+- 根因：界面和调度入口只读取 `gptAutoSettings.mode`，没有把未完成的 `gptMultiRunState` 作为运行态真源。
+- 修复标准：轮换状态为 `running`、`paused`、`paused-integrity-boundary`、`waiting-quota` 时，实际生产模式必须为 `rotate`；只有 `completed` 后才退回配置模式。
+- 自动化测试：`public/gpt-account-rotation.test.js` 覆盖上述四种未完成状态和完成状态。
+- [ ] 桌面验收：暂停轮换后重启工作台，主选择器仍显示“多账号全自动”；继续后仍只使用账号 1/2/4，并从第 15 套当前断点恢复。
+- 数据边界：不得清空队列、登录分区、轮换游标或当前素材附件记录。
+- 实测补充：第 15 套重启恢复后完成 10 图、文案、下载和归档；随后自动进入第 16 套。现场暴露的重复母版初始化与重复素材上传已增加独立回归保护。
+
+## GPT-IMAGE-SILENCE-016｜确认出图后网页长耗时但没有助手首包（2026-08-08）
+
+- 现象：系统已发送一次 `1`，ChatGPT 原生生成持续数分钟后停止，但没有新增助手消息，也没有任何图片；旧逻辑会继续等满 15 分钟。
+- 修复标准：网页已停止、确认后没有新助手 turn、0 张新图且等待超过 60 秒时，在同一作品中发送图片续接指令；最多两次，不重新输出计划、不重复上传素材、不重复发送 `1`。
+- 失败边界：两次仍为 0 图时返回 `IMAGE_COUNT_UNCERTAIN`，全局轮换暂停当前素材，不得标记触顶、不得跳下一套。
+- 自动化测试：`gpt-automation-core.test.js` 覆盖生成中、已有新 turn、已有新图和真实无首包四种分支；全量 `306/306`。
+- [ ] 桌面验收：待当前作品安全结束后加载最新扩展，再用真实无首包场景确认自动产生 `image-recovery-sent` 日志。
+- 数据安全边界：始终绑定当前素材用户消息；恢复不得重传附件、不得跳过当前队列项、不得重复发送 `1`。
+
+## GPT-QUOTA-BOUNDARY-013｜账号额度必须在作品边界完整核对（2026-08-07）
+- [x] 自动测试：后来新增的账号窗口会补入账号额度设置，并继承当前默认 `80 附件 / 45 生图 / 3 小时`。
+- [x] 自动测试：上传账本按全部附件计数，TXT 不再从滚动额度中漏记。
+- [x] 自动测试：下一套所需附件或预计生图任一超过剩余额度时，在上传前等待；刚好可完整容纳时允许启动。
+- [x] 桌面实测：重启至 0.14.76 后，account-6 的 49 张历史生图触发等待；队列保留在 14/676，当前素材未提交，ChatGPT 输入框 0 文字/0 附件；23:34:41 自动探测时间跨二次重启恢复。
+- 数据安全边界：额度判断只拦截尚未启动的新作品；已进入生图的作品必须继续到文案、下载、TXT 和正式归档完成。
+
+## GPT-GLOBAL-ROTATION-012｜全局账号轮换必须按账号自愿参与并闭环切换（2026-08-07）
+
+- [x] 自动测试：人工控制、单账号全自动、禁用、人工暂停/停止窗口不参与；仅 `rotate` 账号参与，隐藏窗口仍可参与。
+- [x] 自动测试：44/45 不提前切换；45/45 或超出安全线时，当前作品完整归档后才切换。
+- [x] 自动测试：轮换跳过冷却账号；全部冷却时选择最早恢复时间并保留跨重启状态。
+- [x] 桌面实测（前半环）：账号 2 连续完整归档至 `42/45`，下一套需 7 张但仅剩 3 张时在上传前等待；调度器真实切到账号 4，账号 4 完成母版初始化、上传 7 图 + 1 TXT、识别 7 页计划并自动发送一次 `1`。仍待冷却恢复后验证“账号 4 → 账号 2”的回切闭环。
+- 数据安全边界：不得自动启用被禁用账号，不得打断正在生成/下载/归档的作品，不得清空跨重启队列。
+
+## GPT-PLAN-PARTIAL-011｜半截计划不得误发 1 或重复上传（2026-08-07）
+
+- [x] 自动测试：只有计划标题/前两行但没有可解析页数时保持等待，不判定计划完成。
+- [x] 自动测试：计划解析重试沿用现有会话和附件，不重新上传当前素材。
+- [ ] 桌面实测：从队列 12/676 的真实旧断点恢复，确认先补全计划，再发 `1`、生图、文案、下载和归档。
+- 数据安全边界：解析失败必须保留当前队列索引，禁止上传下一套覆盖现场。
+
+## GPT-PLAN-RESPONSE-004｜附件消息无助手回复不得跳过素材（2026-08-07）
+
+- [x] 真实复现：两条连续任务只有 `upload-sent`，ChatGPT DOM 中存在带附件的 user turn，但其后没有 assistant turn；旧队列仍递增到下一素材。
+- [x] 根因：计划等待使用全会话动态节点编号判定新回复，长会话 DOM 重排可能把旧产物算作新回复；无有效计划异常又未归类为队列完整性边界。
+- [x] 修复：绑定当前附件 user turn，只读其后的助手回复；自动补发最多两次“继续处理上一条附件”恢复指令；最终失败保留当前索引并返回 `PLAN_NOT_READY` / `PLAN_NOT_COMPLETE`。
+- [x] 自动测试：恢复决策纯函数、当前回复锚点、续接指令日志、连续生产重传/顺延、工作台边界分类和运行中热更新延迟均已覆盖；全量 `npm test` 283/283 通过。
+- [x] 桌面实测：异常计划真实触发自动续接后，完成 `1`、10 张生图、文案、下载和正式归档；成品目录含 10 PNG、1 TXT、1 JSON，归档后才进入下一帖。
+- [ ] 两条历史漏单已插入队列第 16、17 项重跑；第一条重传时触发真实上传额度边界（8/9），当前按账号额度时间自动等待恢复，待探测后继续验收两条漏单。
+
+## GPT-AUTO-E2E-006｜单账号自动生产真实闭环（2026-08-07）
+
+- [x] 第一账号窗口上传 6 张图片 + 1 份 TXT，日志记录 `attachmentCount=7`。
+- [x] 自动识别 6 页计划并只发送一次 `1`。
+- [x] 自动检测 6/6 张图片并请求小红书文案。
+- [x] 自动接收 792 字文案、下载 6 张图片、保存 TXT、执行事务打包。
+- [x] 正式成品目录包含 6 张 PNG、1 份非空 TXT、`GPT作品记录.json`，记录状态为 `completed`。
+- [x] `D:\Download` 作为配置的图片收件箱可被授权，其他无关目录仍拒绝。
+- [x] 成功归档后完成记账不再因 `uploadImages` 作用域错误误暂停。
+- [x] 单账号运行中手动切换窗口时，当前帖保持原所有者，下一帖交给新选窗口。
+
+## GPT-AUTO-CHAIN-004｜日志不得中断生产，部分附件不得继续发送（2026-08-07）
+
+- 复现条件 1：自动上传完成后进入 `upload-sent` 对话日志节点；旧实现读取作用域外 `task`，抛 `task is not defined`。
+- 复现条件 2：预计上传 N 个附件但 GPT 输入框只出现 1..N-1 个；旧改动丢失 `UPLOAD_LIMIT_SIGNAL`，统一退化为普通上传失败。
+- 根因：全局日志函数隐式依赖工作流局部变量；新版发送按钮等待重构时移除了部分附件的最终分类。
+- 自动测试：`GPT 对话日志不读取作用域外的 task 变量`；`附件只出现一部分时判定上传上限并停止发送`；原有 `partial GPT attachments...` 门禁。
+- 桌面验收：重启后用一套有效素材验证自动选材、全量上传、计划、确认、生图、文案和下载；再用空文件夹/部分附件场景确认不会发送纯提示词或残缺素材。
+- 状态：代码已修复，自动测试已通过；真实 GPT 单套闭环待验证。
+
+## GPT-PRODUCTION-READY-001｜生产就绪检测必须识别 www.chatgpt.com（2026-08-05）
+
+- [x] 复现条件：用户在 ChatGPT 对话界面（URL 为 `https://www.chatgpt.com/` 或 `https://www.chatgpt.com/c/xxx`）已登录并在对话中，点击"开始自动生产"无任何反应，不报错不触发。
+- [x] 最早根因：`main.js` 第 1010 行 `chatConversation` 检测只认 `parsedUrl?.hostname === "chatgpt.com"`，不认 `"www.chatgpt.com"`。`productionReady` 六个条件（`contents`、`domReady`、`extensionReady`、`composerReady`、`chatConversation`、`!authenticationRequired`）中 `chatConversation` 为 false 就静默退出。同样问题存在于第 235 行 `safeGptUrl()`。
+- [x] 代码修复：`main.js` 的 `safeGptUrl` 和 `chatConversation` 同时加入 `|| parsedUrl?.hostname === "www.chatgpt.com"` 判断。
+- [x] 验证：`app.js` 版本号升至 0.14.45；应用已完全重启（main.js 改动必须完全重启 Electron）；GPT 扩展 0.2.28 已加载。
+- [ ] 桌面实测：在 GPT 窗口处于 `www.chatgpt.com` 对话页面时点击"开始自动生产"，确认能正常触发生产流程；素材区展开分类确认明显变快。
+- 数据安全边界：本修复只改 URL hostname 判断和素材加载路径，不读取、不移动、不删除业务素材或 GPT 登录态。
+- 排查备忘：如果仍不触发，检查 `preflight` 对象的 `composerReady`（选择器 `#prompt-textarea, textarea[data-id="root"], [contenteditable="true"]`）和 `authenticationRequired`（页面文字含"登录/验证码"等关键词时为 true）。
+
+## GPT-MATERIAL-LOAD-002｜素材区展开不得走完整 dashboard 重算（2026-08-05）
+
+- [x] 复现条件：点击展开素材分类文件夹时长时间显示"正在读取文件夹…"，本地文件夹读取极慢。
+- [x] 最早根因：GPT 素材区展开/勾选和 `prepareAutoGptQueue` 都走 `loadDashboard(false, categoryPath)`，每次请求 `/api/dashboard?library=xxx` 都重算分发数据、成品库、日志、生产任务索引等全部数据。N 个分类 = N 次串行完整请求。
+- [x] 代码修复：`server.js` 新增 `loadAll` 选项和 `/api/materials` 轻量路由；`app.js` 新增 `loadMaterialCategory()` 函数，GPT 素材区展开/勾选改用它；`prepareAutoGptQueue` 改用 `/api/materials` 一次加载所有分类。
+- [x] 验证：应用已重启；待用户确认素材展开速度明显改善。
+- [ ] 桌面实测：点击展开多个素材分类，确认不再长时间卡在"正在读取文件夹…"；单账号全自动模式下不勾选素材直接点"开始"，确认自动选材逻辑正常触发。
+- 数据安全边界：本修复只改素材加载路径，不读取、不移动、不删除业务素材。
+- 好状态保持：`prepareAutoGptQueue` 原有的自动选素材逻辑（按使用次数从低到高、跳过隐藏文件夹、只选同时含图片和 TXT 的帖子）不变，只优化了加载路径。
+
+## UI-CONVERSION-009｜流量转化桌面页不得再套 iframe 壳（2026-08-05）
+
+- [x] 复现条件：在工作台打开“流量转化”时，页面主体仍是 `conversionAppFrame` iframe，TRAE/桌面元素选择只能选到 iframe 外壳，不能直接选中内部搜索框、SOP 卡片、方案匹配区域等 DOM；视觉上也像另一个独立网页嵌在软件内。
+- [x] 最早根因：桌面版为了快速复用 `/conversion-integrated/`，只把独立转化应用嵌入 iframe；后续主题同步只能改善颜色，无法解决 DOM 选择边界和原生融合感。
+- [x] 代码修复：`index.html` 中 `conversionView` 改为原生 `conversion-native-shell`，包含页面标题、服务状态、手机入口按钮、模块导航和 `conversionContent` 挂载点；`activateTab("conversion")` 改为调用 `loadConversionHub()`；移除旧 `ensureEmbeddedConversionApp()` / `prepareEmbeddedConversionApp()` iframe 加载路径；样式切换到透明原生 shell。
+- [x] 自动测试：`workbench-ui.test.js` 新增“流量转化桌面页使用原生骨架而不是 iframe 壳”，断言不存在 `conversionAppFrame` / 流量转化 iframe，并存在原生模块导航、服务状态和内容挂载点。
+- [x] 验证：新增测试先失败后修复；`node --check public/app.js public/workbench-ui.test.js public/material-workspace.test.js server.js` 通过；`node --test public/material-workspace.test.js public/workbench-ui.test.js` 111/111 通过；全量 `npm test` 251/251 通过。
+- [x] 桌面实测：打开真实工作台的“流量转化”，确认能直接选中查回复输入框、模块按钮和结果区域；确认没有独立网页壳感。验证证据（2026-08-05）：重启旧 `8765` 知识库服务后，工作台 `/api/conversion/snapshot` 返回 `ok=true`，历史问答 3,520 条、方案索引 729 份；真实 Electron 窗口截图已保存为 `src/.work/conversion-search-window.png`、`src/.work/conversion-sop-window.png`、`src/.work/conversion-proposal-window.png`、`src/.work/conversion-journey-window.png`；DOM 复核显示搜索 25 张历史卡、SOP 当前环节 14 条问答、方案 12 张默认方案卡、旅程 8 个原版节点。
+- 数据安全边界：本修复只改前端骨架、加载入口、样式和静态测试，不读取、不移动、不删除业务素材或客户数据。
+
+## UI-WORKFLOW-008｜工作流编辑器与顶部界面不得挤压成摆设（2026-08-05）
+
+- [x] 复现条件：工作流编辑器里提示词来源只有窄小图标下拉，提示词输入框不能舒适新增/修改；重试最大秒数输入框显示不完整；随机等待参数在下一行重复占空间；重试时间和等待/时间模块视觉上混在一起；顶部导航文案仍显示“素材生产（暂不开发）/内容生产（自动）/设置”；GPT 账号工具栏一排按钮像黑框；小猫拖到左侧后气泡跑到下方且箭头方向不准；小猫主体在当前界面显得过大；随机等待/失败重试残留“随机、延迟、秒后”等重复文字；设置区在电脑宽屏下仍只有两列导致大片空白；“添加环节”按钮文字占空间；顶部已有多个账号窗口时，设置里的账号管理区可能只显示旧缓存的 1 个；分发统计卡左对齐不稳；页面标题区右侧按钮错位；深色模式下 GPT 工具栏、左侧导航、服务状态、设备图标有黑框或对比不足；流量转化 iframe 不跟随深色主题；小猫图片在深浅背景下看起来有底板。
+- [x] 最早根因：`renderGptModeWorkflow()` 把提示词、随机等待、检测延迟和重试配置都压在同一套窄栅格/extra 行里；顶部导航文案长期未按真实使用状态更新；小猫气泡显示后没有按真实内容高度二次定位。
+- [x] 代码修复：提示词字段改为可点击放大的 `textarea`，增加“编辑提示词”按钮；随机等待秒数并入主行且去掉重复“随机”；重试参数合并成 `失败重试 X~X 秒`；数字框宽度从 48px 放宽到 68px；导航改名为“生产（暂停）/内容生产/设置中心”；GPT 工具栏扁平化；小猫气泡显示后通过 `resyncWorkbenchAssistantDockFromLauncher()` 重新贴边；小猫主体改为 `clamp()` 自适应尺寸；设置区网格改为电脑宽屏自动多列、窄屏单列；添加环节按钮改为左侧单加号；账号窗口管理区打开时刷新桌面真实账号档案并显示同步数量；分发统计卡居中；页面标题动作改为横向 flex；深色模式下给 GPT 工具栏、rail、服务状态、主题切换、设备图标补浅色半透明边界；`conversionAppFrame` 增加完整主题同步和 iframe 内主题桥；小猫图片元素强制透明背景。
+- [x] 自动测试：`workbench-ui.test.js` 新增“主导航命名和 GPT 工具栏视觉保持克制”“GPT 工作流提示词和等待参数编辑器不再挤成摆设”“GPT 设置和助手控件在宽屏下紧凑自适应”“GPT 账号窗口设置跟随真实手动账号列表刷新”“分发页标题动作和统计卡保持居中紧凑”“深色模式模块使用浅色边界并同步嵌入转化页”，并增强小猫气泡定位断言。
+- [x] 验证：新增测试先失败后修复；`node --check public/app.js public/workbench-ui.test.js` 通过；`node --test public/workbench-ui.test.js` 97/97 通过；全量 `npm test` 245/245 通过。
+- [ ] 桌面实测：在真实工作台界面点击工作流提示词框确认会展开，随机等待不再出现重复 extra 行，重试最大秒数完整可见；拖动小猫到左侧后确认气泡在侧边且箭头正确；确认导航新文案生效。
+- 数据安全边界：本修复只改前端 UI、样式和静态测试，不读取、不移动、不删除任何业务素材或 GPT 登录态。
+
+## GPT-SCRIPT-OUTPUT-LIMIT-003｜纯脚本/沙盒输出必须按生图触顶处理（2026-08-05）
+
+- [x] 复现条件：GPT Plus 账号撞到生图上限后，没有返回原生图片，而是输出代码解释器/脚本文件/压缩包/批量下载等沙盒产物。用户确认这也是“代码生图/撞上限”的一种表现。
+- [x] 最早根因：旧口径把纯脚本/沙盒输出归为 `SCRIPT_GENERATED_OUTPUT` 普通脚本异常，只暂停但不明确纳入 `GENERATION_LIMIT_SIGNAL` 触顶信号。
+- [x] 代码修复：`gpt-automation-core.js` 新增 `detectScriptOutputLimitSignal`；`sidebar.js` 的 `generatedOutputRisk` 和 `conversationStateSnapshot` 新增 `scriptOutputLimitSignal`；`script-output-limit` 现在抛出 `GENERATION_LIMIT_SIGNAL`。
+- [x] 自动测试：`gpt-automation-core.test.js` 新增 5 个相关测试，覆盖无原生图+脚本文件、无原生图+压缩包/批量产物、有原生图不走纯脚本触顶、无产物不误判，以及 mock 工作流触发 `GENERATION_LIMIT_SIGNAL` 暂停决策。
+- [x] 验证：`node --check` 三文件通过；`node --test gpt-automation-core.test.js` 19/19 通过；全量 `npm test` 240/240 通过。
+- [ ] 桌面实测：真实 GPT Plus 窗口触顶后出现纯脚本/沙盒产物时，确认状态显示为触顶暂停，不下载、不文案、不打包、不归档。
+- 数据安全边界：本修复只改变触顶分类和暂停原因，不读取、不导出、不清理 GPT 登录态，也不移动用户素材。
+
+## GPT-PY-FALLBACK-002｜PY脚本兜底拼图与低图触顶补充特征（2026-08-05）
+
+- [x] 复现条件：GPT Plus 账号撞到 50 张生图上限后，不用 DALL-E 原生出图，而是用 py/代码解释器拼接垃圾图敷衍；或者直接少给图，只出 4 张及以下。旧逻辑只检测重试/限额文字和纯脚本输出，有图+脚本的 PY 兜底拼图和"4张及以下"未被识别为触顶特征。
+- [x] 最早根因：`generatedOutputRisk` 的 `hardFailure` 只包含 `hasRetrySignal || scriptOutput || (nativeImages===0 && artifacts>0 && hasArchiveSignal)`；当 GPT 用 py 拼接出图片时 `nativeImages>0`，虽然 `scriptOutput=true` 已能触发，但 `riskReason` 无法区分"PY脚本兜底拼图"和"纯脚本输出"；图片检测完成后 `detected.length<=4` 且 `expectedImages>4` 时只走"生成结果不足"跳过，不判定触顶。
+- [x] 代码修复：①`gpt-automation-core.js` 新增 `detectPyScriptFallbackSignal`(有图+脚本特征=PY兜底拼图)和 `detectLowImageLimit`(≤阈值)；②`sidebar.js` 的 `generatedOutputRisk` 新增 `pyScriptFallbackSignal`、`lowImageLimit`、`lowImageCount` 字段，`hardFailure` 加入 `pyScriptFallback.detected`；③`riskReason` 新增 `"py-script-fallback"` 分类；④`waitForGeneratedImageGrowth` 中 PY 脚本兜底拼图错误消息明确指出"PY代码兜底拼接垃圾图"；⑤图片检测完成后 `detected.length<=4 && expectedImages>4` 判定为 `GENERATION_LIMIT_SIGNAL`；⑥`conversationStateSnapshot` 返回 `pyScriptFallbackSignal` 和 `lowImageLimit`；⑦`stateSnapshot` 检查加入 `pyScriptFallbackSignal`。
+- [x] 自动测试：`gpt-automation-core.test.js` 新增 10 个测试用例（5个PY脚本兜底拼图 + 5个低图触顶），覆盖有图+脚本、有图+脚本文件、无图不判、无脚本不判、4张检测、5张不检测、0张不检测、默认阈值等边界。
+- [x] 验证：`node --check` 三文件通过；`node --test gpt-automation-core.test.js` 14/14 通过；全量 `npm test` 235/235 通过。
+- [ ] 桌面实测：在真实 GPT Plus 窗口中撞到生图上限后，确认 py 拼接垃圾图被识别为 `GENERATION_LIMIT_SIGNAL` 并暂停当前账号窗口；确认只出4张且计划要求更多时也判定为触顶。
+- 数据安全边界：本修复只改变触顶检测逻辑，不读取、不导出、不清理 GPT 登录态，也不移动用户素材。
+
+## GPT-WAIT-KEYWORD-001｜等待环节关键词完成信号必须生效（2026-08-05）
+
+- [x] 复现条件：工作流要求 GPT 在计划、出图、文案结束时分别回复固定关键词，例如“计划完成”“出图完毕”“文案完成”；旧逻辑只有 `detect-plan` UI 暴露了 `pattern`，但执行层未读取，`wait-images` 和 `wait-copy` 没有关键词入口。
+- [x] 最早根因：`sidebar.js` 中 `detect-plan` 硬编码 `/迁移计划|逐页|P\s*1/i`；`wait-plan` 只按计划结构判断，`wait-images` 只按图片数量/完成动作判断，`wait-copy` 只按文案长度和文案特征判断，三者没有统一读取 UI 参数中的完成关键词。
+- [x] 代码修复：`wait-plan`、`wait-images`、`wait-copy` 新增 `keywordPattern` 参数并在执行层读取；关键词命中作为完成证据之一，原有签名稳定、生成停止、图片数量、文案质量检测保留。
+- [x] 自动测试：新增 `integrations/gpt-production-extension/gpt-automation-core.test.js`，用模拟回复验证计划、图片、文案关键词正则可命中，空配置回退默认值，无效正则不抛异常。
+- [x] 验证：`node --check integrations/gpt-production-extension/gpt-automation-core.js; node --check integrations/gpt-production-extension/sidebar.js; node --check public/app.js` 通过；`node --test integrations/gpt-production-extension/gpt-automation-core.test.js` 4/4 通过；全量 `npm test` 225/225 通过。
+- [ ] 桌面实测：在内容生产工作流编辑器中把三个等待环节关键词改为自定义值，让 GPT 回复这些关键词，确认对应等待能结束并进入下一环节；文案仍需通过质量检查后才保存/打包。
+- 数据安全边界：本修复只改变网页等待检测，不读取、不导出、不清理 GPT 登录态，也不移动用户素材。
+
+## DATA-DISTRIBUTION-007｜空作品集不得进入可发库存（2026-08-05）
+
+- [x] 复现条件：在真实阶段文件夹 `抖音小红书` 下存在带 `[泛]` / `[转]` 标签的作品集目录，但该目录为空、只有空子目录，或子目录只有 TXT/Markdown 没有图片。
+- [x] 最早根因：`src/lib/distribution-data.js` 的 `inspectSource()` 只用子目录数量判断作品集有效，`itemCount > 0` 即 `valid=true`，没有检查子作品目录是否包含真实图片。
+- [x] 代码修复：`inspectSource()` 改为全量检查子目录图片数量，只把 `imageCount > 0` 的子作品计入 `itemCount`；界面预览仍截取前 50 个，但有效性不再依赖预览截断。
+- [x] 自动测试：新增 `lib/distribution-scan-validity.test.js`，覆盖空目录、空子目录、只有文案、真实含图目录，以及有效子目录排在 50 个预览项之后的边界。
+- [x] 验证：`node --test lib/distribution-scan-validity.test.js` 2/2 通过；全量 `npm test` 221/221 通过。
+- [x] 桌面实测：打开内容分发 → 抖音小红书可发，确认实际业务目录中的空作品集不再显示为可发库存；真实含图片作品集仍可展开预览和发送。验证证据（2026-08-05）：API 显示 19 个 sourceValid=true 的作品集全部有 itemCount>0；50 个空作品集全部 sourceValid=false；之前有问题的 作品集_020[泛] 已正确标记为不可发；浏览器界面"抖音小红书可发"标签显示 12 个有效作品集，空作品集不再出现。
+- 数据安全边界：本修复只读取目录并改变库存判定，不移动、不删除、不重命名任何用户作品文件。
+- 状态：已通过桌面人工复验（2026-08-05），标记为永久回归。
+
 ## 0.14.27｜automatic 模式边界测试与版本号同步（2026-08-03）
 
 - [x] automatic 模式专属边界测试：新增 2 个自动测试用例，锁死 automatic（自动模式）三个硬边界——不连续（不永不停歇）、不补充素材、不调度下一轮；触顶恢复只续剩余队列。

@@ -1,10 +1,10 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>团建工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=0.14.34" />
+  <link rel="stylesheet" href="/styles.css?v=0.14.92" />
   </head>
   <body>
     <div class="liquid-bg">
@@ -19,13 +19,13 @@
           <strong>团建工作台</strong>
           <span>生产 · 分发 · 转化</span>
         </div>
-        <button class="tab rail-tab active" data-tab="dashboard" type="button" title="素材生产（暂不开发）">
+        <button class="tab rail-tab active" data-tab="dashboard" type="button" title="生产（暂停）">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z"/><path d="m18.5 16 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/></svg>
-          <span>素材生产（暂不开发）</span>
+          <span>生产（暂停）</span>
         </button>
-        <button class="tab rail-tab rail-tab-test" data-tab="gptProductionTest" type="button" title="内容生产（自动）">
+        <button class="tab rail-tab rail-tab-test" data-tab="gptProductionTest" type="button" title="内容生产">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H9l-4 4v-14Z"/><path d="m10 8 1 2.6 2.6 1-2.6 1L10 15l-1-2.4-2.6-1 2.6-1L10 8Z"/><path d="M15 8h2M15 11h2"/></svg>
-          <span>内容生产（自动）</span>
+          <span>内容生产</span>
         </button>
         <button class="tab rail-tab" data-tab="distribution" type="button" title="内容分发">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/><path d="m3 9 2-2 2 2M21 13l-2 2-2-2"/></svg>
@@ -39,9 +39,9 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3H4a1 1 0 0 0-1 1v4.5a2.5 2.5 0 1 1 0 5V20a1 1 0 0 0 1 1h6.5a2.5 2.5 0 1 1 5 0H20a1 1 0 0 0 1-1v-4.5a2.5 2.5 0 1 1 0-5V4a1 1 0 0 0-1-1h-6.5a2.5 2.5 0 1 1-5 0Z"/></svg>
           <span>插件市场</span>
         </button>
-        <button class="tab rail-tab" data-tab="settings" type="button" title="设置">
+        <button class="tab rail-tab" data-tab="settings" type="button" title="设置中心">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg>
-          <span>设置</span>
+          <span>设置中心</span>
         </button>
         <div class="rail-service">
           <p><span class="status-dot"></span>本地服务已连接</p>
@@ -69,14 +69,14 @@
         <section class="production-workbench-shell">
           <header class="production-workbench-heading">
             <div>
-              <p class="label">素材生产（暂不开发）</p>
+              <p class="label">生产（暂停）</p>
               <h2>选素材 → 选模板 → 生产 → 打包待发</h2>
               <p>一个页面完成一次作品生产。素材和模板是输入，中间对话负责调整，右侧只看真实成品文件夹。</p>
             </div>
             <div class="detail-button-row">
               <span class="workbench-engine-state" id="workbenchEngineState">正在读取本地生产引擎…</span>
-              <button class="page-settings-button" type="button" data-open-page-settings="production" title="素材生产（暂不开发）设置" aria-label="打开素材生产（暂不开发）设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button>
-              <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明" aria-label="查看素材生产（暂不开发）说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
+              <button class="page-settings-button" type="button" data-open-page-settings="production" title="生产（暂停）设置" aria-label="打开生产（暂停）设置"><svg class="round-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.4 6A7 7 0 0 0 8.8 7L6.5 6.1l-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1A7 7 0 0 0 10.4 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button>
+              <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看生产（暂停）的使用说明" aria-label="查看生产（暂停）说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
             </div>
           </header>
 
@@ -192,7 +192,7 @@
             <span class="api-mode-badge">本地作品生产</span>
             <strong>模板定样，素材换内容</strong>
             <small>先锁定视觉模板，再选择素材，生成同风格作品与配套文案。</small>
-            <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看素材生产的使用说明" aria-label="查看素材生产（暂不开发）说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
+            <button class="page-help-button" type="button" data-page-help="dashboardView" title="查看生产（暂停）的使用说明" aria-label="查看生产（暂停）说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button>
           </div>
           <div class="production-api-steps">
             <label class="production-api-step"><b>01</b><span><strong>选择模板</strong><select id="templateQuickSelect" class="search-input compact-select"></select></span></label>
@@ -491,13 +491,37 @@
       </section>
 
       <section class="view" id="conversionView">
-        <section class="conversion-embedded-shell">
-          <div class="conversion-embedded-status" id="conversionEmbeddedStatus" hidden></div>
-          <button class="conversion-mobile-entry" id="conversionMobileEntryBtn" type="button" title="复制安全的手机入口" aria-label="复制安全的手机入口">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/></svg>
-          </button>
-          <iframe id="conversionAppFrame" title="流量转化" src="/conversion-integrated/?embedded=1" loading="eager"></iframe>
-        </section>
+        <div class="conversion-native-shell">
+          <aside class="conversion-side">
+            <nav class="conversion-nav conversion-module-tabs" aria-label="流量转化模块">
+              <button class="active" type="button" data-conversion-module="search"><span class="label">搜问题和话术</span></button>
+              <button type="button" data-conversion-module="sop"><span class="label">转化 SOP</span></button>
+              <button type="button" data-conversion-module="proposal"><span class="label">按需求找方案</span></button>
+              <button type="button" data-conversion-module="journey"><span class="label">用户旅程</span></button>
+            </nav>
+            <div class="conversion-side-bottom">
+              <span class="conversion-service-status" id="conversionServiceStatus">
+                <span class="conversion-dot" id="conversionApiDot"></span>
+                <span id="conversionApiText">等待加载转化知识库</span>
+              </span>
+              <button class="conversion-mobile-entry" id="conversionMobileEntryBtn" type="button" title="复制安全的手机入口" aria-label="复制安全的手机入口">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 6h4M11 18h2"/></svg>
+              </button>
+            </div>
+          </aside>
+          <main class="conversion-main">
+            <header class="conversion-topbar">
+              <div>
+                <h2 id="conversionPageTitle">客户怎么回</h2>
+                <p id="conversionPageSub">选择当前身份，粘贴客户原话，直接得到建议回复和下一步。</p>
+              </div>
+              <div id="conversionCountBox" class="conversion-count" hidden>运营话术 <b id="conversionShotCount">0</b> · 转化话术 <b id="conversionConvertCount">0</b> · 方案 <b id="conversionProposalCount">0</b></div>
+            </header>
+            <section class="conversion-workspace" id="conversionContent" aria-live="polite">
+              <div class="conversion-loading">正在准备流量转化工作区…</div>
+            </section>
+          </main>
+        </div>
       </section>
 
       <section class="view" id="pluginsView">
@@ -538,7 +562,7 @@
 
       <section class="view" id="settingsView">
         <section class="settings-layout">
-          <header class="page-heading settings-heading"><div><p class="label">本机工作空间</p><h2>设置</h2><p>这里只保留全局接口、云备份与软件诊断；业务目录都在对应页面单独设置并自动保存。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置的使用说明" aria-label="查看设置说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button></header>
+          <header class="page-heading settings-heading"><div><p class="label">本机工作空间</p><h2>设置中心</h2><p>这里只保留全局接口、云备份与软件诊断；业务目录都在对应页面单独设置并自动保存。</p></div><button class="page-help-button" type="button" data-page-help="settingsView" title="查看设置中心的使用说明" aria-label="查看设置中心说明"><svg class="round-action-icon help-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 9a2.75 2.75 0 1 1 4.4 2.2c-1.1.8-1.9 1.35-1.9 2.8"/><circle cx="12" cy="17.2" r=".75"/></svg></button></header>
           <section class="settings-card api-settings-card">
             <div class="settings-card-heading"><div><p class="label">全局能力</p><h3>API 与模型</h3></div><span class="version-status">全工作台共用</span></div>
             <p class="path-line">统一配置生图与文案接口。素材生产、流量转化和后续功能都从这里调用；密钥只保存在本机。</p>
@@ -726,31 +750,38 @@
               <button type="button" class="mode-quick-tab" data-mode="manual" role="tab"><span>人工</span><small>上传不自动发</small></button>
               <button type="button" class="mode-quick-tab" data-mode="automatic" role="tab"><span>选材后</span><small>全流程自动</small></button>
               <button type="button" class="mode-quick-tab" data-mode="single" role="tab"><span>单账号</span><small>连续不停</small></button>
+              <button type="button" class="mode-quick-tab" data-mode="scheduled" role="tab"><span>定时</span><small>按计划启动</small></button>
               <button type="button" class="mode-quick-tab" data-mode="rotate" role="tab"><span>多账号</span><small>账号轮换</small></button>
               <button type="button" class="mode-quick-tab" data-mode="patrol" role="tab"><span>巡检</span><small>多对话并行</small></button>
             </div>
             <div class="mode-quick-tabs-actions">
+              <button type="button" id="gptModeInfoBtn" class="mode-tab-action" title="查看模式说明" aria-label="查看当前模式说明">?</button>
               <button type="button" id="gptAddModeBtn" class="mode-tab-action" title="新增自定义模式" aria-label="新增模式">+</button>
               <button type="button" id="gptDeleteModeBtn" class="mode-tab-action danger" title="删除当前模式配置" aria-label="删除模式">−</button>
             </div>
-          </div>
-          <div class="mode-setting-row">
-            <label><span>默认生产模式</span><select id="gptProductionModeSetting" data-mirror-select="gptProductionMode"><option value="manual">人工控制</option><option value="automatic">选材后自动</option><option value="single">单账号全自动</option><option value="scheduled">定时单账号全自动</option><option value="rotate">多账号全自动</option><option value="patrol">单账号多对话巡检</option><option value="semi-auto" hidden>半自动（兼容）</option><option value="multi" hidden>多账号全自动（旧版）</option></select></label>
-            <button type="button" class="mode-info-button" id="gptModeInfoBtn" title="查看模式说明" aria-label="查看当前模式说明">?</button>
           </div>
           <div class="mode-info-popover" id="gptModeInfoPopover" hidden></div>
           <div class="settings-group mode-specific-group">
             <h3>模式配置 <small class="scope-tag">本模式专属</small></h3>
             <div class="settings-group mode-profile-editor" id="gptModeProfileEditor">
               <p class="settings-note" id="gptModeProfileLabel">当前模式设置</p>
-              <label><span>模式名称</span><input id="gptModeProfileName" type="text" maxlength="40" /></label>
               <div class="gpt-mode-workflow-block">
                 <div class="settings-inline-heading"><strong>工作流环节</strong><small>每个环节是独立模块，可拖动排序、勾选启用、自由增删。提示词输入框右侧 ✍/📋 可切换自定义/默认。生产间隔已整合为「随机等待」步骤，归档已整合为最后一步「移动到成品库」。修改实时生效，运行中的批次冻结当前快照。</small></div>
                 <div id="gptModeWorkflowEditor" class="gpt-mode-workflow-editor" aria-label="本模式工作流环节"></div>
-                <button id="gptAddModeWorkflowStepBtn" type="button" class="secondary-button">＋ 添加环节</button>
+                <button id="gptAddModeWorkflowStepBtn" type="button" class="secondary-button gpt-workflow-add-step-btn" aria-label="添加环节" title="添加环节">＋</button>
               </div>
-              <input type="hidden" id="gptMasterPromptRules" />
-              <input type="hidden" id="gptExtraPromptRules" />
+              <details class="gpt-prompt-settings" open>
+                <summary><span>实际提示词</span><small>查看、粘贴和修改真正发送给 GPT 的内容</small></summary>
+                <div class="gpt-prompt-settings-body">
+                  <div class="gpt-prompt-settings-heading">
+                    <div><strong>新会话初始化提示词 <span id="gptPromptRegistryVersion">V4.5</span></strong><small>仅用于新建或尚未调教的对话；已训练会话不会重复注入。</small></div>
+                    <div class="button-row"><button type="button" id="gptCopyMasterPromptBtn" class="ghost-button">复制</button><button type="button" id="gptRestoreMasterPromptBtn" class="secondary-button">恢复 V4.5</button><button type="button" id="gptSaveMasterPromptBtn" class="primary-button">保存</button></div>
+                  </div>
+                  <textarea id="gptMasterPromptRules" rows="10" spellcheck="false" aria-label="新会话初始化提示词"></textarea>
+                  <label class="gpt-extra-prompt-field"><span>所有生产提示词后追加的补充规则（可留空）</span><textarea id="gptExtraPromptRules" rows="4" placeholder="例如：封面字更少；优先使用真实活动场景。"></textarea></label>
+                  <p class="settings-footnote">每套素材的“读取附件并先给计划”提示词在上方“上传素材”环节中编辑；当前素材文件夹由程序自动追加，不需要手填。</p>
+                </div>
+              </details>
             </div>
           </div>
           <div class="settings-group mode-specific-group">
@@ -763,13 +794,20 @@
             </div>
             <p class="settings-footnote">生产间隔已移入工作流的「随机等待」步骤——在工作流环节中直接设置每步的随机等待秒数。归档行为由最后一步「移动到成品库」环节控制（勾选启用即可归档，取消勾选则跳过）。</p>
           </div>
+          <div class="settings-group mode-specific-group gpt-patrol-settings" id="gptPatrolSettingsGroup" hidden>
+            <h3>多对话安全准入 <small class="scope-tag">当前账号窗口</small></h3>
+            <p class="settings-footnote">首版只读扫描。系统会向下滚动加载历史对话，并恢复原滚动位置；只有标题包含“模板”且在下方明确准入的对话，才允许后续自动续接。</p>
+            <label class="settings-wide-field"><span>允许自动续接的对话</span><textarea id="gptPatrolAllowlist" rows="4" placeholder="每行一个完整对话网址或精确标题"></textarea></label>
+            <div class="gpt-patrol-actions"><button id="gptPatrolDiscoverBtn" type="button" class="secondary-button">只读扫描当前账号</button><span id="gptPatrolDiscoverStatus">尚未扫描</span></div>
+            <div id="gptPatrolConversationList" class="gpt-patrol-conversation-list" aria-live="polite"></div>
+          </div>
           <div class="settings-group global-specific-group">
             <h3>工作时段与额度 <small class="scope-tag">所有模式共享</small></h3>
             <div class="settings-two-columns">
               <label><span>工作开始时间</span><input id="gptContinuousWorkStart" type="time" value="07:00" /></label>
               <label><span>工作停止时间</span><input id="gptContinuousWorkEnd" type="time" value="02:00" /><small>北京时间，支持跨午夜</small></label>
               <label><span>3小时上传上限（图）</span><input id="gptUploadLimit" type="number" min="1" max="500" value="80" /></label>
-              <label><span>3小时生成上限（图）</span><input id="gptGenerationLimit" type="number" min="1" max="500" value="50" /></label>
+              <label><span>3小时生图安全线（图）</span><input id="gptGenerationLimit" type="number" min="1" max="500" value="45" /><small>当前作品完整归档后再切换账号</small></label>
               <label><span>滚动窗口（小时）</span><input id="gptQuotaWindowHours" type="number" min="1" max="24" value="3" /></label>
               <label><span>最低完整图片数</span><input id="gptMinimumImageCount" type="number" min="1" max="30" value="4" /><small>低于此数停止本帖</small></label>
             </div>
@@ -813,7 +851,7 @@
     </div>
 
     <button class="workbench-assistant-launcher" id="workbenchAssistantLauncher" type="button" aria-label="打开小猫助手" aria-expanded="false">
-      <img id="workbenchAssistantCat" class="workbench-assistant-cat" src="assets/assistant-black-cat-v2.png" alt="" aria-hidden="true" />
+      <img id="workbenchAssistantCat" class="workbench-assistant-cat" src="assets/assistant-black-cat-v3.png" alt="" aria-hidden="true" />
     </button>
     <div class="workbench-assistant-bubble" id="workbenchAssistantBubble" role="status" aria-live="polite" hidden>
       <div class="workbench-assistant-bubble-content" id="workbenchAssistantBubbleContent"></div>
@@ -853,8 +891,10 @@
       <button id="contextDeleteMode" type="button" class="danger-action">删除模式配置</button>
       <button id="contextCopyTemplateCommand" type="button">复制转模板指令</button>
     </div>
-    <script src="/distribution-ui.js?v=0.14.33"></script>
-    <script src="/material-workspace.js?v=0.14.33"></script>
-    <script src="/app.js?v=0.14.33"></script>
+  <script src="/gpt-prompt-registry.js?v=0.14.92"></script>
+  <script src="/gpt-account-rotation.js?v=0.14.92"></script>
+  <script src="/distribution-ui.js?v=0.14.92"></script>
+  <script src="/material-workspace.js?v=0.14.92"></script>
+  <script src="/app.js?v=0.14.92"></script>
   </body>
 </html>

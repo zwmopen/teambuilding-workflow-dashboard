@@ -80,6 +80,16 @@ contextBridge.exposeInMainWorld("gptWorkbench", {
   inspectStatus(accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-inspect-status", String(accountId || ""));
   },
+  discoverPatrolConversations(accountId = "", options = {}) {
+    return ipcRenderer.invoke("desktop:gpt-patrol-discover", {
+      accountId: String(accountId || ""),
+      allowlist: Array.isArray(options.allowlist) ? options.allowlist.map(String) : [],
+      maximumScrolls: Number(options.maximumScrolls || 16)
+    });
+  },
+  diagnostic(accountId = "") {
+    return ipcRenderer.invoke("desktop:gpt-diagnostic", String(accountId || ""));
+  },
   manualAction(action = "download", accountId = "") {
     return ipcRenderer.invoke("desktop:gpt-manual-action", {
       action: String(action || "download"),

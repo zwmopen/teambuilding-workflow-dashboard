@@ -15,13 +15,14 @@ let juguangData = null;
 let conversionData = null;
 let conversionModule = "search";
 let conversionRole = "前端运营";
+let conversionActiveStageIndex = 0;
 let conversionResult = null;
 let materialRenderLimit = 12;
 let productRenderLimit = 8;
 let collectionFilters = { stage: "mobile" };
 let activeDistributionPanel = "devices";
 let distributionSummaryFilter = "devices";
-let distributionCollectionTypeFilter = "traffic";
+let distributionCollectionTypeFilter = "all";
 let selectedDistributionCollectionName = "";
 let selectedDistributionDeviceId = "";
 let packageDevicePickerCollectionName = "";
@@ -102,16 +103,47 @@ let assistantDragState = null;
 const assistantEventLog = [];
 let assistantMuteUntil = Number(localStorage.getItem("tb-workbench-assistant-muted-until") || 0);
 let assistantMuteTimer = null;
+
+const WORKBENCH_ASSISTANT_PAGE_TIPS = {
+  dashboardView: "当前生产状态：已暂停。左侧可选择素材，右侧查看历史记录。",
+  gptProductionTestView: "内容生产区：先选素材，再选模板，点击上传开始自动生产。",
+  distributionView: "内容分发：选择作品集后，右侧可创建公众号草稿或发送到设备。",
+  conversionView: "流量转化：选择角色和素材，生成转化文案后可直接发布。",
+  pluginsView: "插件市场：点击卡片可启用或禁用插件，部分设置需重启生效。",
+  settingsView: "设置中心：修改路径和账号后需点击保存，部分设置需重启生效。",
+};
+
+let lastAssistantTipTime = 0;
+let lastAssistantTipViewId = "";
+
+function showAssistantTipForActiveView() {
+  const activeView = document.querySelector(".view.active")?.id || "";
+  if (!activeView) return;
+  const tip = WORKBENCH_ASSISTANT_PAGE_TIPS[activeView];
+  if (!tip) return;
+  const now = Date.now();
+  if (activeView === lastAssistantTipViewId && now - lastAssistantTipTime < 10000) return;
+  if (Date.now() < assistantMuteUntil) return;
+  showWorkbenchAssistantBubble(tip, { duration: 8000, transient: true });
+  lastAssistantTipTime = now;
+  lastAssistantTipViewId = activeView;
+}
+
 const GPT_ACCOUNTS_STORAGE_KEY = "teambuilding-gpt-accounts";
 const GPT_AUTO_SETTINGS_STORAGE_KEY = "teambuilding-gpt-auto-settings";
 const GPT_DEFAULT_MODE_MIGRATION_KEY = "teambuilding-gpt-default-mode-endless-v1";
+const GPT_GENERATION_SAFETY_MIGRATION_KEY = "teambuilding-gpt-generation-safety-45-v1";
+const GPT_ACCOUNT_GENERATION_SAFETY_MIGRATION_KEY = "teambuilding-gpt-account-generation-safety-45-v1";
+const GPT_SERVER_GENERATION_SAFETY_MIGRATION_KEY = "teambuilding-gpt-server-generation-safety-45-v1";
 const GPT_MODE_PROFILES_STORAGE_KEY = "teambuilding-gpt-mode-profiles-v1";
+const GPT_PATROL_SETTINGS_STORAGE_KEY = "teambuilding-gpt-patrol-settings-v1";
 const GPT_QUEUE_STORAGE_KEY = "teambuilding-gpt-queue-v1";
 const GPT_MULTI_RUN_STORAGE_KEY = "teambuilding-gpt-multi-run-v1";
 const GPT_CONTINUOUS_RUN_STORAGE_KEY = "teambuilding-gpt-continuous-run-v1";
 const GPT_HISTORY_STORAGE_KEY = "teambuilding-gpt-production-history-v1";
 const GPT_TEMPORARY_CACHE_STORAGE_KEY = "teambuilding-gpt-temporary-cache-maintenance-v1";
 const GPT_TEMPORARY_CACHE_INTERVAL_MS = 3 * 60 * 60 * 1000;
+const GPT_POST_REFRESH_TIMEOUT_MS = 20_000;
 const gptTemporaryCacheMaintenanceTimers = new Map();
 const gptAccountRefreshPromises = new Map();
 const gptWindowRetryTimers = new Map();
@@ -310,25 +342,28 @@ const GPT_WORKFLOW_MODULES = Object.freeze({
   },
   "wait-plan": {
     label: "等待迁移计划", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true,
-    rule: "等待GPT输出迁移计划。开启「自动」时检测：①回复内容签名稳定 ②GPT已停止生成 ③回复文本匹配\"迁移计划|逐页|P1\" ④稳定保持≥静默秒数。关闭时纯等待到超时。",
+    rule: "等待GPT输出迁移计划。开启「自动」时检测：①回复内容签名稳定 ②GPT已停止生成 ③回复文本匹配计划结构或自定义完成关键词 ④稳定保持≥静默秒数。关闭时纯等待到超时。",
     params: {
-      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 8, desc: "计划内容连续不变多少秒才算\"输出完成\"" }
+      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 8, desc: "计划内容连续不变多少秒才算\"输出完成\"" },
+      keywordPattern: { label: "完成关键词正则", type: "text", default: "迁移计划|逐页|P\\s*1|计划完成", desc: "检测到这些关键词后可作为计划完成信号，可改成你的固定完成词" }
     }
   },
   "wait-images": {
     label: "等待图片生成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true,
-    rule: "等待GPT生成图片。开启「自动」时检测：①图片数量≥最小张数 ②图片数量停止增长 ③GPT已停止生成 ④稳定保持≥静默秒数。关闭时纯等待到超时。",
+    rule: "等待GPT生成图片。开启「自动」时检测：①图片数量≥最小张数 ②图片数量停止增长 ③GPT已停止生成 ④回复文本匹配自定义完成关键词 ⑤稳定保持≥静默秒数。关闭时纯等待到超时。",
     params: {
       minImages: { label: "最小张数", min: 1, max: 20, default: 4, desc: "至少检测到多少张图片才算生成完成" },
-      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 3, desc: "图片数量连续不变多少秒才算\"生成完成\"" }
+      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 3, desc: "图片数量连续不变多少秒才算\"生成完成\"" },
+      keywordPattern: { label: "完成关键词正则", type: "text", default: "出图完毕|图片完成|生成完成", desc: "让 GPT 出完图后回复其中一个关键词，可更快判定本轮出图结束" }
     }
   },
   "wait-copy": {
     label: "等待文案生成", category: "wait", hasText: false, hasTimeout: true, hasAutoDetect: true,
-    rule: "等待GPT生成小红书文案。开启「自动」时检测：①回复内容签名稳定 ②GPT已停止生成 ③文案通过isLikelyPublishCopy检测（长度≥300字+含关键词）④稳定保持≥静默秒数。关闭时纯等待到超时。",
+    rule: "等待GPT生成小红书文案。开启「自动」时检测：①回复内容签名稳定 ②GPT已停止生成 ③文案通过isLikelyPublishCopy检测或回复文本匹配自定义完成关键词 ④稳定保持≥静默秒数。关闭时纯等待到超时。",
     params: {
       minCopyLength: { label: "最小字数", min: 50, max: 2000, default: 300, desc: "文案至少多少字才算有效文案" },
-      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 3, desc: "文案内容连续不变多少秒才算\"写完了\"" }
+      quietSeconds: { label: "静默秒数", min: 1, max: 30, default: 3, desc: "文案内容连续不变多少秒才算\"写完了\"" },
+      keywordPattern: { label: "完成关键词正则", type: "text", default: "文案完成|文案已完成|复制文案完成", desc: "让 GPT 写完文案后回复其中一个关键词，可更快判定文案结束" }
     }
   },
   "wait-fixed": {
@@ -401,6 +436,12 @@ const GPT_WORKFLOW_MODULES = Object.freeze({
 });
 // 兼容旧代码：保留 GPT_WORKFLOW_ACTIONS 名称
 const GPT_WORKFLOW_ACTIONS = GPT_WORKFLOW_MODULES;
+const GPT_PUBLISH_COPY_PROMPT = "请只输出一份可直接复制发布的完整小红书文案。第一行直接写实际标题，随后直接写正文，末尾直接写话题标签。不要输出任何解释、开场白、总结，也不要输出“标题”“正文”“话题”“标签”等栏目名或 Markdown 标题。";
+const LEGACY_GPT_COPY_PROMPTS = new Set(["给我一份小红书文案"]);
+function normalizeGptCopyPrompt(value) {
+  const prompt = String(value || "").trim();
+  return !prompt || LEGACY_GPT_COPY_PROMPTS.has(prompt) ? GPT_PUBLISH_COPY_PROMPT : prompt;
+}
 function moduleCategory(action) {
   return GPT_WORKFLOW_MODULES[action]?.category || "action";
 }
@@ -415,7 +456,7 @@ function defaultGptWorkflowSteps() {
     { action: "send-confirm", text: "1", timeoutSeconds: 20, enabled: true, autoDetect: false },
     { action: "wait-random", text: "", enabled: true, minSeconds: 1, maxSeconds: 5 },
     { action: "wait-images", text: "", timeoutSeconds: 900, enabled: true, autoDetect: true },
-    { action: "request-copy", text: "给我一份小红书文案", timeoutSeconds: 20, enabled: true, autoDetect: false },
+    { action: "request-copy", text: GPT_PUBLISH_COPY_PROMPT, timeoutSeconds: 20, enabled: true, autoDetect: false },
     { action: "wait-random", text: "", enabled: true, minSeconds: 1, maxSeconds: 5 },
     { action: "wait-copy", text: "", timeoutSeconds: 480, enabled: true, autoDetect: true },
     { action: "download-images", text: "", timeoutSeconds: 600, enabled: true, autoDetect: true },
@@ -435,7 +476,9 @@ function normalizeGptWorkflowSteps(value) {
     // new defaults without requiring the user to manually re-enter them.
     const defaultStep = defaultMap.get(action);
     const rawText = String(step?.text ?? "").trim();
-    const text = (!rawText && defaultStep?.text) ? defaultStep.text : rawText;
+    const text = action === "request-copy"
+      ? normalizeGptCopyPrompt(rawText || defaultStep?.text)
+      : ((!rawText && defaultStep?.text) ? defaultStep.text : rawText);
     // 从模块定义读取可调参数的默认值
     const moduleDef = GPT_WORKFLOW_MODULES[action];
     const moduleParams = moduleDef?.params || {};
@@ -472,6 +515,18 @@ function normalizeGptWorkflowSteps(value) {
       ...paramValues
     };
   }).filter((step) => step.action).slice(0, 20);
+  // Safety check: ensure all critical default actions are present.
+  // If any are missing, the configuration is incomplete (e.g., from a
+  // corrupted or partially-saved localStorage). Fall back to full defaults
+  // to ensure the complete workflow executes (upload → plan → confirm →
+  // images → copy → download → archive).
+  const defaultActions = new Set(defaults.map((s) => s.action));
+  const presentActions = new Set(steps.map((s) => s.action));
+  for (const action of defaultActions) {
+    if (!presentActions.has(action)) {
+      return defaults;
+    }
+  }
   return steps.length ? steps : defaults;
 }
 function workflowStepOrder(steps) {
@@ -524,13 +579,13 @@ function normalizeGptProductionMode(value) {
 }
 function loadGptModeProfiles() {
   const defaults = {
-    manual: { name: GPT_MODE_DEFINITIONS.manual.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
-    automatic: { name: GPT_MODE_DEFINITIONS.automatic.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
-    "semi-auto": { name: GPT_MODE_DEFINITIONS["semi-auto"].defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
-    single: { name: GPT_MODE_DEFINITIONS.single.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
-    scheduled: { name: GPT_MODE_DEFINITIONS.scheduled.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
-    rotate: { name: GPT_MODE_DEFINITIONS.rotate.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() },
-    patrol: { name: GPT_MODE_DEFINITIONS.patrol.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: "给我一份小红书文案", steps: defaultGptWorkflowSteps() }
+    manual: { name: GPT_MODE_DEFINITIONS.manual.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: GPT_PUBLISH_COPY_PROMPT, steps: defaultGptWorkflowSteps() },
+    automatic: { name: GPT_MODE_DEFINITIONS.automatic.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: GPT_PUBLISH_COPY_PROMPT, steps: defaultGptWorkflowSteps() },
+    "semi-auto": { name: GPT_MODE_DEFINITIONS["semi-auto"].defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: GPT_PUBLISH_COPY_PROMPT, steps: defaultGptWorkflowSteps() },
+    single: { name: GPT_MODE_DEFINITIONS.single.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: GPT_PUBLISH_COPY_PROMPT, steps: defaultGptWorkflowSteps() },
+    scheduled: { name: GPT_MODE_DEFINITIONS.scheduled.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: GPT_PUBLISH_COPY_PROMPT, steps: defaultGptWorkflowSteps() },
+    rotate: { name: GPT_MODE_DEFINITIONS.rotate.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: GPT_PUBLISH_COPY_PROMPT, steps: defaultGptWorkflowSteps() },
+    patrol: { name: GPT_MODE_DEFINITIONS.patrol.defaultName, useCurrentSession: true, confirmText: "1", copyPrompt: GPT_PUBLISH_COPY_PROMPT, steps: defaultGptWorkflowSteps() }
   };
   // 旧名 → 新名迁移表（0.14.28 模式名称统一）
   const LEGACY_MODE_NAME_MAP = {
@@ -544,6 +599,7 @@ function loadGptModeProfiles() {
     const saved = JSON.parse(localStorage.getItem(GPT_MODE_PROFILES_STORAGE_KEY) || "{}");
     const builtIn = Object.fromEntries(Object.keys(defaults).map((key) => {
       const merged = { ...defaults[key], ...(saved?.[key] || {}) };
+      merged.copyPrompt = normalizeGptCopyPrompt(merged.copyPrompt);
       // 迁移旧名：如果 localStorage 里存的是旧名，强制覆盖为新 defaultName
       const migratedName = LEGACY_MODE_NAME_MAP[merged.name];
       if (migratedName) merged.name = migratedName;
@@ -564,6 +620,7 @@ function loadGptModeProfiles() {
       if (key.startsWith("custom-") && profile?.name) {
         customModes[key] = {
           ...profile,
+          copyPrompt: normalizeGptCopyPrompt(profile.copyPrompt),
           steps: normalizeGptWorkflowSteps(profile.steps),
           isCustom: true
         };
@@ -588,19 +645,22 @@ let gptModeProfiles = loadGptModeProfiles();
   }
   if (needsSave) saveGptModeProfiles();
 })();
-function activeGptModeKey(value = gptAutoSettings?.mode) {
-  return normalizeGptProductionMode(value);
+function activeGptModeKey(value) {
+  const configuredMode = normalizeGptProductionMode(value === undefined ? gptAutoSettings?.mode : value);
+  return value === undefined
+    ? normalizeGptProductionMode(TBGptAccountRotation.effectiveProductionMode(configuredMode, gptMultiRunState))
+    : configuredMode;
 }
 function activeSettingsModeKey() {
   return activePageSettings === "gptAuto" && gptSettingsPreviewMode
     ? normalizeGptProductionMode(gptSettingsPreviewMode)
     : activeGptModeKey();
 }
-function isContinuousGptMode(value = gptAutoSettings?.mode) {
-  return Boolean(GPT_MODE_DEFINITIONS[normalizeGptProductionMode(value)]?.continuous);
+function isContinuousGptMode(value) {
+  return Boolean(GPT_MODE_DEFINITIONS[activeGptModeKey(value)]?.continuous);
 }
-function isRotatingGptMode(value = gptAutoSettings?.mode) {
-  return normalizeGptProductionMode(value) === "rotate";
+function isRotatingGptMode(value) {
+  return activeGptModeKey(value) === "rotate";
 }
 function isSemiAutoGptMode(value = gptAutoSettings?.mode) {
   return normalizeGptProductionMode(value) === "semi-auto";
@@ -613,9 +673,13 @@ function applyGptModeProfile(mode = gptAutoSettings?.mode) {
   const profile = gptModeProfiles[key] || gptModeProfiles.manual;
   gptAutoSettings.mode = key;
   gptAutoSettings.confirmText = String(profile.confirmText || "1").trim() || "1";
-  gptAutoSettings.copyPrompt = String(profile.copyPrompt || "给我一份小红书文案").trim() || "给我一份小红书文案";
+  gptAutoSettings.copyPrompt = normalizeGptCopyPrompt(profile.copyPrompt);
   gptAutoSettings.useCurrentSession = profile.useCurrentSession !== false;
   profile.steps = normalizeGptWorkflowSteps(profile.steps);
+  // Sync workflowSteps to gptAutoSettings so task creation always has the
+  // complete, normalized step list. Without this, gptAutoSettings.workflowSteps
+  // could remain stale (empty or incomplete) from a previous load.
+  gptAutoSettings.workflowSteps = profile.steps;
   const enabledActions = new Set(profile.steps.filter((step) => step.enabled).map((step) => step.action));
   gptAutoSettings.autoConfirm = enabledActions.has("send-confirm");
   gptAutoSettings.autoCopy = enabledActions.has("request-copy") && enabledActions.has("wait-copy");
@@ -653,8 +717,6 @@ function renderGptModeWorkflow() {
         <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
         <label class="gpt-workflow-enabled" style="opacity:.5"><input type="checkbox" checked disabled />启用</label>
         <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
-        <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
-        <span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>
       </div>
     </div>`;
   container.innerHTML = initRow + steps.map((step, index) => {
@@ -687,6 +749,14 @@ function renderGptModeWorkflow() {
       }
       return `<label class="gpt-workflow-param" title="${escapeHtml(pdef.desc || "")}"><span>${escapeHtml(pdef.label)}</span><input type="number" data-workflow-field="${pk}" min="${pdef.min ?? 0}" max="${pdef.max ?? 9999}" value="${val}" aria-label="${escapeHtml(pdef.label)}" /></label>`;
     }).join("");
+    const promptField = hasText
+      ? `<div class="gpt-workflow-text-cell">${hasDefaultPrompt ? `<select class="gpt-workflow-prompt-preset" data-workflow-field="textPreset" data-action="${step.action}" title="切换提示词来源"><option value="custom"${isUsingDefault ? "" : " selected"}>自定义</option><option value="default"${isUsingDefault ? " selected" : ""}>默认</option></select>` : ""}<textarea data-workflow-field="text" class="gpt-workflow-prompt-editor" rows="1" placeholder="${step.action === "upload-material" ? "点击编辑上传提示词" : "点击编辑发送文字"}" aria-label="${escapeHtml(`第${index + 2}个环节${step.action === "upload-material" ? "上传提示词" : "发送文字"}`)}">${escapeHtml(step.text)}</textarea><button type="button" class="gpt-workflow-prompt-edit-btn" data-workflow-prompt-edit title="点击放大并编辑提示词">编辑提示词</button></div>`
+      : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`;
+    const timingField = hasRandomRange
+      ? `<label class="gpt-workflow-timeout gpt-workflow-random-inline"><input type="number" data-workflow-field="minSeconds" min="1" max="3600" value="${step.minSeconds}" aria-label="最小秒数" /><span>~</span><input type="number" data-workflow-field="maxSeconds" min="5" max="3600" value="${step.maxSeconds}" aria-label="最大秒数" /><span>秒</span></label>`
+      : hasTimeout ? `<label class="gpt-workflow-timeout"><span>${hasDetectDelay ? "轮询" : "等待"}</span><input type="number" data-workflow-field="timeoutSeconds" min="5" max="3600" value="${step.timeoutSeconds}" aria-label="第${index + 2}个环节等待秒数" /><span>秒</span></label>`
+      : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`;
+    const hasExtraControls = hasDetectDelay || hasRetry || hasTimeWindow || hasDailyTime || hasModuleParams;
     return `
     <div class="gpt-workflow-step gpt-workflow-step-${cat}" data-workflow-index="${index}" draggable="true">
       <div class="gpt-workflow-main">
@@ -694,19 +764,16 @@ function renderGptModeWorkflow() {
         <span class="gpt-workflow-order">${index + 2}</span>
         <span class="gpt-workflow-cat" style="color:${catInfo.color}" title="${catInfo.label}">${catInfo.icon}</span>
         <select data-workflow-field="action" aria-label="第${index + 2}个环节">${buildModuleOptions(step.action)}</select>
-        ${hasText ? `<div class="gpt-workflow-text-cell">${hasDefaultPrompt ? `<select class="gpt-workflow-prompt-preset" data-workflow-field="textPreset" data-action="${step.action}" title="切换提示词来源"><option value="custom"${isUsingDefault ? "" : " selected"}>✍</option><option value="default"${isUsingDefault ? " selected" : ""}>📋</option></select>` : ""}<input type="text" data-workflow-field="text" value="${escapeHtml(step.text)}" placeholder="${step.action === "upload-material" ? "留空则自动生成默认提示词" : "发送文字内容"}" aria-label="第${index + 2}个环节${step.action === "upload-material" ? "上传提示词" : "发送文字"}" /></div>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
-        ${hasTimeout ? `<label class="gpt-workflow-timeout"><span>${hasDetectDelay ? "轮询" : "等待"}</span><input type="number" data-workflow-field="timeoutSeconds" min="5" max="3600" value="${step.timeoutSeconds}" aria-label="第${index + 2}个环节等待秒数" /><span>秒</span></label>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
+        ${promptField}
+        ${timingField}
         ${hasAutoDetect ? `<label class="gpt-workflow-autodetect" title="开启后检测到完成就继续，等待时间仅作为上限"><input type="checkbox" data-workflow-field="autoDetect"${step.autoDetect ? " checked" : ""} />自动</label>` : `<span class="gpt-workflow-spacer" style="visibility:hidden">&nbsp;</span>`}
         <label class="gpt-workflow-enabled"><input type="checkbox" data-workflow-field="enabled"${step.enabled ? " checked" : ""} />启用</label>
-        <button type="button" class="icon-button" data-workflow-move="up" title="上移" aria-label="上移">↑</button>
-        <button type="button" class="icon-button" data-workflow-move="down" title="下移" aria-label="下移">↓</button>
         <button type="button" class="icon-button danger" data-workflow-remove title="删除环节" aria-label="删除环节">×</button>
       </div>
-      ${(hasRandomRange || hasDetectDelay || hasRetry || hasTimeWindow || hasDailyTime || hasModuleParams) ? `
+      ${hasExtraControls ? `
       <div class="gpt-workflow-extra">
-        ${hasRandomRange ? `<label class="gpt-workflow-random"><span>随机</span><input type="number" data-workflow-field="minSeconds" min="1" max="3600" value="${step.minSeconds}" aria-label="最小秒数" />~<input type="number" data-workflow-field="maxSeconds" min="5" max="3600" value="${step.maxSeconds}" aria-label="最大秒数" /><span>秒</span></label>` : ``}
         ${hasDetectDelay ? `<label class="gpt-workflow-detectdelay" title="检测到目标完成后，等待此范围随机秒数再继续下一步"><span>检测后延迟</span><input type="number" data-workflow-field="detectDelayMin" min="0" max="30" value="${step.detectDelayMin}" aria-label="检测后最小延迟秒" />~<input type="number" data-workflow-field="detectDelayMax" min="1" max="60" value="${step.detectDelayMax}" aria-label="检测后最大延迟秒" /><span>秒</span></label>` : ``}
-        ${hasRetry ? `<label class="gpt-workflow-retry" title="发送后检测到失败(如出图错误、网络异常)，等待指定秒数后自动重试1次"><input type="checkbox" data-workflow-field="retryEnabled"${step.retryEnabled ? " checked" : ""} />重试</label><label class="gpt-workflow-retry-delay"><input type="number" data-workflow-field="retryDelayMin" min="30" max="600" value="${step.retryDelayMin}" aria-label="重试最小秒数" />~<input type="number" data-workflow-field="retryDelayMax" min="60" max="900" value="${step.retryDelayMax}" aria-label="重试最大秒数" /><span>秒后</span></label>` : ``}
+        ${hasRetry ? `<div class="gpt-workflow-retry-group" title="发送后检测到失败(如出图错误、网络异常)，等待指定秒数后自动重试1次"><label class="gpt-workflow-retry-delay"><input type="checkbox" data-workflow-field="retryEnabled"${step.retryEnabled ? " checked" : ""} /><span>失败重试</span><input type="number" data-workflow-field="retryDelayMin" min="30" max="600" value="${step.retryDelayMin}" aria-label="重试最小秒数" /><span>~</span><input type="number" data-workflow-field="retryDelayMax" min="60" max="900" value="${step.retryDelayMax}" aria-label="重试最大秒数" /><span>秒</span></label></div>` : ``}
         ${hasTimeWindow ? `<label class="gpt-workflow-timewindow"><span>时间窗口</span><input type="time" data-workflow-field="timeStart" value="${step.timeStart}" aria-label="开始时间" />~<input type="time" data-workflow-field="timeEnd" value="${step.timeEnd}" aria-label="结束时间" /></label>` : ``}
         ${hasDailyTime ? `<label class="gpt-workflow-daily"><span>每日定时</span><input type="time" data-workflow-field="dailyTime" value="${step.dailyTime}" aria-label="每日执行时间" /></label>` : ``}
         ${moduleParamFields}
@@ -757,10 +824,84 @@ function readGptModeWorkflowFromUi() {
     return step;
   });
 }
+let gptPatrolDiscovery = null;
+function loadGptPatrolSettings() {
+  try {
+    const value = JSON.parse(localStorage.getItem(GPT_PATROL_SETTINGS_STORAGE_KEY) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch { return {}; }
+}
+function patrolAllowlist(accountId = activeGptAccountId) {
+  const settings = loadGptPatrolSettings();
+  const values = settings?.[String(accountId || "")]?.allowlist;
+  return Array.isArray(values) ? values.map((value) => String(value || "").trim()).filter(Boolean) : [];
+}
+function savePatrolAllowlist(values, accountId = activeGptAccountId) {
+  const settings = loadGptPatrolSettings();
+  settings[String(accountId || "")] = {
+    ...(settings[String(accountId || "")] || {}),
+    allowlist: [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))],
+    updatedAt: new Date().toISOString()
+  };
+  localStorage.setItem(GPT_PATROL_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  return settings[String(accountId || "")].allowlist;
+}
+function renderGptPatrolDiscovery() {
+  const list = $("#gptPatrolConversationList");
+  if (!list) return;
+  const conversations = Array.isArray(gptPatrolDiscovery?.conversations)
+    ? gptPatrolDiscovery.conversations.filter((item) => item.titleMatched)
+    : [];
+  if (!conversations.length) {
+    list.innerHTML = '<div class="gpt-patrol-empty">尚未发现标题包含“模板”的历史对话。</div>';
+    return;
+  }
+  list.innerHTML = conversations.map((item, index) => `
+    <article class="gpt-patrol-conversation ${item.eligible ? "eligible" : ""}">
+      <div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.url)}</small>${item.currentState?.patrolState?.label ? `<small>当前对话：${escapeHtml(item.currentState.patrolState.label)}</small>` : ""}</div>
+      <span>${item.currentState?.patrolState?.label ? escapeHtml(item.currentState.patrolState.label) : (item.eligible ? "已准入" : "仅发现")}</span>
+      <button type="button" data-patrol-toggle="${index}">${item.eligible ? "取消准入" : "允许续接"}</button>
+    </article>`).join("");
+}
+function renderGptPatrolSettings(modeKey = activeSettingsModeKey()) {
+  const group = $("#gptPatrolSettingsGroup");
+  if (!group) return;
+  group.hidden = modeKey !== "patrol";
+  if (group.hidden) return;
+  const input = $("#gptPatrolAllowlist");
+  if (input) input.value = patrolAllowlist().join("\n");
+  renderGptPatrolDiscovery();
+}
+async function discoverCurrentAccountPatrolConversations() {
+  const status = $("#gptPatrolDiscoverStatus");
+  const button = $("#gptPatrolDiscoverBtn");
+  if (!window.gptWorkbench?.discoverPatrolConversations) {
+    if (status) status.textContent = "当前桌面版本不支持巡检扫描，请重启加载新版";
+    return null;
+  }
+  if (button) button.disabled = true;
+  if (status) status.textContent = `正在只读扫描 ${activeGptAccount()?.name || activeGptAccountId}…`;
+  try {
+    const result = await window.gptWorkbench.discoverPatrolConversations(activeGptAccountId, {
+      allowlist: patrolAllowlist(),
+      maximumScrolls: 20
+    });
+    if (!result) throw new Error("GPT 页面尚未加载巡检扩展");
+    if (result.error) throw new Error(result.error);
+    gptPatrolDiscovery = result;
+    renderGptPatrolDiscovery();
+    if (status) status.textContent = `发现 ${result.discoveredCount || 0} 个对话，其中模板 ${result.templateCount || 0} 个、已准入 ${result.eligibleCount || 0} 个；未发送任何消息`;
+    return result;
+  } catch (error) {
+    if (status) status.textContent = `扫描失败：${error.message}`;
+    return null;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
 function renderGptModeProfile() {
   const key = activeSettingsModeKey();
   const profile = gptModeProfiles[key] || gptModeProfiles.manual;
-  if ($("#gptModeProfileName")) $("#gptModeProfileName").value = profile.name || GPT_MODE_DEFINITIONS[key].defaultName;
   if ($("#gptModeProfileLabel")) $("#gptModeProfileLabel").textContent = `${GPT_MODE_DEFINITIONS[key].label} · 右键可修改、重命名或删除配置`;
   renderGptModeWorkflow();
   // Set startBehavior value after renderGptModeWorkflow rebuilds the DOM
@@ -768,6 +909,7 @@ function renderGptModeProfile() {
   updateGptModeHint(key);
   updateGptModeInfoPopover(key);
   updateModeQuickTabs(key);
+  renderGptPatrolSettings(key);
 }
 function updateModeQuickTabs(key) {
   const tabs = document.querySelectorAll("#gptModeQuickTabs .mode-quick-tab");
@@ -804,10 +946,10 @@ function saveGptModeProfileFromUi() {
   const copyStep = workflow.steps.find((step) => step.action === "request-copy");
   gptModeProfiles[key] = {
     ...current,
-    name: String($("#gptModeProfileName")?.value || GPT_MODE_DEFINITIONS[key].defaultName).trim() || GPT_MODE_DEFINITIONS[key].defaultName,
+    name: current.name || GPT_MODE_DEFINITIONS[key].defaultName,
     useCurrentSession: $("#gptModeStartBehavior")?.value !== "inject",
     confirmText: String(confirmStep?.text || "1").trim() || "1",
-    copyPrompt: String(copyStep?.text || "给我一份小红书文案").trim() || "给我一份小红书文案",
+    copyPrompt: normalizeGptCopyPrompt(copyStep?.text),
     steps: workflow.steps
   };
   saveGptModeProfiles();
@@ -818,16 +960,13 @@ function saveGptModeProfileFromUi() {
   updateGptTestQueueStatus(`${gptModeProfiles[key]?.name || GPT_MODE_DEFINITIONS[key].defaultName} 设置已保存`);
   toast("模式设置已保存");
 }
-// Fallback guard for a browser profile that has no trusted conversation yet.
-// The user supplied the full V3.6 prompt as the permanent master rule; this
-// compact runtime copy keeps the critical invariants in every new template
-// session without changing already-trained conversation windows.
-const GPT_V36_MASTER_PROMPT = `你现在是“轮播母版迁移器 V3.6”。
-首组母版图片永久决定视觉结构；后续图片、TXT、文案和项目只提供内容，不得变成新模板。不要自由设计，不要继承历史失败图。
-母版页数不是输出上限：有效素材有几张就输出几张独立 3:4 图片，P1 为封面，后续为独立内页，不合并成总图；先输出逐页迁移计划并等待用户回复“1/继续/确认”后才出图。
-锁定封面骨架、内页拼图比例、字体/字号/描边/阴影、标题位置、色块、配色、无白边拼接和页面节奏。所有拼图分区必须全部离开原位；人物、静物、食物和道具必须去重；真实场景关系保留，不虚构建筑、价格、地点或项目，不制造旅行社广告感。
-业务默认使用“江浙沪企业团建”“10人起接”；只有素材或用户明确给出价格时才写价格；不得编造价格或高风险营销词。图上文字少而准，优先地点、项目、场景、路线和人数词。
-输出后逐页检查：数量与计划一致、图片不是源素材复制、没有白边和明显拼缝、人物/道具确实变化、没有 AI 广告感，并生成对应小红书文案。`;
+// New/untrained conversations use one versioned registry source. Existing
+// trained conversation URLs stay compact and never receive this on every post.
+const GPT_CURRENT_MASTER_PROMPT = TBGptPromptRegistry.currentInitializationPrompt;
+const GPT_CURRENT_MASTER_PROMPT_VERSION = TBGptPromptRegistry.currentInitializationVersion;
+function currentGptMasterPrompt() {
+  return String(gptAutoSettings?.masterPromptRules || "").trim() || GPT_CURRENT_MASTER_PROMPT;
+}
 let gptProductionHistory = (() => {
   try {
     const rows = JSON.parse(localStorage.getItem(GPT_HISTORY_STORAGE_KEY) || "[]");
@@ -856,6 +995,14 @@ function availableMultiWindowAccounts() {
   return gptAccounts.filter((account) => !account.hidden && !account.disabled && (!configured.size || configured.has(account.id)));
 }
 
+function availableRotationAccounts() {
+  const configured = configuredGptAccountIds();
+  return gptAccounts.filter((account) => (
+    (!configured.size || configured.has(account.id))
+    && TBGptAccountRotation.accountParticipatesInRotation(account, readGptWindowRuntime(account.id))
+  ));
+}
+
 function gptAccountNeedsMasterPrompt(account = {}) {
   const url = String(account.lastUrl || "").trim();
   // A root ChatGPT URL is a fresh/unknown session. A conversation URL is
@@ -867,9 +1014,8 @@ function gptAccountNeedsMasterPrompt(account = {}) {
 function promptForNewGptSession(prompt = "", account = {}) {
   if (!gptAccountNeedsMasterPrompt(account)) return prompt;
   const extraRules = String(gptAutoSettings?.extraPromptRules || "").trim();
-  const master = extraRules
-    ? `${GPT_V36_MASTER_PROMPT}\n\n${extraRules}`
-    : GPT_V36_MASTER_PROMPT;
+  const baseMaster = currentGptMasterPrompt();
+  const master = extraRules ? `${baseMaster}\n\n${extraRules}` : baseMaster;
   return `${master}\n\n${prompt}`.trim();
 }
 
@@ -935,8 +1081,54 @@ function currentGptQueueIntegrityBlock() {
   const task = gptTestQueue[gptTestQueueIndex];
   if (!task || task._status === "completed") return null;
   const code = String(task._errorCode || "");
-  if (!["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "UPLOAD_LIMIT_SIGNAL", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "IMAGE_COUNT_UNCERTAIN", "PLAN_PARSE_FAILED", "PLAN_NOT_COMPLETE", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(code)) return null;
+  if (!["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "UPLOAD_LIMIT_SIGNAL", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "IMAGE_COUNT_UNCERTAIN", "PLAN_PARSE_FAILED", "PLAN_NOT_READY", "PLAN_NOT_COMPLETE", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(code)) return null;
   return task;
+}
+
+async function recoverContinuousPlanFailure(task, result = {}, accountId = "account-1") {
+  const errorCode = String(result?.errorCode || task?._errorCode || "");
+  if (!["PLAN_NOT_READY", "PLAN_NOT_COMPLETE"].includes(errorCode)) return false;
+  if (!isContinuousGptMode() || !isContinuousGptProductionArmed()) return false;
+  if (gptWindowIsUserStopped(accountId) || gptWindowIsUserPaused(accountId)) return false;
+
+  const previousRequestId = String(task.requestId || "");
+  const freshRetryCount = Math.max(0, Number(task._planFreshRetryCount || 0)) + 1;
+  task._planFreshRetryCount = freshRetryCount;
+  task.requestId = `gpt-plan-recovery-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  task.retryOf = previousRequestId;
+  task.retryFromStage = "";
+  task.retryFromPercent = 0;
+  task.forceUpload = true;
+  task._submittedToGpt = false;
+  task._status = "queued";
+  task._stage = "等待重新上传";
+  task._percent = 0;
+  task._error = "";
+  task._errorCode = "";
+  delete task.workflow;
+
+  if (freshRetryCount <= 2) {
+    persistGptQueue();
+    updateGptTestQueueStatus(`当前素材没有收到完整计划；正在清理网页并重新上传（${freshRetryCount}/2），不会跳到下一套。`);
+    await refreshGptAfterProduction(accountId, "plan-response-fresh-retry").catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+    return true;
+  }
+
+  task._planFreshRetryCount = 0;
+  task._planRecoveryDeferrals = Math.max(0, Number(task._planRecoveryDeferrals || 0)) + 1;
+  const currentIndex = gptTestQueue.indexOf(task);
+  if (currentIndex >= 0) {
+    const [deferredTask] = gptTestQueue.splice(currentIndex, 1);
+    const deferDistance = Math.min(20, 3 + Number(task._planRecoveryDeferrals || 0));
+    const deferIndex = Math.min(gptTestQueue.length, currentIndex + deferDistance);
+    gptTestQueue.splice(deferIndex, 0, deferredTask);
+  }
+  persistGptQueue();
+  updateGptTestQueueStatus("当前素材连续无完整计划，已保留并顺延重试；现在继续下一套，不暂停整条生产线。");
+  await refreshGptAfterProduction(accountId, "plan-response-deferred").catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 10_000));
+  return true;
 }
 
 // A continuous window may safely retry transport/readiness failures, but it
@@ -1042,6 +1234,7 @@ function loadGptAccounts() {
       name: (/^浏览器\s*\d+$/i.test(String(item.name || "")) ? `账号窗口 ${index + 1}` : String(item.name || `账号窗口 ${index + 1}`)).slice(0, 24),
       quotaGroup: String(item.quotaGroup || item.id),
       hidden: Boolean(item.hidden),
+      disabled: Boolean(item.disabled),
       lastUrl: String(item.lastUrl || ""),
       lastBrowserUrl: String(item.lastBrowserUrl || item.lastUrl || ""),
       lastOpenedAt: String(item.lastOpenedAt || ""),
@@ -1091,12 +1284,36 @@ async function hydrateGptBrowserProfiles() {
     }
     const persistedAccountSettings = dashboard?.workspaceSettings?.pageSettings?.gptAuto?.accounts;
     if (Array.isArray(persistedAccountSettings)) {
-      let settingsChanged = false;
-      const normalizedSettings = persistedAccountSettings.map((account, index) => {
-        if (!account || !/^浏览器\s*\d+$/i.test(String(account.name || ""))) return account;
-        settingsChanged = true;
-        return { ...account, name: `账号窗口 ${index + 1}` };
+      const quotaDefaults = dashboard?.workspaceSettings?.pageSettings?.gptAuto || {};
+      const reconciledSettings = TBGptAccountRotation.reconcileAccountQuotaSettings({
+        profiles: state.profiles || [],
+        settings: persistedAccountSettings,
+        defaults: {
+          uploadLimit: quotaDefaults.uploadLimit || 80,
+          generationLimit: quotaDefaults.generationLimit || 45,
+          windowHours: quotaDefaults.windowHours || 3
+        }
       });
+      let settingsChanged = JSON.stringify(reconciledSettings) !== JSON.stringify(persistedAccountSettings);
+      const migrateAccountSafety = localStorage.getItem(GPT_ACCOUNT_GENERATION_SAFETY_MIGRATION_KEY) !== "done";
+      const normalizedSettings = reconciledSettings.map((account, index) => {
+        if (!account) return account;
+        const nameChanged = /^浏览器\s*\d+$/i.test(String(account.name || ""));
+        const safetyChanged = migrateAccountSafety && Number(account.generationLimit) === 50;
+        if (!nameChanged && !safetyChanged) return account;
+        settingsChanged = true;
+        return {
+          ...account,
+          ...(nameChanged ? { name: `账号窗口 ${index + 1}` } : {}),
+          ...(safetyChanged ? { generationLimit: 45 } : {})
+        };
+      });
+      // Keep the live renderer settings in sync with profiles discovered after
+      // startup. The server-backed dashboard object is not the same object as
+      // gptAutoSettings, so without this assignment a newly added account only
+      // appeared in its quota panel after a full page reload.
+      gptAutoSettings.accounts = normalizedSettings;
+      localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
       if (settingsChanged && dashboard?.workspaceSettings?.pageSettings?.gptAuto) {
         dashboard.workspaceSettings.pageSettings.gptAuto.accounts = normalizedSettings;
         api("/api/page-settings", {
@@ -1105,16 +1322,30 @@ async function hydrateGptBrowserProfiles() {
           body: JSON.stringify({ gptAuto: { accounts: normalizedSettings } })
         }).catch(() => {});
       }
+      if (migrateAccountSafety) localStorage.setItem(GPT_ACCOUNT_GENERATION_SAFETY_MIGRATION_KEY, "done");
     }
     // Preserve per-window mode from localStorage when syncing Electron
     // profiles.  The mode is a UI-only field; the native profile store does
     // not carry it, so we merge it back from the previously saved accounts.
     const previousModes = new Map(gptAccounts.map((item) => [item.id, item.mode]));
+    const previousDisabled = new Map(gptAccounts.map((item) => [item.id, Boolean(item.disabled)]));
+    for (const profile of state.profiles || []) {
+      const id = String(profile.id || "");
+      if (Object.prototype.hasOwnProperty.call(profile, "disabled") || !previousDisabled.has(id)) continue;
+      state = await window.gptWorkbench.saveProfile({
+        ...profile,
+        disabled: previousDisabled.get(id),
+        active: false
+      });
+    }
     gptAccounts = (state.profiles || []).map((profile, index) => ({
       id: String(profile.id),
       name: (/^浏览器\s*\d+$/i.test(String(profile.name || "")) ? `账号窗口 ${index + 1}` : String(profile.name || `账号窗口 ${index + 1}`)),
       quotaGroup: String(profile.quotaGroup || profile.id),
       hidden: Boolean(profile.hidden),
+      disabled: Object.prototype.hasOwnProperty.call(profile, "disabled")
+        ? Boolean(profile.disabled)
+        : Boolean(previousDisabled.get(String(profile.id))),
       lastUrl: String(profile.lastUrl || ""),
       lastBrowserUrl: String(profile.lastBrowserUrl || profile.lastUrl || ""),
       lastOpenedAt: String(profile.lastOpenedAt || ""),
@@ -1158,10 +1389,10 @@ function loadGptAutoSettings() {
     // blank or untrained profile.
     multiAccountIds: [],
     uploadLimit: 80,
-    generationLimit: 50,
+    generationLimit: 45,
     windowHours: 3,
     confirmText: "1",
-    copyPrompt: "给我一份小红书文案",
+    copyPrompt: GPT_PUBLISH_COPY_PROMPT,
     minimumImageCount: 4,
     idleUnloadMinutes: 30,
     downloadRoot: defaultDownloadRoot,
@@ -1177,6 +1408,7 @@ function loadGptAutoSettings() {
     continuousWorkHoursEnabled: true,
     continuousWorkStart: "07:00",
     continuousWorkEnd: "02:00",
+    masterPromptRules: "",
     extraPromptRules: ""
   };
   try {
@@ -1193,9 +1425,26 @@ function loadGptAutoSettings() {
         name: /^浏览器\s*\d+$/i.test(String(account?.name || "")) ? `账号窗口 ${index + 1}` : account?.name
       }));
     }
+    if (localStorage.getItem(GPT_GENERATION_SAFETY_MIGRATION_KEY) !== "done") {
+      if (Number(loaded.generationLimit) === 50) loaded.generationLimit = 45;
+      localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(loaded));
+      localStorage.setItem(GPT_GENERATION_SAFETY_MIGRATION_KEY, "done");
+    }
     loaded.mode = normalizeGptProductionMode(loaded.mode);
     loaded.downloadRoot = normalizeProductionPath(loaded.downloadRoot, defaultDownloadRoot);
     loaded.productRoot = normalizeProductionPath(loaded.productRoot, defaultProductRoot);
+    // Normalize workflowSteps to ensure all critical steps are present.
+    // If the stored workflowSteps is empty or missing steps (e.g., from a
+    // partially-saved config), fall back to the active profile's steps or
+    // the full default workflow.
+    const profileKey = normalizeGptProductionMode(loaded.mode);
+    const profile = gptModeProfiles?.[profileKey] || gptModeProfiles?.manual;
+    const profileSteps = normalizeGptWorkflowSteps(profile?.steps);
+    const storedSteps = normalizeGptWorkflowSteps(loaded.workflowSteps);
+    // Use stored steps only if they have all critical actions; otherwise use profile steps
+    const defaultActions = new Set(defaultGptWorkflowSteps().map((s) => s.action));
+    const storedHasAll = [...defaultActions].every((a) => storedSteps.some((s) => s.action === a));
+    loaded.workflowSteps = storedHasAll ? storedSteps : profileSteps;
     return loaded;
   } catch {
     return defaults;
@@ -1204,12 +1453,10 @@ function loadGptAutoSettings() {
 
 function renderGptAutoSettings() {
   const values = gptAutoSettings;
-  const mode = normalizeGptProductionMode(values.mode);
+  const mode = activeGptModeKey();
   values.mode = mode;
   applyGptModeProfile(mode);
   if ($("#gptProductionMode")) $("#gptProductionMode").value = mode;
-  const previewMode = gptSettingsPreviewMode || mode;
-  if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = previewMode;
   if ($("#gptAutoArchiveEnabled")) $("#gptAutoArchiveEnabled").checked = values.autoArchive !== false;
   if ($("#gptQuotaReminderEnabled")) $("#gptQuotaReminderEnabled").checked = values.quotaReminderEnabled !== false;
   if ($("#gptAutoMinDelay")) $("#gptAutoMinDelay").value = values.minDelaySeconds;
@@ -1235,13 +1482,12 @@ function renderGptAutoSettings() {
   if ($("#gptProductRoot")) $("#gptProductRoot").value = values.productRoot;
   if ($("#gptPromptLibraryEnabled")) $("#gptPromptLibraryEnabled").checked = values.promptLibraryEnabled !== false;
   if ($("#gptMessageDownloadsEnabled")) $("#gptMessageDownloadsEnabled").checked = values.messageDownloadsEnabled !== false;
-  // Show the hardcoded V3.6 master prompt in a read-only textarea so the user
-  // can see what gets auto-injected into new sessions.  The extra rules field
-  // is editable and persisted alongside the master prompt at injection time.
-  if ($("#gptMasterPromptRules")) $("#gptMasterPromptRules").value = GPT_V36_MASTER_PROMPT;
+  // Show the registry version and snapshot used for new-session injection.
+  if ($("#gptPromptRegistryVersion")) $("#gptPromptRegistryVersion").textContent = `V${GPT_CURRENT_MASTER_PROMPT_VERSION}`;
+  if ($("#gptMasterPromptRules")) $("#gptMasterPromptRules").value = currentGptMasterPrompt();
   if ($("#gptExtraPromptRules")) $("#gptExtraPromptRules").value = values.extraPromptRules || "";
   renderGptModeProfile();
-  renderGptBrowserManager();
+  renderGptBrowserManager({ hydrateNative: true });
 }
 
 function saveGptAutoSettings() {
@@ -1262,7 +1508,7 @@ function saveGptAutoSettings() {
   const waitCopyStep = profileSteps.find((s) => s.action === "wait-copy");
   const packageStep = profileSteps.find((s) => s.action === "package-archive");
   const derivedConfirmText = String(confirmStep?.text || "1").trim() || "1";
-  const derivedCopyPrompt = String(copyStep?.text || "给我一份小红书文案").trim() || "给我一份小红书文案";
+  const derivedCopyPrompt = normalizeGptCopyPrompt(copyStep?.text);
   // Only derive production flags from the ACTUAL mode's workflow, not the previewed mode
   const actualSteps = normalizeGptWorkflowSteps(gptModeProfiles[actualMode]?.steps || defaultGptWorkflowSteps());
   const actualConfirmStep = actualSteps.find((s) => s.action === "send-confirm");
@@ -1272,12 +1518,9 @@ function saveGptAutoSettings() {
   const derivedAutoConfirm = actualConfirmStep?.enabled !== false;
   const derivedAutoCopy = actualCopyStep?.enabled !== false && actualWaitCopyStep?.enabled !== false;
   const derivedAutoPackage = actualPackageStep?.enabled !== false;
-  // Read mode name and start behavior from the UI if available
-  const profileName = String($("#gptModeProfileName")?.value || "").trim();
   const useCurrentSession = $("#gptModeStartBehavior")?.value !== "inject";
   gptModeProfiles[profileKey] = {
     ...(gptModeProfiles[profileKey] || {}),
-    ...(profileName ? { name: profileName } : {}),
     useCurrentSession,
     confirmText: derivedConfirmText,
     copyPrompt: derivedCopyPrompt,
@@ -1285,7 +1528,7 @@ function saveGptAutoSettings() {
   };
   saveGptModeProfiles();
   const actualConfirmText = String(actualConfirmStep?.text || "1").trim() || "1";
-  const actualCopyPrompt = String(actualCopyStep?.text || "给我一份小红书文案").trim() || "给我一份小红书文案";
+  const actualCopyPrompt = normalizeGptCopyPrompt(actualCopyStep?.text);
   gptAutoSettings = {
     mode: actualMode,
     autoConfirm: derivedAutoConfirm,
@@ -1303,7 +1546,7 @@ function saveGptAutoSettings() {
     maximumWorkers: 5,
     multiAccountIds: Array.isArray(gptAutoSettings.multiAccountIds) ? gptAutoSettings.multiAccountIds : [],
     uploadLimit: Math.max(1, Number($("#gptUploadLimit")?.value || 80)),
-    generationLimit: Math.max(1, Number($("#gptGenerationLimit")?.value || 50)),
+    generationLimit: Math.max(1, Number($("#gptGenerationLimit")?.value || 45)),
     windowHours: Math.max(1, Number($("#gptQuotaWindowHours")?.value || 3)),
     confirmText: actualConfirmText,
     copyPrompt: actualCopyPrompt,
@@ -1322,6 +1565,10 @@ function saveGptAutoSettings() {
     continuousWorkHoursEnabled: $("#gptContinuousWorkHoursEnabled")?.checked !== false,
     continuousWorkStart: String($("#gptContinuousWorkStart")?.value || "07:00"),
     continuousWorkEnd: String($("#gptContinuousWorkEnd")?.value || "02:00"),
+    masterPromptRules: (() => {
+      const value = String($("#gptMasterPromptRules")?.value || "").trim();
+      return !value || value === GPT_CURRENT_MASTER_PROMPT ? "" : value;
+    })(),
     extraPromptRules: String($("#gptExtraPromptRules")?.value || "").trim()
   };
   gptAutoSettings.mode = actualMode;
@@ -1338,7 +1585,7 @@ function saveGptAutoSettings() {
         id: account.id,
         name: account.name,
         uploadLimit: account.id === activeGptAccountId ? gptAutoSettings.uploadLimit : previous.uploadLimit || 80,
-        generationLimit: account.id === activeGptAccountId ? gptAutoSettings.generationLimit : previous.generationLimit || 50,
+        generationLimit: account.id === activeGptAccountId ? gptAutoSettings.generationLimit : previous.generationLimit || 45,
         windowHours: account.id === activeGptAccountId ? gptAutoSettings.windowHours : previous.windowHours || 3
       });
     });
@@ -1386,7 +1633,12 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 window.MaterialWorkspace?.installShell();
 
 async function api(path, options) {
-  const response = await fetch(path, options);
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch (networkError) {
+    throw new Error(`网络请求失败（${path}）：服务器未响应或连接被拒绝`);
+  }
   if (!response.ok) {
     const text = await response.text();
     try {
@@ -1506,7 +1758,7 @@ function renderProductionStatus() {
     </div>
     <p>${escapeHtml(taskLine)}</p>
     <div class="tag-strip">${tags || "<span>未识别标签</span>"}</div>
-    <small>${task ? nextLine : (history ? `可验证历史：${escapeHtml(history["素材标题"] || history["素材ID"] || "同模板记录")}` : (missing.length ? `待补：${escapeHtml(missing.join("、"))}` : "先写出图计划，再按 V3.6 母版规则生成。"))}</small>
+    <small>${task ? nextLine : (history ? `可验证历史：${escapeHtml(history["素材标题"] || history["素材ID"] || "同模板记录")}` : (missing.length ? `待补：${escapeHtml(missing.join("、"))}` : `先写出图计划，再按 V${GPT_CURRENT_MASTER_PROMPT_VERSION} 母版规则生成。`))}</small>
   `;
 }
 
@@ -1583,7 +1835,10 @@ function showContextMenu(x, y) {
   }
   if ($("#contextRemoveAccount")) $("#contextRemoveAccount").hidden = !isBrowserProfile;
   if ($("#contextTrashFolder")) $("#contextTrashFolder").hidden = !isEditableFolder;
-  if ($("#contextModeSettings")) $("#contextModeSettings").hidden = !isProductionMode;
+  if ($("#contextModeSettings")) {
+    $("#contextModeSettings").hidden = !(isProductionMode || isBrowserProfile);
+    $("#contextModeSettings").textContent = isBrowserProfile ? "账号生产与额度设置" : "修改模式设置";
+  }
   if ($("#contextDeleteMode")) $("#contextDeleteMode").hidden = !isProductionMode;
   if ($("#contextCopyTemplateCommand")) $("#contextCopyTemplateCommand").hidden = isFolderBinding || isBrowserProfile || isProductionMode;
   menu.style.left = `${x}px`;
@@ -1638,7 +1893,7 @@ function enhanceSelect(selectId) {
     trigger.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       const selected = select.selectedOptions[0] || select.options[0];
-      const isProductionMode = select.id === "gptProductionMode" || select.id === "gptProductionModeSetting";
+      const isProductionMode = select.id === "gptProductionMode";
       contextMenuTarget = {
         ...(isProductionMode ? {
           kind: "gpt-production-mode",
@@ -1698,6 +1953,35 @@ function getSavedState() {
   }
 }
 
+async function migrateServerGptGenerationSafety(persistedGptAuto) {
+  if (!persistedGptAuto || typeof persistedGptAuto !== "object") return persistedGptAuto;
+  if (localStorage.getItem(GPT_SERVER_GENERATION_SAFETY_MIGRATION_KEY) === "done") return persistedGptAuto;
+  const accounts = Array.isArray(persistedGptAuto.accounts) ? persistedGptAuto.accounts : [];
+  const migratedAccounts = accounts.map((account) => (
+    account && Number(account.generationLimit) === 50
+      ? { ...account, generationLimit: 45 }
+      : account
+  ));
+  const changed = Number(persistedGptAuto.generationLimit) === 50
+    || migratedAccounts.some((account, index) => account?.generationLimit !== accounts[index]?.generationLimit);
+  const migrated = {
+    ...persistedGptAuto,
+    ...(Number(persistedGptAuto.generationLimit) === 50 ? { generationLimit: 45 } : {}),
+    accounts: migratedAccounts
+  };
+  if (changed) {
+    const result = await api("/api/page-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gptAuto: migrated })
+    });
+    localStorage.setItem(GPT_SERVER_GENERATION_SAFETY_MIGRATION_KEY, "done");
+    return result?.settings?.gptAuto || migrated;
+  }
+  localStorage.setItem(GPT_SERVER_GENERATION_SAFETY_MIGRATION_KEY, "done");
+  return migrated;
+}
+
 async function loadDashboard(force = false, libraryPath = "") {
   const previousCategories = libraryPath
     ? new Map((dashboard?.materials?.categories || []).filter((category) => category.loaded !== false).map((category) => [category.path, category]))
@@ -1707,7 +1991,11 @@ async function loadDashboard(force = false, libraryPath = "") {
   if (libraryPath) params.set("library", libraryPath);
   const query = params.toString();
   dashboard = await api(`/api/dashboard${query ? `?${query}` : ""}`);
-  const persistedGptAuto = dashboard?.workspaceSettings?.pageSettings?.gptAuto;
+  let persistedGptAuto = dashboard?.workspaceSettings?.pageSettings?.gptAuto;
+  persistedGptAuto = await migrateServerGptGenerationSafety(persistedGptAuto);
+  if (persistedGptAuto && dashboard?.workspaceSettings?.pageSettings) {
+    dashboard.workspaceSettings.pageSettings.gptAuto = persistedGptAuto;
+  }
   if (persistedGptAuto && typeof persistedGptAuto === "object") {
     const persistedAccounts = Array.isArray(persistedGptAuto.accounts) ? persistedGptAuto.accounts : [];
     const normalizedAccounts = persistedAccounts.map((account, index) => (
@@ -1725,7 +2013,21 @@ async function loadDashboard(force = false, libraryPath = "") {
       generationLimit: activeAccountSettings.generationLimit ?? gptAutoSettings.generationLimit,
       windowHours: activeAccountSettings.windowHours ?? gptAutoSettings.windowHours
     };
+    // Critical: persistedGptAuto from app-settings.json may not contain
+    // workflowSteps (older server-side backup). Preserve the existing
+    // workflowSteps from localStorage or fall back to the current mode
+    // profile's steps. Without this, the spread above overwrites
+    // workflowSteps to undefined, causing the workflow to skip all steps
+    // after upload (send-confirm, wait-images, request-copy, etc.).
+    if (!Array.isArray(gptAutoSettings.workflowSteps) || !gptAutoSettings.workflowSteps.length) {
+      const profileKey = normalizeGptProductionMode(gptAutoSettings.mode);
+      const profile = gptModeProfiles?.[profileKey] || gptModeProfiles?.manual;
+      gptAutoSettings.workflowSteps = normalizeGptWorkflowSteps(profile?.steps);
+    } else {
+      gptAutoSettings.workflowSteps = normalizeGptWorkflowSteps(gptAutoSettings.workflowSteps);
+    }
     gptAutoSettings.mode = normalizeGptProductionMode(gptAutoSettings.mode);
+    applyGptModeProfile(gptAutoSettings.mode);
     localStorage.setItem(GPT_AUTO_SETTINGS_STORAGE_KEY, JSON.stringify(gptAutoSettings));
     if (normalizedAccounts.some((account, index) => account?.name !== persistedAccounts[index]?.name)) {
       api("/api/page-settings", {
@@ -2222,9 +2524,9 @@ function writeTemplateConversation(messages, templateId = selectedTemplate?.id |
 function currentWorkbenchMaterials() {
   const query = ($("#workbenchMaterialSearch")?.value || "").trim().toLowerCase();
   const categories = dashboard?.materials?.categories || [];
-  const activeCategory = categories.find((category) => category.path === workbenchActiveMaterialCategoryPath)
-    || categories.find((category) => category.loaded !== false)
-    || categories[0];
+  const visibleCategories = categories.filter((category) => !isHiddenMaterialPath(category.path));
+  const activeCategory = visibleCategories.find((category) => category.path === workbenchActiveMaterialCategoryPath)
+    || visibleCategories.find((category) => category.loaded !== false);
   return (activeCategory?.items || [])
     .map((item) => ({ item, category: activeCategory }))
     .filter(({ item }) => {
@@ -2247,11 +2549,13 @@ function renderWorkbenchMaterials() {
   const folders = $("#workbenchMaterialFolders");
   if (!folders) return;
   const categories = dashboard?.materials?.categories || [];
-  if (!categories.some((category) => category.path === workbenchActiveMaterialCategoryPath)) {
-    workbenchActiveMaterialCategoryPath = getSavedState().selectedMaterialCategoryPath
-      || selectedMaterialCategory?.path
-      || categories.find((category) => category.loaded !== false)?.path
-      || categories[0]?.path
+  const visibleCategories = categories.filter((category) => !isHiddenMaterialPath(category.path));
+  if (!visibleCategories.some((category) => category.path === workbenchActiveMaterialCategoryPath)) {
+    const savedPath = getSavedState().selectedMaterialCategoryPath || "";
+    const selectedPath = selectedMaterialCategory?.path || "";
+    workbenchActiveMaterialCategoryPath = visibleCategories.find((category) => category.path === savedPath)?.path
+      || visibleCategories.find((category) => category.path === selectedPath)?.path
+      || visibleCategories.find((category) => category.loaded !== false)?.path
       || "";
   }
   const entries = currentWorkbenchMaterials();
@@ -2276,7 +2580,7 @@ function renderWorkbenchMaterials() {
       ${expanded ? `<div class="workbench-post-assets">${images}${texts || (item.textCount ? `<button class="workbench-text-asset" type="button" data-workbench-text="${escapeHtml(item.id)}"><b>TXT</b><span>参考内容</span><small>${escapeHtml(shortText(item.preview || "点击查看参考内容", 54))}</small></button>` : "")}</div>` : ""}
     </section>`;
   }).join("") : `<div class="empty-state"><strong>这个分类下没有帖子文件夹</strong></div>`;
-  folders.innerHTML = categories.length ? categories.map((category) => {
+  folders.innerHTML = visibleCategories.length ? visibleCategories.map((category) => {
     const expanded = category.path === workbenchExpandedMaterialCategoryPath;
     const selectedCategory = category.path === workbenchActiveMaterialCategoryPath;
     return `<section class="workbench-folder-branch${expanded ? " active" : ""}">
@@ -2801,10 +3105,22 @@ function parseGptSchedulePlan(value) {
 
 async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8, label = "全天自动") {
   if (gptAutoRunning) return false;
-  await loadDashboard("materials").catch(() => {});
-  for (const category of dashboard?.materials?.categories || []) {
-    if (category.loaded === false && !isHiddenMaterialPath(category.path)) {
-      await loadDashboard(false, category.path).catch(() => {});
+  // 逐个轻量加载分类素材，避免 loadDashboard 的完整 dashboard 重算开销
+  // 每次只扫描一个分类，不会像 loadAll 那样阻塞整个服务器 30 秒
+  try {
+    const index = await api("/api/materials");
+    if (dashboard?.materials) dashboard.materials = index;
+    for (const category of dashboard?.materials?.categories || []) {
+      if (category.loaded === false && !isHiddenMaterialPath(category.path)) {
+        await loadMaterialCategory(category.path);
+      }
+    }
+  } catch (_) {
+    await loadDashboard("materials").catch(() => {});
+    for (const category of dashboard?.materials?.categories || []) {
+      if (category.loaded === false && !isHiddenMaterialPath(category.path)) {
+        await loadDashboard(false, category.path).catch(() => {});
+      }
     }
   }
   const entries = (dashboard?.materials?.categories || [])
@@ -2848,6 +3164,23 @@ async function prepareAutoGptQueue(count = gptAutoSettings.accountTaskLimit || 8
 async function prepareAllDayGptQueue() {
   if (!isContinuousGptMode() || gptAutoRunning) return false;
   return prepareAutoGptQueue(gptAutoSettings.accountTaskLimit || 8, "全天自动");
+}
+
+// 轻量加载单个素材分类，避免 loadDashboard 的完整 dashboard 重算开销
+async function loadMaterialCategory(categoryPath) {
+  try {
+    const library = await api(`/api/materials?library=${encodeURIComponent(categoryPath)}`);
+    if (!dashboard?.materials?.categories) {
+      dashboard.materials = library;
+      return;
+    }
+    dashboard.materials.categories = dashboard.materials.categories.map((cat) => {
+      const fresh = library.categories?.find((c) => c.path === cat.path);
+      return fresh && fresh.loaded ? fresh : cat;
+    });
+  } catch (_) {
+    await loadDashboard(false, categoryPath).catch(() => {});
+  }
 }
 
 function parseGptWorkTime(value, fallback) {
@@ -3015,12 +3348,11 @@ function buildGptTestTask(entry, template = null) {
   const extra = String($("#gptTestExtraPrompt")?.value || "").trim();
   // A mode configured to reuse the current session deliberately sends only
   // the material attachment.  The explicit “inject” choice carries the
-  // compact V3.6 rules even when no physical template folder is selected.
+  // current registry rules even when no physical template folder is selected.
   const useCurrentSession = gptAutoSettings.useCurrentSession !== false && !template;
   const extraRules = String(gptAutoSettings?.extraPromptRules || "").trim();
-  const masterWithExtra = extraRules
-    ? `${GPT_V36_MASTER_PROMPT}\n\n${extraRules}`
-    : GPT_V36_MASTER_PROMPT;
+  const baseMaster = currentGptMasterPrompt();
+  const masterWithExtra = extraRules ? `${baseMaster}\n\n${extraRules}` : baseMaster;
   // Check if the upload-material workflow step has a custom prompt configured
   const activeProfile = gptModeProfiles[activeGptModeKey()] || gptModeProfiles.manual;
   const uploadStep = (activeProfile.steps || []).find((step) => step.action === "upload-material");
@@ -3187,27 +3519,50 @@ async function ensureGptTaskQuota(task, quotaAccountId = activeGptAccountId, opt
   const result = await api(`/api/gpt-production/quota?account=${encodeURIComponent(quotaAccountId)}`).catch(() => null);
   const quota = result?.quota || result;
   if (!quota) return;
-  const uploadImages = (task.attachments || []).filter((filePath) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(filePath)).length;
+  const requiredUploads = (task.attachments || []).length;
   const generatedImages = Math.max(1, Number(task.expectedImages || 1));
-  if (uploadImages <= Number(quota.remainingUploads || 0)
-    && generatedImages <= Number(quota.remainingGenerations || 0)) return;
-  // Local ledger estimates are informational only.  If we schedule a reminder,
-  // anchor it to the first real upload/generation recorded for this account,
-  // never to the moment an estimate happened to report a shortage.
+  const boundary = TBGptAccountRotation.taskQuotaBoundary({
+    requiredUploads,
+    requiredGenerations: generatedImages,
+    remainingUploads: quota.remainingUploads,
+    remainingGenerations: quota.remainingGenerations
+  });
+  if (!boundary.reached) return;
   const cycle = readGptCycleState(quotaAccountId);
-  if (cycle.nextProbeAt) {
-    scheduleGptQuotaReminder(new Date(Number(cycle.nextProbeAt)).toISOString(), quotaAccountId);
-  }
-  // This is only a local estimate.  It must never be an upload gate: the
-  // official GPT page is the authority and will pause the task when it really
-  // refuses an upload or generation.  Keep `options` for callers from older
-  // builds, but deliberately ignore it here so a single-window run can keep
-  // going for as long as the user wants.
-  showWorkbenchAssistantBubble(
-    `本地额度估算提醒：预计还可上传 ${quota.remainingUploads} 张、生成 ${quota.remainingGenerations} 张。不会阻止本次上传；以 GPT 网页真实提示为准。`,
-    { duration: 7200, persistent: true }
+  const quotaExpiry = Date.parse(String(quota.nextExpiryAt || ""));
+  const nextProbeAt = Number(cycle.nextProbeAt || 0)
+    || (Number.isFinite(quotaExpiry) ? quotaExpiry : 0)
+    || Date.now() + Math.max(1, Number(quota.settings?.windowHours || gptAutoSettings.windowHours || 3)) * 60 * 60 * 1000;
+  const kindLabel = boundary.kind === "upload" ? "上传附件" : "生成图片";
+  const boundaryMessage = `${kindLabel}额度安全线已到：本套需要 ${boundary.required}，当前滚动窗口仅剩 ${boundary.remaining}；` +
+    "当前作品尚未启动，已在作品边界等待额度恢复";
+  const boundaryState = {
+    ...cycle,
+    accountId: String(quotaAccountId),
+    ...(boundary.kind === "upload" ? { nextUploadProbeAt: nextProbeAt } : { nextGenerationProbeAt: nextProbeAt }),
+    nextProbeAt,
+    lastAt: Date.now(),
+    message: boundaryMessage
+  };
+  localStorage.setItem(gptCycleStateKey(quotaAccountId), JSON.stringify(boundaryState));
+  writeGptWindowRuntime(quotaAccountId, {
+    status: "waiting-quota",
+    currentStage: "等待额度恢复",
+    currentPercent: 0,
+    expectedAttachments: requiredUploads,
+    expectedImages: generatedImages,
+    uploadedAttachments: 0,
+    nextProbeAt
+  });
+  scheduleGptQuotaReminder(new Date(nextProbeAt).toISOString(), quotaAccountId);
+  const error = new Error(
+    boundaryMessage
   );
-  return { quota, warningOnly: true };
+  error.code = "LOCAL_QUOTA_BOUNDARY";
+  error.gptLimit = true;
+  error.quotaKind = boundary.kind;
+  error.nextProbeAt = nextProbeAt || null;
+  throw error;
 }
 
 function isActualGptLimitMessage(message = "") {
@@ -3386,13 +3741,26 @@ async function refreshGptAfterProduction(accountId = activeGptAccountId, reason 
     return { ok: false, accountId: key, error: "桌面 GPT 维护入口不可用" };
   }
   if (gptAccountRefreshPromises.has(key)) return gptAccountRefreshPromises.get(key);
-  const promise = window.gptWorkbench.maintenance({ accountId: key, clearTemporaryCache: false, reason })
+  let timeoutTimer = null;
+  const maintenanceRequest = window.gptWorkbench.maintenance({ accountId: key, clearTemporaryCache: false, reason });
+  const timeoutRequest = new Promise((resolve) => {
+    timeoutTimer = setTimeout(() => resolve({
+      ok: false,
+      timedOut: true,
+      accountId: key,
+      error: "GPT 页面刷新超时；已继续轮换，稍后再恢复该窗口"
+    }), GPT_POST_REFRESH_TIMEOUT_MS);
+  });
+  const promise = Promise.race([maintenanceRequest, timeoutRequest])
     .then((result) => {
       scheduleGptTemporaryCacheMaintenance(key, Date.now());
       if (!result?.ok) throw new Error(result?.detail || result?.error || "GPT 网页刷新失败");
       return result;
     })
-    .finally(() => gptAccountRefreshPromises.delete(key));
+    .finally(() => {
+      clearTimeout(timeoutTimer);
+      gptAccountRefreshPromises.delete(key);
+    });
   gptAccountRefreshPromises.set(key, promise);
   return promise;
 }
@@ -3751,7 +4119,16 @@ async function renameGptAccount(accountId) {
 async function toggleGptAccountDisabled(accountId) {
   const account = gptAccounts.find((item) => item.id === accountId);
   if (!account) return;
-  account.disabled = !account.disabled;
+  const nextDisabled = !account.disabled;
+  account.disabled = nextDisabled;
+  if (window.gptWorkbench?.saveProfile) {
+    try {
+      await window.gptWorkbench.saveProfile({ ...account, disabled: nextDisabled, active: false });
+    } catch (error) {
+      account.disabled = !nextDisabled;
+      throw error;
+    }
+  }
   saveGptAccounts();
   renderGptAccountTabs();
   renderGptBrowserManager();
@@ -3779,10 +4156,18 @@ async function reorderGptAccounts(sourceId, targetId) {
   showWorkbenchAssistantBubble("账号窗口顺序已保存。", { transient: true, duration: 2600 });
 }
 
-function renderGptBrowserManager() {
+function renderGptBrowserManager(options = {}) {
   const host = $("#gptBrowserManager");
   if (!host) return;
-  host.innerHTML = gptAccounts.map((account) => `
+  if (options.hydrateNative && window.gptWorkbench?.profiles && !renderGptBrowserManager._hydrating) {
+    renderGptBrowserManager._hydrating = true;
+    hydrateGptBrowserProfiles()
+      .catch(() => {})
+      .finally(() => { renderGptBrowserManager._hydrating = false; });
+  }
+  host.innerHTML = `
+    <div class="gpt-browser-manager-summary">当前同步 ${gptAccounts.length} 个账号窗口；和上方账号标签一致，手动加减后这里会自动刷新。</div>
+  ` + gptAccounts.map((account) => `
     <section class="gpt-browser-manager-row${account.disabled ? " disabled" : ""}" data-browser-profile="${escapeHtml(account.id)}">
       <input type="text" value="${escapeHtml(account.name)}" data-browser-name="${escapeHtml(account.id)}" aria-label="账号窗口名称" />
       <input type="text" value="${escapeHtml(account.quotaGroup || account.id)}" data-browser-quota-group="${escapeHtml(account.id)}" aria-label="额度组" />
@@ -3803,6 +4188,10 @@ async function reconcileGptWindow(accountId = activeGptAccountId, options = {}) 
   // Disabled accounts are invisible to continuous automation.
   const account = gptAccounts.find((item) => item.id === key);
   if (account?.disabled) return false;
+  // A saved queue pause is an operator/safety checkpoint, not an invitation
+  // to resume merely because an account tab was reattached or inspected.
+  // Explicit Start/Continue clears the pause before calling with force=true.
+  if (gptQueuePaused && !options.force) return false;
   if (runtime.stoppedByUser && !options.force) return false;
   if (runtime.pausedByUser && !options.force) return false;
   if (!options.force && !isContinuousGptProductionArmed()) return false;
@@ -3858,7 +4247,6 @@ async function switchGptAccount(accountId, options = {}) {
       gptAutoSettings.mode = accountMode;
       applyGptModeProfile(accountMode);
       if ($("#gptProductionMode")) $("#gptProductionMode").value = accountMode;
-      if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = accountMode;
     }
     if (accountSettings) {
       gptAutoSettings = {
@@ -4197,6 +4585,14 @@ function gptTaskGroupsForMultiWindow() {
 }
 
 async function runGptTaskOnBrowser(task, account, tracker) {
+  const resumeCheckpoint = TBGptAccountRotation.rotationResumeCheckpoint(task);
+  if (resumeCheckpoint.resuming) {
+    task.retryFromStage = resumeCheckpoint.stage;
+    task.retryFromPercent = resumeCheckpoint.percent;
+    task.forceUpload = false;
+    task._stage = resumeCheckpoint.stage;
+    task._percent = resumeCheckpoint.percent;
+  }
   task.accountId = account.id;
   task.quotaAccountId = account.quotaGroup || account.id;
   task.autoRun = true;
@@ -4208,35 +4604,38 @@ async function runGptTaskOnBrowser(task, account, tracker) {
   writeGptWindowRuntime(account.id, {
     status: "running",
     currentTaskId: task.requestId,
-    currentStage: "上传附件",
-    currentPercent: 5,
-    expectedAttachments: uploadImages,
-    uploadedAttachments: 0,
+    currentStage: resumeCheckpoint.resuming ? resumeCheckpoint.stage : "上传附件",
+    currentPercent: resumeCheckpoint.resuming ? resumeCheckpoint.percent : 5,
+    expectedAttachments: (task.attachments || []).length,
+    uploadedAttachments: resumeCheckpoint.resuming
+      ? Number(readGptWindowRuntime(account.id).uploadedAttachments || (task.attachments || []).length)
+      : 0,
     stoppedByUser: false
   });
-  showWorkbenchAssistantBubble(`${account.name} 已上传本帖 ${uploadImages} 张图片，等待 GPT 确认附件。`, { duration: 3600 });
+  showWorkbenchAssistantBubble(resumeCheckpoint.resuming
+    ? `${account.name} 正在从当前素材的网页检查点继续，不会重复上传附件。`
+    : `${account.name} 已上传本帖 ${uploadImages} 张图片，等待 GPT 确认附件。`, { duration: 3600 });
   // Persist this before entering the bridge. A restart may safely resume from
   // the web stage only after this marker is true; it must never upload a
   // second copy of a post because the renderer disappeared mid-request.
-  task._submittedToGpt = false;
+  if (!resumeCheckpoint.resuming) task._submittedToGpt = false;
   persistGptQueue();
-  recordGptQuotaConsumption(task, task.quotaAccountId, "upload");
-  if (task.taskType === "material") await ensureGptTaskQuota(task, task.quotaAccountId);
-  if (task.navigationUrl) {
+  if (!resumeCheckpoint.resuming) recordGptQuotaConsumption(task, task.quotaAccountId, "upload");
+  if (task.taskType === "material" && !resumeCheckpoint.resuming) await ensureGptTaskQuota(task, task.quotaAccountId);
+  if (!resumeCheckpoint.resuming && task.navigationUrl) {
     await window.gptWorkbench.navigate("url", account.id, task.navigationUrl);
     await new Promise((resolve) => setTimeout(resolve, 1800));
-  } else if (task.navigation === "new-chat") {
+  } else if (!resumeCheckpoint.resuming && task.navigation === "new-chat") {
     await window.gptWorkbench.navigate("new-chat", account.id);
     await new Promise((resolve) => setTimeout(resolve, 1200));
   }
   // A newly-created account or a new local-template chat must receive the
-  // permanent V3.6 guard before any material prompt. Existing conversation
+  // current versioned guard before any material prompt. Existing conversation
   // windows keep their trained context and are not flooded with the prompt.
   if (task.taskType === "template-init" || gptAccountNeedsMasterPrompt(account)) {
     const extraRules = String(gptAutoSettings?.extraPromptRules || "").trim();
-    const master = extraRules
-      ? `${GPT_V36_MASTER_PROMPT}\n\n${extraRules}`
-      : GPT_V36_MASTER_PROMPT;
+    const baseMaster = currentGptMasterPrompt();
+    const master = extraRules ? `${baseMaster}\n\n${extraRules}` : baseMaster;
     task.prompt = task.taskType === "template-init"
       ? `${master}\n\n${task.prompt}`
       : promptForNewGptSession(task.prompt, account);
@@ -4353,6 +4752,30 @@ function rotationAccountReady(account, now = Date.now()) {
   return Number(state.nextProbeAt || 0) <= now;
 }
 
+function recordGptSafetyLineCooldown(account, boundary) {
+  const quotaAccountId = String(account?.quotaGroup || account?.id || "");
+  const state = readGptCycleState(quotaAccountId);
+  const windowMs = Math.max(1, Number(boundary?.windowHours || gptAutoSettings.windowHours || 3)) * 60 * 60 * 1000;
+  const fallbackProbeAt = Number(state.generationCycleStartAt || 0) + windowMs;
+  const nextProbeAt = Math.max(Date.now(), Number(boundary?.nextProbeAt || 0) || fallbackProbeAt || Date.now() + windowMs);
+  const nextState = {
+    ...state,
+    accountId: quotaAccountId,
+    nextGenerationProbeAt: nextProbeAt,
+    nextProbeAt,
+    lastAt: Date.now(),
+    message: `本地生图安全线 ${boundary.generated}/${boundary.limit}`
+  };
+  localStorage.setItem(gptCycleStateKey(quotaAccountId), JSON.stringify(nextState));
+  writeGptWindowRuntime(account.id, {
+    status: "waiting-quota",
+    nextProbeAt,
+    currentStage: `安全线 ${boundary.generated}/${boundary.limit}`
+  });
+  scheduleGptQuotaReminder(new Date(nextProbeAt).toISOString(), quotaAccountId);
+  return nextState;
+}
+
 function nextRotationAccount(accounts, cursor, blocked = new Set()) {
   if (!accounts.length) return { account: null, cursor };
   const now = Date.now();
@@ -4379,7 +4802,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
   const groups = gptTaskGroupsForMultiWindow();
   const pendingTasks = groups.flat();
   if (!pendingTasks.length) return;
-  const accounts = availableMultiWindowAccounts();
+  const accounts = availableRotationAccounts();
   if (!accounts.length) {
     gptQueuePaused = true;
     updateGptTestQueueStatus("多账号全自动没有可用的账号窗口；请先保留至少一个可见账号窗口");
@@ -4401,6 +4824,18 @@ async function sendRotatingWindowGptTasks(options = {}) {
   const cursorStart = Math.max(0, accounts.findIndex((account) => account.id === activeGptAccountId));
   let accountCursor = cursorStart;
   const blockedAccounts = new Set();
+  const integrityBoundaryCodes = new Set([
+    "WINDOW_STAGE_PENDING",
+    "ARCHIVE_CONFIRMATION_TIMEOUT",
+    "COMPOSER_DRAFT_PENDING",
+    "COMPOSER_ATTACHMENT_CONFLICT",
+    "SEND_BUTTON_NOT_READY",
+    "ATTACHMENT_UPLOAD_NOT_READY",
+    "PLAN_NOT_READY",
+    "PLAN_NOT_COMPLETE",
+    "PLAN_PARSE_FAILED"
+    ,"IMAGE_COUNT_UNCERTAIN"
+  ]);
   const templateInitializers = new Map(gptTestQueue.filter((task) => task.taskType === "template-init").map((task) => [task.templateId, task]));
   const onlineTemplates = new Map(selectedGptTestTemplates().filter((template) => template.kind === "online").map((template) => [template.id, template]));
   const readyTemplates = new Set();
@@ -4436,7 +4871,14 @@ async function sendRotatingWindowGptTasks(options = {}) {
   const runInitializerForAccount = async (materialTask, account) => {
     if (!materialTask?.templateId) return;
     const templateKey = `${account.id}:${materialTask.templateId}`;
-    if (readyTemplates.has(templateKey)) return;
+    if (!TBGptAccountRotation.shouldInitializeTemplate(materialTask, readyTemplates.has(templateKey))) {
+      // A submitted material is already inside a trained conversation. On a
+      // resumed rotation, treat that conversation as the initialized template
+      // for the rest of this run instead of navigating away and uploading the
+      // master again before restoring the material checkpoint.
+      if (materialTask._submittedToGpt === true) readyTemplates.add(templateKey);
+      return;
+    }
     const online = onlineTemplates.get(materialTask.templateId);
     if (online?.url) {
       materialTask.navigationUrl = online.url;
@@ -4448,6 +4890,10 @@ async function sendRotatingWindowGptTasks(options = {}) {
     const copy = { ...initializer, attachments: [...(initializer.attachments || [])] };
     resetGptTaskForRotation(copy, "为新账号窗口初始化模板");
     copy.taskType = "template-init";
+    // Template initialization is an automation-owned fresh post. Clear any
+    // human draft or stale attachment left in this account before attaching
+    // the template, instead of treating it as a skippable material failure.
+    copy.forceUpload = true;
     await runGptTaskOnBrowser(copy, account, tracker);
     readyTemplates.add(templateKey);
     showWorkbenchAssistantBubble(`${account.name} 已完成模板会话初始化，继续处理当前素材。`, { duration: 3600 });
@@ -4491,6 +4937,7 @@ async function sendRotatingWindowGptTasks(options = {}) {
           await refreshGptAfterProduction(account.id, "rotation-production-complete").catch((error) => {
             showWorkbenchAssistantBubble(`${account.name} 本轮已落盘，但 GPT 网页刷新失败：${error?.message || "未知错误"}；继续保留任务状态。`, { duration: 0, tone: "warning" });
           });
+          await refreshGptQuota(account.id);
         }
         if (task.taskType === "template-init" && task.templateId) readyTemplates.add(`${account.id}:${task.templateId}`);
         if (task.taskType === "material" && task.templateId) readyTemplates.add(`${account.id}:${task.templateId}`);
@@ -4498,6 +4945,25 @@ async function sendRotatingWindowGptTasks(options = {}) {
         state.status = "running";
         state.currentTask = "";
         gptTestQueueIndex += 1;
+        const quota = gptQuotaSnapshots.get(String(account.id))?.status || null;
+        const boundary = TBGptAccountRotation.accountQuotaBoundary(quota || {}, Date.now());
+        if (task.taskType === "material" && boundary.reached) {
+          const cooldown = recordGptSafetyLineCooldown(account, {
+            ...boundary,
+            windowHours: quota?.settings?.windowHours
+          });
+          blockedAccounts.add(account.id);
+          state.status = "waiting-quota";
+          state.nextProbeAt = cooldown.nextProbeAt;
+          accountCursor = (accountCursor + 1) % accounts.length;
+          showWorkbenchAssistantBubble(
+            `${account.name} 本轮作品已完整归档，近${quota?.settings?.windowHours || 3}小时已生图 ${boundary.generated}/${boundary.limit} 张；现在切换下一个全局轮换账号。`,
+            { duration: 5200, tone: "info" }
+          );
+          persistGptRotationRun({ workerState, currentAccountId: accounts[accountCursor]?.id || accounts[0]?.id });
+          persistGptQueue();
+          continue;
+        }
         // Rotation is quota-driven, not round-robin: keep using this account
         // until the web page reports a real limit or low-output probe.
         persistGptRotationRun({ workerState, currentAccountId: account.id });
@@ -4525,6 +4991,22 @@ async function sendRotatingWindowGptTasks(options = {}) {
           updateGptTestQueueStatus(nextProbeAt
             ? `所有账号窗口已触顶；最早 ${new Date(nextProbeAt).toLocaleString("zh-CN", { hour12: false })} 自动探测`
             : "所有账号窗口已触顶；轮换已暂停，等待下一次真实额度探测");
+          break;
+        }
+        if (integrityBoundaryCodes.has(String(task._errorCode || error?.code || ""))) {
+          state.status = "paused";
+          task._status = "paused";
+          gptQueuePaused = true;
+          gptAutoPaused = true;
+          persistGptRotationRun({
+            status: "paused-integrity-boundary",
+            currentAccountId: account.id,
+            workerState,
+            pending: gptTestQueue.filter((item) => !["completed", "skipped"].includes(item._status)).map((item) => item.requestId)
+          });
+          persistGptQueue();
+          updateGptTestQueueStatus(`${account.name} 当前窗口需要先清理输入框；全局轮换已停在当前帖子，不会跳过或上传下一套`);
+          showWorkbenchAssistantBubble(`${account.name} 当前窗口存在未发送内容；已停在当前帖子，清理后可继续，不会丢素材。`, { duration: 0, tone: "warning" });
           break;
         }
         state.status = "failed";
@@ -4680,6 +5162,7 @@ async function sendMultiWindowGptTasks(options = {}) {
             "WEB_RESPONSE_IN_FLIGHT",
             "IMAGE_COUNT_UNCERTAIN",
             "PLAN_PARSE_FAILED",
+            "PLAN_NOT_READY",
             "PLAN_NOT_COMPLETE",
             "GENERATION_LIMIT_SIGNAL",
             "SCRIPT_GENERATED_OUTPUT",
@@ -4766,14 +5249,23 @@ async function sendNextGptTestTask(options = {}) {
   const runAccountName = gptAccounts.find((item) => item.id === runAccountId)?.name || "当前账号窗口";
   const preflight = await window.gptWorkbench.status(runAccountId).catch(() => null);
   if (!preflight?.productionReady) {
-    gptQueuePaused = true;
-    persistGptQueue();
     const reason = preflight?.authenticationRequired
       ? `${runAccountName}需要先完成登录或验证码；本次没有上传任何素材`
       : !preflight?.composerReady
         ? `${runAccountName}当前不是可输入的 GPT 对话；本次没有上传任何素材`
         : `${runAccountName}的生产助手尚未就绪；本次没有上传任何素材`;
     updateGptTestQueueStatus(reason);
+    // Auto-retry: if in continuous mode, wait 30s and retry up to 3 times
+    // before giving up and pausing the queue.
+    if (isContinuousGptMode() && isContinuousGptProductionArmed() && !gptProductionRetryTimer) {
+      gptQueuePaused = false;
+      persistGptQueue();
+      scheduleGptProductionRetry(runAccountId, 1);
+      showWorkbenchAssistantBubble(reason + "；正在自动重试...", { duration: 0, tone: "info" });
+      return;
+    }
+    gptQueuePaused = true;
+    persistGptQueue();
     showWorkbenchAssistantBubble(reason, { duration: 0, tone: "warning" });
     return;
   }
@@ -4794,6 +5286,7 @@ async function sendNextGptTestTask(options = {}) {
   let completedThisRun = 0;
   let failedThisRun = 0;
   let quotaPausedTask = null;
+  let pendingSingleAccountHandoff = "";
   try {
     while (gptTestQueueIndex < gptTestQueue.length) {
       if (gptAutoPaused) throw new Error("已由用户暂停；可以继续剩余队列");
@@ -4863,9 +5356,10 @@ async function sendNextGptTestTask(options = {}) {
       };
       const pollingTask = poll();
       let result;
+      let uploadImages = 0;
       try {
         task._submittedToGpt = true;
-        const uploadImages = (task.attachments || []).filter((filePath) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(String(filePath || ""))).length;
+        uploadImages = (task.attachments || []).filter((filePath) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(String(filePath || ""))).length;
         recordGptQuotaConsumption(task, runAccountId, "upload");
         markGptWindowSetStarted(runAccountId);
         writeGptWindowRuntime(runAccountId, {
@@ -4922,8 +5416,11 @@ async function sendNextGptTestTask(options = {}) {
         gptLastFailedStage = String(result?.stage || gptLastFailedStage || "");
         gptLastFailedPercent = Number(result?.percent || gptLastFailedPercent || 0);
         const taskError = new Error(result?.detail || result?.error || "自动生产没有完整结束");
-        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "IMAGE_COUNT_UNCERTAIN", "PLAN_PARSE_FAILED", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(String(result?.errorCode || ""))
+        const boundaryConflict = ["COMPOSER_ATTACHMENTS_PENDING", "COMPOSER_DRAFT_PENDING", "COMPOSER_DRAFT_NOT_SET", "COMPOSER_ATTACHMENT_CONFLICT", "LOCAL_BRIDGE_FETCH_FAILED", "ATTACHMENT_UPLOAD_NOT_READY", "MIXED_POST_ATTACHMENTS", "MATERIAL_ROOT_MISSING", "IMAGE_COUNT_UNCERTAIN", "PLAN_PARSE_FAILED", "PLAN_NOT_READY", "PLAN_NOT_COMPLETE", "WINDOW_STAGE_PENDING", "WEB_RESPONSE_IN_FLIGHT", "GENERATION_LIMIT_SIGNAL", "SCRIPT_GENERATED_OUTPUT", "COPY_REQUIRED"].includes(String(result?.errorCode || ""))
           || /未发送附件|未发送文字|重复粘贴提示词|没有接收到本轮提示词|输入框没有接收到|不属于当前帖子文件夹|混合上传|缺少帖子文件夹路径|上一帖仍在生成|已阻止下一帖注入|文案 TXT|代码解释器|脚本文件输出/.test(taskError.message);
+        if (await recoverContinuousPlanFailure(task, result, runAccountId)) {
+          continue;
+        }
         task._stage = gptLastFailedStage;
         task._percent = gptLastFailedPercent;
         task._error = taskError.message;
@@ -4989,6 +5486,8 @@ async function sendNextGptTestTask(options = {}) {
       gptTestQueueIndex += 1;
       task._status = "completed";
       task._percent = 100;
+      task._error = "";
+      delete task._errorCode;
       markGptWindowSetCompleted(runAccountId);
       writeGptWindowRuntime(runAccountId, { status: "idle", currentTaskId: "", currentStage: "已完成", currentPercent: 100 });
       appendGptProductionHistory(task, "completed", result);
@@ -5015,6 +5514,13 @@ async function sendNextGptTestTask(options = {}) {
         : failedThisRun
           ? `本轮结束：成功 ${completedThisRun} 套，失败 ${failedThisRun} 套`
           : completedNotice);
+      if (normalizeGptProductionMode(gptAutoSettings.mode) === "single"
+        && activeGptAccountId !== runAccountId
+        && gptTestQueueIndex < gptTestQueue.length) {
+        pendingSingleAccountHandoff = activeGptAccountId;
+        updateGptTestQueueStatus(`当前作品已在 ${runAccountName} 安全完成；下一帖切换到手动选中的账号窗口。`);
+        break;
+      }
       if (gptTestQueueIndex < gptTestQueue.length && task.taskType === "material") {
         const minDelay = Math.max(5, Number(gptAutoSettings.minDelaySeconds || 25));
         const maxDelay = Math.max(minDelay, Number(gptAutoSettings.maxDelaySeconds || 55));
@@ -5035,13 +5541,18 @@ async function sendNextGptTestTask(options = {}) {
       updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1}/${gptTestQueue.length} 套 · 迁移计划已完成，请审核后点击"确认继续出图"`);
       return;
     }
+    const localQuotaBoundary = error?.code === "LOCAL_QUOTA_BOUNDARY";
     gptLastFailedTask = quotaPausedTask || gptTestQueue[gptTestQueueIndex] || null;
     gptQueuePaused = true;
     const failedTask = quotaPausedTask || gptTestQueue[gptTestQueueIndex];
     if (!quotaPausedTask && failedTask && failedTask._status !== "completed") {
-      failedTask._stage = gptLastFailedStage || failedTask._stage || "任务暂停";
+      failedTask._stage = localQuotaBoundary ? "等待额度恢复" : (gptLastFailedStage || failedTask._stage || "任务暂停");
       failedTask._percent = Number(gptLastFailedPercent || failedTask._percent || 0);
       failedTask._error = String(error?.message || failedTask._error || "自动生产已暂停");
+      if (localQuotaBoundary) {
+        failedTask._errorCode = error.code;
+        failedTask._submittedToGpt = false;
+      }
       failedTask._status = "paused";
     }
     if (!quotaPausedTask && isActualGptLimitMessage(error?.message)) {
@@ -5058,7 +5569,12 @@ async function sendNextGptTestTask(options = {}) {
     } else {
       updateGptTestQueueStatus(`第 ${gptTestQueueIndex + 1} 套已暂停：${error.message}`);
     }
-    if (String(error.message || "").includes("用户暂停") || resuming) {
+    if (localQuotaBoundary) {
+      const probeText = formatGptQuotaProbeTime(error.nextProbeAt);
+      gptQuotaPauseStatus = `${runAccountName}已在作品边界安全停住；${probeText}自动重新探测。`;
+      updateGptTestQueueStatus(gptQuotaPauseStatus);
+      showWorkbenchAssistantBubble(gptQuotaPauseStatus, { duration: 0, persistent: true, tone: "warning" });
+    } else if (String(error.message || "").includes("用户暂停") || resuming) {
       showWorkbenchAssistantBubble(`已暂停在第 ${gptTestQueueIndex + 1} 套；可以点击“继续自动生产”恢复。`);
     } else {
       showSystemNotice("自动生产已暂停", `${error.message}\n已完成的作品不会重复生成，处理当前问题后可继续。`, { tone: "danger" });
@@ -5083,6 +5599,12 @@ async function sendNextGptTestTask(options = {}) {
     persistGptQueue();
     updateGptTestQueueStatus();
     refreshGptQuota();
+    if (pendingSingleAccountHandoff && isContinuousGptProductionArmed() && !gptQueuePaused) {
+      const handoffAccountId = pendingSingleAccountHandoff;
+      setTimeout(() => {
+        reconcileGptWindow(handoffAccountId, { force: true }).catch(() => {});
+      }, 0);
+    }
     const finalRuntime = readGptWindowRuntime(runAccountId);
     if (!finalRuntime.stoppedByUser && !finalRuntime.pausedByUser && finalRuntime.status === "running") {
       writeGptWindowRuntime(runAccountId, { status: gptQueuePaused ? "waiting-quota" : "idle" });
@@ -5098,7 +5620,8 @@ function retryCurrentGptTask() {
   const failedTask = gptLastFailedTask;
   const previousRequestId = failedTask.requestId;
   const failureText = `${gptLastFailedStage || ""} ${failedTask._error || failedTask.error || ""}`;
-  const planParseBoundary = ["PLAN_PARSE_FAILED", "PLAN_NOT_COMPLETE"].includes(String(failedTask._errorCode || ""))
+  const planParseBoundary = Boolean(failedTask.workflow?.planSubmitted)
+    || ["PLAN_PARSE_FAILED", "PLAN_NOT_READY", "PLAN_NOT_COMPLETE"].includes(String(failedTask._errorCode || ""))
     || /迁移计划已返回.*(?:解析|页数)/i.test(failureText);
   const requiresFreshUpload = /没有检测到新消息|发送按钮已出现|未发送附件|输入框仍有|没有接收到本轮提示词|输入框没有接收到|残留|上一帖|composer|COMPOSER|附件上传|附件尚未全部就绪|ATTACHMENT_UPLOAD_NOT_READY|Failed to fetch|本地工作台连接失败|LOCAL_BRIDGE_FETCH_FAILED|WEB_RESPONSE_IN_FLIGHT|WINDOW_STAGE_PENDING/i.test(failureText);
   failedTask.requestId = `gpt-retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -5121,9 +5644,12 @@ function retryCurrentGptTask() {
     // confirmation. Uploading the material again here would create a second
     // plan and can race the next queue item.
     failedTask.forceUpload = false;
+    failedTask.workflow = failedTask.workflow || {};
+    failedTask.workflow.planSubmitted = true;
+    failedTask.workflow.planDone = false;
     failedTask.retryFromStage = "等待迁移计划";
     failedTask.retryFromPercent = Math.max(24, Number(failedTask._percent || 24));
-    failedTask._submittedToGpt = false;
+    failedTask._submittedToGpt = true;
   }
   delete failedTask._errorCode;
   gptLastFailedTask = null;
@@ -6572,9 +7098,9 @@ function humanizeCollectionReason(reason) {
 function renderCollectionFilters() {
   const collections = dashboard?.distribution?.collections || [];
   const options = [
-    ["mobile", "抖音小红书"],
-    ["official", "微信公众号"],
-    ["used", "已发送"]
+    ["mobile", "抖音小红书可发"],
+    ["official", "微信公众号可发"],
+    ["used", "已全部发送"]
   ];
   const container = $("#collectionStageTabs");
   if (!container) return;
@@ -6673,6 +7199,9 @@ function renderCollections() {
           ? `<button class="collection-primary-action" type="button" data-mark-used="${escapeHtml(collection.name)}">归档到已发送</button>`
           : `<button type="button" disabled title="原作品文件夹为空，不能生成归档压缩包">作品为空</button>`
         : "";
+    const emptyActions = !collection.sourceValid && collection.itemCount === 0
+      ? `<button type="button" class="collection-empty-action" data-rename-collection="${escapeHtml(collection.name)}" title="重命名作品集">重命名</button><button type="button" class="collection-empty-action danger" data-delete-collection="${escapeHtml(collection.name)}" title="删除空作品集">删除</button>`
+      : "";
     const openPathValue = collection.archivePath || collection.sourcePath || "";
     return `
       <article class="collection-row ${expanded ? "expanded" : ""}" data-collection="${escapeHtml(collection.name)}">
@@ -6685,6 +7214,7 @@ function renderCollections() {
         <div class="collection-stage-actions">
           <button type="button" data-open-collection="${escapeHtml(openPathValue)}">${collection.workflowStage === "used" ? "打开压缩包" : "打开作品"}</button>
           ${primaryAction}
+          ${emptyActions}
         </div>
         <div class="collection-children">
           ${expanded ? (collection.items || []).map((item, index) => `
@@ -6757,16 +7287,23 @@ function renderDistribution() {
   const unknownOnlineDevices = onlineDevices.filter((device) => device.trusted === false);
   const collections = data.collections || [];
   const mobileCollections = collections.filter((item) => item.workflowStage === "mobile");
-  const officialCollections = collections.filter((item) => item.workflowStage === "official");
   const usedCollections = collections.filter((item) => item.workflowStage === "used");
-  const visibleMobileCollections = mobileCollections.filter((item) => item.type === distributionCollectionTypeFilter);
-  const visibleOfficialCollections = officialCollections.filter((item) => item.type === distributionCollectionTypeFilter);
+  // 公众号选项卡：显示所有有内容的作品集 + 空的官方阶段文件夹，按有效性排序
+  const officialCollections = collections
+    .filter((item) => item.sourceValid || item.workflowStage === "official")
+    .sort((a, b) => {
+      if (a.sourceValid !== b.sourceValid) return b.sourceValid - a.sourceValid;
+      return a.name.localeCompare(b.name, "zh-Hans-CN");
+    });
+  const visibleMobileCollections = distributionCollectionTypeFilter === "all" ? mobileCollections : mobileCollections.filter((item) => item.type === distributionCollectionTypeFilter);
+  const visibleOfficialCollections = distributionCollectionTypeFilter === "all" ? officialCollections : officialCollections.filter((item) => item.type === distributionCollectionTypeFilter);
   const stageRoots = data.stageRoots || {};
+  const officialAvailableCount = officialCollections.filter((item) => item.sourceValid).length;
   const tabItems = [
     ["devices", "设备", `${onlineDevices.length}/${devices.length}`],
-    ["mobile", "抖音小红书", mobileCollections.length],
-    ["official", "微信公众号", officialCollections.length],
-    ["used", "已发送", usedCollections.length],
+    ["mobile", "抖音小红书可发", mobileCollections.length],
+    ["official", "微信公众号可发", officialAvailableCount],
+    ["used", "已全部发送", usedCollections.length],
     ["history", "操作记录", (data.deviceHistory || []).length + (data.officialAccountHistory || []).length + (data.operationHistory || []).length]
   ];
 
@@ -6789,6 +7326,9 @@ function renderDistribution() {
   `;
   const typeTabs = (rows) => `
     <div class="collection-type-tabs" aria-label="作品集类型">
+      <button type="button" data-stage-type-filter="all" class="${distributionCollectionTypeFilter === "all" ? "active" : ""}">
+        全部 <b>${rows.length}</b>
+      </button>
       <button type="button" data-stage-type-filter="traffic" class="${distributionCollectionTypeFilter === "traffic" ? "active" : ""}">
         泛流量帖 <b>${rows.filter((item) => item.type === "traffic").length}</b>
       </button>
@@ -6860,7 +7400,6 @@ function renderDistribution() {
     <div class="distribution-stats">
       <article class="summary-card"><span>可信设备在线</span><strong>${trustedOnlineDevices.length}<small> / ${devices.filter((item) => item.trusted !== false).length} 台</small></strong></article>
       <article class="summary-card"><span>陌生设备</span><strong>${unknownOnlineDevices.length}<small> 台</small></strong></article>
-      <article class="summary-card"><span>待手机分发</span><strong>${mobileCollections.length}<small> 个</small></strong></article>
       <article class="summary-card"><span>进行中任务</span><strong>${[...distributionTransferUiTasks.values(), ...genericTransferUiTasks.values()].filter((task) => ["running", "cancelling"].includes(task.state)).length}<small> 个</small></strong></article>
     </div>
     ${renderTransferTasks()}
@@ -6868,7 +7407,7 @@ function renderDistribution() {
   `;
 
   $("#distributionMobile").innerHTML = `
-    ${stageHeader("mobile", `抖音小红书 · ${mobileCollections.length} 个作品集`, "这里的真实文件夹，就是待发送到手机并发布抖音、小红书的库存。")}
+    ${stageHeader("mobile", `抖音小红书可发 · ${mobileCollections.length} 个作品集`, "这里的真实文件夹，就是待发送到手机并发布抖音、小红书的库存。")}
     ${typeTabs(mobileCollections)}
     ${renderTransferTasks()}
     <div class="package-list">${visibleMobileCollections.length ? visibleMobileCollections.map((collection) => {
@@ -6895,8 +7434,14 @@ function renderDistribution() {
     ${devicePicker()}
   `;
 
+  const stageBadgeLabel = (stage) => {
+    if (stage === "official") return '<span class="stage-badge official">公众号库</span>';
+    if (stage === "mobile") return '<span class="stage-badge mobile">手机库</span>';
+    if (stage === "used") return '<span class="stage-badge used">已归档</span>';
+    return "";
+  };
   $("#distributionOfficial").innerHTML = `
-    ${stageHeader("official", `微信公众号 · ${officialCollections.length} 个作品集`, "左侧选作品集 → 右侧选帖子 → 检查图片和文案 → 点「创建草稿」。首次使用请先完成下方账号配置。")}
+    ${stageHeader("official", `微信公众号可发 · ${officialAvailableCount} 个可用 / ${officialCollections.length} 个总计`, "左侧选作品集 → 右侧选帖子 → 检查图片和文案 → 点「创建草稿」。首次使用请先完成下方账号配置。")}
     <div class="official-launcher">
       <div><strong>微信公众号草稿发布器</strong><p>自动上传图片和文案到公众号草稿箱，无需手动拖传。</p></div>
       <div class="official-launcher-actions">
@@ -6905,6 +7450,7 @@ function renderDistribution() {
       </div>
     </div>
     ${renderWechatAccountStatus()}
+    ${typeTabs(officialCollections)}
     <div class="wechat-draft-layout">
       <aside class="wechat-draft-sidebar">
         <section class="workbench-card wechat-draft-collection-card">
@@ -6915,7 +7461,7 @@ function renderDistribution() {
             ${visibleOfficialCollections.length ? visibleOfficialCollections.map((collection) => `
               <article class="distribution-package-row ${wechatDraftSelectedCollection === collection.name ? "active" : ""}" data-wechat-collection="${escapeHtml(collection.name)}">
                 <div class="package-select"><span class="package-radio" aria-hidden="true"></span><span><strong>${escapeHtml(collection.name)}</strong><small>${collection.itemCount || 0} 个作品 · ${escapeHtml(collection.typeLabel || "")}</small></span></div>
-                <div class="badge-line"><span class="state-badge ${collection.sourceValid ? "good" : "bad"}">${collection.sourceValid ? "可发布" : "作品为空"}</span></div>
+                <div class="badge-line">${stageBadgeLabel(collection.workflowStage)}<span class="state-badge ${collection.sourceValid ? "good" : "bad"}">${collection.sourceValid ? "可发布" : "作品为空"}</span>${!collection.sourceValid && collection.itemCount === 0 ? `<button type="button" class="collection-empty-action" data-rename-collection="${escapeHtml(collection.name)}" title="重命名作品集">重命名</button><button type="button" class="collection-empty-action danger" data-delete-collection="${escapeHtml(collection.name)}" title="删除空作品集">删除</button>` : ""}</div>
               </article>
             `).join("") : `<div class="empty-state"><strong>这个分类暂时没有作品</strong><p>切换另一个分类，或打开真实文件夹核对。</p></div>`}
           </nav>
@@ -6942,7 +7488,7 @@ function renderDistribution() {
   `;
 
   $("#distributionUsed").innerHTML = `
-    ${stageHeader("used", `已发送 · ${usedCollections.length} 个压缩包`, "这里只存三端都已发布的 ZIP。压缩校验成功后，原作品文件夹会被删除。")}
+    ${stageHeader("used", `已全部发送 · ${usedCollections.length} 个压缩包`, "这里只存三端都已发布的 ZIP。压缩校验成功后，原作品文件夹会被删除。")}
     <div class="package-list">${usedCollections.length ? usedCollections.map((collection) => `
       <article class="distribution-package-row">
         <div class="package-select"><span class="package-radio archived" aria-hidden="true"></span><span><strong>${escapeHtml(collection.name)}</strong><small>归档压缩包 · 以真实 ZIP 为准</small></span></div>
@@ -7825,28 +8371,32 @@ function syncWorkbenchAssistantDock(left, top) {
   const { launcher, panel, bubble, logPanel } = assistantElements();
   if (!launcher) return;
   if (Number.isFinite(left) && Number.isFinite(top)) {
-    const size = launcher.getBoundingClientRect().width || 54;
-    const gptHost = $("#gptEmbeddedHost")?.getBoundingClientRect();
-    const overNativeGpt = $("#gptProductionTestView")?.classList.contains("active")
-      && gptHost
-      && left + size > gptHost.left
-      && left < gptHost.right
-      && top + size / 2 > gptHost.top
-      && top - size / 2 < gptHost.bottom;
-    const safeTop = overNativeGpt ? Math.max(size / 2 + 8, gptHost.top - size / 2 - 8) : top;
-    launcher.style.left = `${Math.max(8, Math.min(window.innerWidth - size - 8, left))}px`;
-    launcher.style.top = `${Math.max(size / 2 + 8, Math.min(window.innerHeight - size / 2 - 8, safeTop))}px`;
+    const rect = launcher.getBoundingClientRect();
+    const launcherW = rect.width || 82;
+    const launcherH = rect.height || 94;
+    const safeLeft = Math.max(8, Math.min(window.innerWidth - launcherW - 8, left));
+    const safeTop = Math.max(launcherH / 2 + 8, Math.min(window.innerHeight - launcherH / 2 - 8, top));
+    launcher.style.left = `${safeLeft}px`;
+    launcher.style.top = `${safeTop}px`;
     launcher.style.right = "auto";
     launcher.style.bottom = "auto";
     launcher.style.transform = "translateY(-50%)";
+    const placeOnRight = safeLeft + launcherW / 2 < window.innerWidth / 2;
     [panel, bubble, logPanel].forEach((element) => {
       if (!element) return;
       const width = element.getBoundingClientRect().width || (element === bubble ? 306 : 380);
-      element.style.left = `${Math.max(8, left - width + (element === bubble ? 6 : -4))}px`;
+      const height = element.getBoundingClientRect().height || (element === bubble ? 82 : 300);
+      const bubbleGap = element === bubble ? 12 : 4;
+      if (placeOnRight) {
+        element.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, safeLeft + launcherW + bubbleGap))}px`;
+      } else {
+        element.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, safeLeft - width - bubbleGap))}px`;
+      }
       element.style.right = "auto";
-      element.style.top = `${Math.max(8, Math.min(window.innerHeight - 8, safeTop))}px`;
+      element.style.top = `${Math.max(height / 2 + 8, Math.min(window.innerHeight - height / 2 - 8, safeTop))}px`;
       element.style.bottom = "auto";
       element.style.transform = "translateY(-50%)";
+      element.dataset.side = placeOnRight ? "right" : "left";
     });
   } else {
     [launcher, panel, bubble, logPanel].forEach((element) => {
@@ -7858,6 +8408,14 @@ function syncWorkbenchAssistantDock(left, top) {
       element.style.transform = "";
     });
   }
+}
+
+function resyncWorkbenchAssistantDockFromLauncher() {
+  const { launcher } = assistantElements();
+  if (!launcher) return;
+  const rect = launcher.getBoundingClientRect();
+  if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return;
+  syncWorkbenchAssistantDock(rect.left, rect.top + rect.height / 2);
 }
 
 function restoreWorkbenchAssistantDock() {
@@ -7935,6 +8493,7 @@ function showWorkbenchAssistantBubble(message, options = {}) {
   if (content) content.textContent = entry.message;
   else bubble.textContent = entry.message;
   bubble.hidden = false;
+  requestAnimationFrame(() => resyncWorkbenchAssistantDockFromLauncher());
   window.gptWorkbench?.updateAssistant?.({ message: entry.message, visible: !assistantChatOpen }).catch(() => {});
   clearTimeout(assistantBubbleTimer);
   if (Number(options.duration || 0) > 0) {
@@ -8500,15 +9059,13 @@ function applyTheme(theme, options = {}) {
     cycleButton.title = `当前${currentName}，点击切换为${nextName}`;
     cycleButton.setAttribute("aria-label", cycleButton.title);
   }
-  syncConversionTheme(value.includes("glass") ? "glass" : "neo");
+  syncConversionTheme(value);
   window.gptWorkbench?.setTheme?.(value).catch(() => {});
 }
 
 function syncConversionTheme(theme = document.body.dataset.theme || "neo") {
-  const frame = $("#conversionAppFrame");
-  if (!frame?.contentWindow) return;
-  frame.dataset.themeSynced = theme;
-  frame.contentWindow.postMessage({ type: "jianghu-theme", theme }, window.location.origin);
+  const view = $("#conversionView");
+  if (view) view.dataset.themeSynced = theme;
 }
 
 async function startDistributionTransfer(payload) {
@@ -8793,7 +9350,7 @@ async function checkDistributionDevices(options = {}) {
     deviceCheckState = { ...deviceCheckState, scanning: false };
     if (dashboard?.distribution) renderDistribution();
     if (!options.silent) showSystemNotice("设备状态刷新失败", error.message, { tone: "danger" });
-    else console.error("设备自动扫描失败", error);
+    else console.warn("设备自动扫描跳过（静默模式）:", error.message || error);
   } finally {
     deviceScanRunning = false;
     if (refreshButton) {
@@ -8863,24 +9420,205 @@ function readableConversionValue(value, depth = 0) {
     </section>`).join("");
 }
 
+function conversionSearchSnapshot() {
+  return conversionData?.search?.数据 || conversionData?.search?.data || {};
+}
+
+function conversionHistories() {
+  const data = conversionSearchSnapshot();
+  return Array.isArray(data.候选) ? data.候选 : Array.isArray(data.items) ? data.items : [];
+}
+
+function conversionPlans() {
+  const data = conversionData?.plans?.数据 || conversionData?.plans?.data || {};
+  return Array.isArray(data.方案) ? data.方案 : Array.isArray(data.plans) ? data.plans : [];
+}
+
+function conversionNorm(value) {
+  return String(value || "").toLowerCase().replace(/\s+/g, "");
+}
+
+function conversionHistoryQuestion(item) {
+  return item?.问题 || item?.客户问题 || item?.客户原话 || item?.question || item?.标题 || item?.用户 || item?.原文 || "";
+}
+
+function conversionHistoryAnswer(item) {
+  const value = item?.回复 || item?.回答 || item?.answer || item?.建议回复 || item?.内容 || item?.历史回复 || item?.历史回复原话 || "";
+  return Array.isArray(value) ? value.join("\n") : String(value || "");
+}
+
+function conversionHistoryText(item) {
+  return [
+    conversionHistoryQuestion(item),
+    conversionHistoryAnswer(item),
+    item?.身份,
+    item?.角色,
+    item?.来源,
+    item?.source,
+    item?.标签,
+    item?.场景
+  ].flat().filter(Boolean).join(" ");
+}
+
+function matchConversionHistories(query = "", role = conversionRole) {
+  const q = conversionNorm(query);
+  return conversionHistories()
+    .map((item, index) => {
+      const text = conversionNorm(conversionHistoryText(item));
+      const roleHit = !role || text.includes(conversionNorm(role)) ? 8 : 0;
+      const queryHit = q ? (text.includes(q) ? 30 : q.split(/[，,。！？\s]+/).filter(Boolean).reduce((sum, token) => sum + (text.includes(token) ? 6 : 0), 0)) : 10;
+      return { item, index, score: roleHit + queryHit };
+    })
+    .filter(row => !q || row.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 25)
+    .map(row => row.item);
+}
+
+function renderConversionHistoryCards(rows = matchConversionHistories("", conversionRole)) {
+  if (!rows.length) return '<div class="conversion-empty">没有匹配到历史回答，可以换一句客户原话再搜。</div>';
+  return rows.map((item) => {
+    const question = conversionHistoryQuestion(item) || "未命名客户问题";
+    const answer = conversionHistoryAnswer(item) || "这条历史记录暂无可展示回复。";
+    const tags = [item?.身份, item?.角色, item?.分桶, item?.环节, item?.来源, item?.source, item?.场景].filter(Boolean).slice(0, 4);
+    const meta = [item?.时间, item?.日期, item?.文件, item?.会话, item?.回复人].flat().filter(Boolean).join(" · ");
+    return `
+      <article class="conversion-history-card">
+        <div class="conversion-history-head">
+          <div class="conversion-history-tags">${tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join("")}</div>
+          <button class="conversion-btn" type="button" data-copy-history="${escapeHtml(answer)}">复制</button>
+        </div>
+        <h3>${escapeHtml(question)}</h3>
+        <p>${escapeHtml(answer)}</p>
+        ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+      </article>`;
+  }).join("");
+}
+
+function renderConversionChatSourceStats() {
+  const status = conversionData?.search?.状态 || conversionData?.search?.status || {};
+  const indexed = status.已入库统计 || {};
+  const scan = status.扫描统计 || {};
+  const items = [
+    ["历史问答", indexed.候选 || indexed.问答 || conversionHistories().length],
+    ["有效会话", scan.会话],
+    ["消息", scan.消息],
+    ["群聊", scan.群聊],
+    ["私聊", scan.私聊]
+  ].filter(([, value]) => value !== undefined && value !== "");
+  return `<section class="conversion-source-stats" id="conversionChatSourceStats">${items.map(([name, value]) => `<span><small>${escapeHtml(name)}</small><b>${formatNumber(Number(value) || 0)}</b></span>`).join("")}</section>`;
+}
+
+function conversionPlanText(plan) {
+  return conversionNorm([
+    plan?.标题,
+    plan?.城市,
+    plan?.省份,
+    plan?.时长,
+    plan?.状态,
+    plan?.格式,
+    plan?.摘要,
+    plan?.原文件,
+    ...(plan?.活动 || []),
+    ...(plan?.标签 || [])
+  ].filter(Boolean).join(" "));
+}
+
+function matchConversionPlans(query = "", filters = []) {
+  const q = conversionNorm(query);
+  const picked = filters.map(item => conversionNorm(String(item).split(":").pop())).filter(Boolean);
+  if (!q && !picked.length) return conversionPlans().slice(0, 12);
+  return conversionPlans()
+    .map((plan) => {
+      const text = conversionPlanText(plan);
+      const filterHit = picked.reduce((sum, token) => sum + (text.includes(token) ? 10 : 0), 0);
+      const queryHit = q ? (text.includes(q) ? 25 : q.split(/[，,。！？\s]+/).filter(Boolean).reduce((sum, token) => sum + (text.includes(token) ? 5 : 0), 0)) : 0;
+      return { plan, score: filterHit + queryHit };
+    })
+    .filter(row => row.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 40)
+    .map(row => row.plan);
+}
+
+function renderConversionPlanCards(rows = []) {
+  if (!rows.length) return '<div class="conversion-empty">输入需求或选择筛选条件后，这里会显示本地方案匹配结果。</div>';
+  return rows.map((plan) => {
+    const tags = [plan?.城市, plan?.时长, plan?.状态, plan?.格式, ...(plan?.活动 || [])].filter(Boolean).slice(0, 10);
+    return `
+      <article class="conversion-plan-card">
+        <div>
+          <h3>${escapeHtml(plan?.标题 || "未命名方案")}</h3>
+          <div class="conversion-plan-tags">${tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join("")}</div>
+          ${plan?.摘要 ? `<p>${escapeHtml(plan.摘要)}</p>` : ""}
+        </div>
+        <small>${escapeHtml(plan?.原文件 || "")}</small>
+      </article>`;
+  }).join("");
+}
+
+function renderConversionProposalStats() {
+  const plans = conversionPlans();
+  const status = conversionData?.plans?.状态 || conversionData?.plans?.status || {};
+  const counts = { PPT: 0, PDF: 0, Word: 0, 其他: 0 };
+  plans.forEach(plan => {
+    const format = String(plan?.格式 || plan?.原文件 || "").toLowerCase();
+    if (format.includes("ppt")) counts.PPT += 1;
+    else if (format.includes("pdf")) counts.PDF += 1;
+    else if (format.includes("doc") || format.includes("wps")) counts.Word += 1;
+    else counts.其他 += 1;
+  });
+  const total = plans.length || Number(status.索引方案 || 0);
+  return `<section class="conversion-proposal-stats"><span><small>当前方案库</small><b>${formatNumber(total)}</b></span>${Object.entries(counts).map(([name, value]) => `<span><small>${name}</small><b>${formatNumber(value)}</b></span>`).join("")}</section>`;
+}
+
+const DEFAULT_CONVERSION_JOURNEY_STAGES = [
+  { n: "01", role: "公域运营", title: "客户第一次出现", signal: "评论区、私信、公众号、抖音/小红书截图，客户提出团建、人事群或方案需求。", yes: "识别为真实团建需求，进入轻量承接。", no: "广告、供应商、人事群闲聊、无关内容，标记脏数据并停止推进。", next: "来源确认 → 需求收集", copy: "您好呀，您这边是想了解团建方案，还是想进相关交流群呢？", method: "先判断是不是业务线索，不把所有加好友都当客户。" },
+  { n: "02", role: "前端运营", title: "轻量确认最小信息", signal: "客户愿意继续聊，但需求还不完整。", yes: "至少拿到人数 + 大致地点/出发地，能问则补日期或天数。", no: "客户只说“先看看/还没定”，不追问一串表格，保留一个自然入口。", next: "信息基本完整 → 引导加微信/PPT/拉群", copy: "可以的，我先简单了解下：大概多少人、从哪里出发呢？有个方向后我就能帮您找合适的方案。", method: "前端只完成必要信息交换，不在公域报价，不把客户问烦。" },
+  { n: "03", role: "前端运营", title: "判断是否推进到微信或策划群", signal: "人数和方向明确，或客户主动要方案、报价、PPT。", yes: "自然说明微信/PPT/策划师承接的价值，再完成加微或拉群。", no: "客户对加微信有顾虑，先在当前渠道继续解决一个关键问题，再二次引导。", next: "加微成功 → 轻量互动 → 拉群交接", copy: "您把人数和方向告诉我就行，完整行程和报价需要策划师按团队定制。我先给您拉个群对接，您不用重复说一遍。", method: "不是为了“加上就算完成”，而是让客户知道下一步会得到什么。" },
+  { n: "04", role: "前端运营", title: "拉群交接与信息摘要", signal: "客户已加微信或进入客户转化群。", yes: "把已知人数、日期、地点、偏好、预算和未确认项一次性交给策划师。", no: "客户未回复或暂时没时间，建立待跟进，不重复轰炸。", next: "策划师接手 → 需求确认", copy: "我先把您刚才说的情况同步给策划师，稍等下他会在群里和您对接，方案和报价也会按这个方向来。", method: "交接的核心是减少客户重复叙述，避免前后端信息断层。" },
+  { n: "05", role: "后端转化", title: "需求确认与方案匹配", signal: "策划师进入群，客户已提供部分需求。", yes: "补齐日期、人数、出发、住宿、餐标、交通、活动偏好和预算边界。", no: "信息矛盾、预算不匹配或需求变更，先复述确认，再给可选方向。", next: "形成一版或多版定制方案 → 解释差异", copy: "我先按您现在确认的条件梳理一下：人数、日期、出发地和预算先不变，活动和住宿我给您配两种方向，您看哪种更接近？", method: "后端不是只发 PPT，而是把客户条件变成可比较的方案选择。" },
+  { n: "06", role: "后端转化", title: "方案、报价与异议处理", signal: "客户已看到方案，开始问价格、包含项、酒店、活动、天气或替代方案。", yes: "逐项回答客户真正问的内容，说明差异、边界和可调整项，再推进确认。", no: "客户沉默、说贵、要讨论或暂时没日期，记录原因和下一次跟进点。", next: "方案确认 → 合同税务付款", copy: "这个价格差异主要在住宿和活动时长，我把两版的区别列给您看；如果预算要控制，我们可以先保留核心活动，再调整住宿标准。", method: "先接住问题，再推进成交；不能用“好的/收到/稍等”代替解释。" },
+  { n: "07", role: "后端转化", title: "合同、付款与执行交底", signal: "客户确认方案、要求出合同或准备付款。", yes: "确认公司信息、开票、定金、尾款、盖章、联系人及执行细节。", no: "合同信息缺失、付款未到或临时变更，明确责任人和截止时间，留下可追踪记录。", next: "执行前复核 → 活动交付 → 复购/转介绍", copy: "好的，合同我按确认方案整理；麻烦补充开票信息和联系人，定金安排后把截图发我，我这边跟财务核对。", method: "成交不是收完定金就结束，执行前的信息复核决定最终体验。" },
+  { n: "08", role: "全链路复盘", title: "结果回流知识库", signal: "成交、流失、未回复、方案调整或客户提出新问题。", yes: "把有效路径、错配回复、流失原因和新分支归档到对应 SOP。", no: "只有一句孤立回复或无法判断上下文，保留为待复核，不直接进入推荐。", next: "下一次搜索与推荐继续使用", copy: "这次对话已记录：客户从哪里来、在哪一步卡住、哪种回复推进了下一步，后续同类客户直接复用。", method: "知识库不是“存消息”，而是持续更新判断树和可执行动作。" }
+];
+
 function renderConversionSearch() {
+  const identities = [
+    { key: "前端运营", label: "前端运营", desc: "主动搞流量 · 价值钩子 · 留资交接", goal: "目标是把公域流量拉到私域，再拉群交接给策划师。" },
+    { key: "后端转化", label: "后端转化", desc: "补齐需求 · 方案报价 · 跟进成交", goal: "目标是在群里补齐需求、出方案、报价并促成定金。" }
+  ];
+  const current = identities.find(i => i.key === conversionRole) || identities[0];
+  const initialHistories = matchConversionHistories("", conversionRole);
   return `
-    <section class="conversion-search-shell">
-      <div class="conversion-intro-card">
-        <span>客户刚刚说</span>
-        <h3>把原话放进来，找下一句怎么回</h3>
-        <p>选择当前由前端运营还是后端策划承接。系统会结合正式知识库和 SOP 给出回复与下一步。</p>
+    ${renderConversionChatSourceStats()}
+    <section class="conversion-assistant-shell">
+      <aside class="conversion-identity-panel">
+        <div class="conversion-identity-title">我现在负责</div>
+        ${identities.map(id => `
+          <button class="conversion-identity-option ${id.key === conversionRole ? "active" : ""}" type="button" data-conversion-role="${escapeHtml(id.key)}">
+            <b>${escapeHtml(id.label)}</b>
+            <span>${escapeHtml(id.desc)}</span>
+          </button>`).join("")}
+        <div class="conversion-identity-goal">${escapeHtml(current.goal)}</div>
+      </aside>
+      <div class="conversion-search-shell">
+        <div class="conversion-customer-label">
+          <span>客户刚刚说</span>
+          <small>直接粘贴一句或一段真实对话</small>
+        </div>
+        <textarea id="conversionQuestion" class="conversion-query" rows="5" placeholder="例如：客户说预算还没定，先看看有哪些适合30人的杭州周边方案"></textarea>
+        <div class="conversion-composer-actions">
+          <button class="conversion-btn" id="conversionLocalSearchBtn" type="button">查历史回答</button>
+          <button class="conversion-btn primary" id="conversionSearchBtn" type="button">AI 智能建议</button>
+        </div>
       </div>
-      <div class="conversion-role-switch">
-        <button class="${conversionRole === "前端运营" ? "active" : ""}" type="button" data-conversion-role="前端运营">前端运营</button>
-        <button class="${conversionRole === "后端转化" ? "active" : ""}" type="button" data-conversion-role="后端转化">后端转化</button>
-      </div>
-      <textarea id="conversionQuestion" class="conversion-query" rows="5" placeholder="例如：客户说预算还没定，先看看有哪些适合30人的杭州周边方案"></textarea>
-      <div class="conversion-action-row">
-        <span>一次只推进一个判断，避免连续盘问客户。</span>
-        <button class="primary-button" id="conversionSearchBtn" type="button">查找回复话术</button>
-      </div>
-      <section class="conversion-result" id="conversionSearchResult">${conversionResult ? readableConversionValue(conversionResult) : '<div class="conversion-empty">输入客户原话后，这里会显示可直接使用的回复与下一步。</div>'}</section>
+    </section>
+    <div class="conversion-statusline" id="conversionStatusline">当前身份：${escapeHtml(conversionRole)} · 已载入 ${formatNumber(conversionHistories().length)} 条历史问答，默认展示最相关的 ${initialHistories.length} 条。</div>
+    <section class="conversion-result" id="conversionSearchResult">${conversionResult ? readableConversionValue(conversionResult) : '<div class="conversion-empty">输入客户原话后，这里会显示 AI 可直接使用的回复与下一步。</div>'}</section>
+    <section class="conversion-local-results">
+      <header><span>真实历史回答</span><small>来自聊天源和已确认问答，不是临时占位。</small></header>
+      <div id="conversionHistoryResults">${renderConversionHistoryCards(initialHistories)}</div>
     </section>`;
 }
 
@@ -8888,54 +9626,182 @@ function renderConversionSop() {
   const roles = conversionRoles();
   const role = roles[conversionRole] || Object.values(roles)[0] || {};
   const stages = role.环节 || role.stages || [];
+  const activeStage = stages[conversionActiveStageIndex] || stages[0] || {};
+  const questions = activeStage.问答 || activeStage.questions || [];
+  const totalQuestions = Number(role.问题数 || 0) || stages.reduce((sum, s) => sum + (s.问答 || []).length, 0);
   return `
     <section class="conversion-sop-shell">
       <aside class="conversion-sop-rail">
-        <div class="conversion-role-switch">
-          ${Object.keys(roles).map((name) => `<button class="${name === conversionRole ? "active" : ""}" type="button" data-conversion-role="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join("")}
+        <div class="conversion-role-intro">
+          <div class="conversion-role-switch">
+            ${Object.keys(roles).map((name) => `<button class="${name === conversionRole ? "active" : ""}" type="button" data-conversion-role="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join("")}
+          </div>
+          <p class="conversion-role-desc">${escapeHtml(role.定位 || "按客户当前所在环节查看下一步。")}</p>
+          <small class="conversion-sop-count">${totalQuestions} 个正式问题</small>
         </div>
-        <p>${escapeHtml(role.定位 || role.positioning || "按客户当前所在环节查看下一步。")}</p>
-        <strong>${Number(role.问题数 || role.questionCount || 0)} 个正式问题</strong>
+        <div class="conversion-stage-list">
+          ${stages.map((stage, idx) => `
+            <button class="conversion-stage-button ${idx === conversionActiveStageIndex ? "active" : ""}" type="button" data-conversion-stage="${idx}">
+              <span class="conversion-stage-code">${escapeHtml(stage.编号 || String(idx + 1).padStart(2, "0"))}</span>
+              <span><b>${escapeHtml(stage.名称 || "未命名环节")}</b><br><small>${(stage.问答 || []).length} 个问题</small></span>
+              <span class="conversion-stage-arrow">›</span>
+            </button>`).join("") || '<div class="conversion-empty">当前没有可显示的 SOP 环节。</div>'}
+        </div>
       </aside>
-      <div class="conversion-stage-list">
-        ${stages.map((stage) => `
-          <article class="conversion-stage-card">
-            <span>${escapeHtml(stage.编号 || stage.id || "")}</span>
-            <div><h3>${escapeHtml(stage.名称 || stage.name || "未命名环节")}</h3><p>${escapeHtml(stage.原则 || stage.principle || "")}</p></div>
-          </article>`).join("") || '<div class="conversion-empty">当前没有可显示的 SOP 环节。</div>'}
+      <div class="conversion-stage-detail">
+        ${activeStage && activeStage.名称 ? `
+          <div class="conversion-stage-kicker">${escapeHtml(conversionRole)} · 按时间顺序执行</div>
+          <h2>${escapeHtml(activeStage.名称 || "")}</h2>
+          <p class="conversion-stage-principle">${escapeHtml(activeStage.原则 || "一个问题可以有多个回复；第一条是当前推荐，其他是可换着用的表达。")}</p>
+          ${questions.map(question => {
+            const answers = question.回复 || [];
+            const best = answers[0];
+            const more = answers.slice(1);
+            return `
+              <article class="conversion-script-block" data-question="${escapeHtml(question.编号 || "")}">
+                <h3>${escapeHtml(question.问题 || "")}</h3>
+                ${best ? `
+                  <div class="conversion-answer-main">
+                    <span class="conversion-answer-label">问题回复</span>
+                    <div class="conversion-answer-text">${escapeHtml(best.内容 || "")}</div>
+                    <div class="conversion-answer-actions">
+                      <button class="conversion-btn primary" data-copy-answer="${escapeHtml(best.id || "")}">复制</button>
+                      <button class="conversion-like-btn" data-like-answer="${escapeHtml(best.id || "")}">👍 <b>${Number(best.默认点赞 || 0)}</b></button>
+                    </div>
+                  </div>` : ""}
+                ${more.length ? `
+                  <details class="conversion-more-answers">
+                    <summary>更多回复（${more.length}）</summary>
+                    ${more.map(answer => `
+                      <div class="conversion-answer-alt">
+                        <div class="conversion-answer-text">${escapeHtml(answer.内容 || "")}</div>
+                        <div class="conversion-answer-actions">
+                          <button class="conversion-btn primary" data-copy-answer="${escapeHtml(answer.id || "")}">复制</button>
+                          <button class="conversion-like-btn" data-like-answer="${escapeHtml(answer.id || "")}">👍 <b>${Number(answer.默认点赞 || 0)}</b></button>
+                        </div>
+                      </div>`).join("")}
+                  </details>` : ""}
+                <div class="conversion-next-step"><b>下一步：</b>${escapeHtml(question.下一步 || "根据客户反馈继续推进")}</div>
+              </article>`;
+          }).join("") || '<div class="conversion-empty">这个环节暂无问答内容。</div>'}
+        ` : '<div class="conversion-empty">选择左侧环节查看详情。</div>'}
       </div>
     </section>`;
 }
 
 function renderConversionProposal() {
+  const filterGroups = [
+    { label: "地点", options: ["杭州", "安吉", "莫干山", "临安", "舟山", "上海", "义乌", "诸暨", "宁波", "绍兴", "湖州", "嘉兴", "苏州", "富阳", "桐庐", "千岛湖", "德清", "长兴"] },
+    { label: "时长", options: ["半日", "一日", "两日", "三日"] },
+    { label: "活动", options: ["草坪", "烧烤", "露营", "溯溪", "骑行", "飞盘", "剧本杀", "篝火", "采摘", "漂流"] },
+    { label: "住宿", options: ["酒店", "民宿", "帐篷", "别墅", "不需住宿"] },
+    { label: "价格", options: ["人均200以下", "人均200-300", "人均300-500", "人均500以上"] }
+  ];
+  const initialPlans = matchConversionPlans("", []);
   return `
     <section class="conversion-proposal-shell">
+      ${renderConversionProposalStats()}
       <div class="conversion-intro-card">
         <span>按客户需求找方案</span>
         <h3>先说清楚真实需求，再从本地方案源中匹配</h3>
         <p>可写人数、城市、日期、预算、天数和偏好。未知信息不用编，系统会标出缺口。</p>
       </div>
-      <textarea id="conversionDemand" class="conversion-query" rows="7" placeholder="例如：杭州出发，35人，9月周五，一日，想轻松一点，有草坪和烧烤，预算人均300左右"></textarea>
-      <div class="conversion-action-row">
-        <span>方案资料仍由企业方案库维护，不复制到本工作台。</span>
-        <button class="primary-button" id="conversionProposalBtn" type="button">开始匹配方案</button>
+      <div class="conversion-proposal-form">
+        <div class="conversion-proposal-left">
+          <textarea id="conversionDemand" class="conversion-query" rows="5" placeholder="例如：杭州出发，35人，9月周五，一日，想轻松一点，有草坪和烧烤，预算人均300左右"></textarea>
+          <div class="conversion-proposal-strip">
+            <details class="conversion-manual-filter">
+              <summary>手动筛选</summary>
+              <div class="conversion-filter-groups">
+                ${filterGroups.map(g => `
+                  <div class="conversion-filter-group">
+                    <b>${g.label}</b>
+                    <div class="conversion-filter-options">
+                      ${g.options.map(opt => `<button class="conversion-filter-chip" type="button" data-filter="${escapeHtml(g.label)}:${escapeHtml(opt)}">${escapeHtml(opt)}</button>`).join("")}
+                    </div>
+                  </div>`).join("")}
+              </div>
+            </details>
+            <div class="conversion-rotating-prompt" id="conversionRotatingPrompt">试试描述<strong>人数、城市、预算</strong>，匹配更精准</div>
+          </div>
+        </div>
+        <div class="conversion-proposal-actions">
+          <button class="conversion-btn" id="conversionMatchProposalBtn" type="button">匹配方案</button>
+          <button class="conversion-btn primary" id="conversionProposalBtn" type="button">AI 策划匹配</button>
+        </div>
       </div>
-      <section class="conversion-result" id="conversionProposalResult">${conversionResult ? readableConversionValue(conversionResult) : '<div class="conversion-empty">匹配结果会在这里按推荐理由、风险和下一步呈现。</div>'}</section>
+      <div class="conversion-statusline" id="conversionProposalStatus">方案资料仍由企业方案库维护，不复制到本工作台；当前已载入 ${formatNumber(conversionPlans().length)} 份方案索引。</div>
+      <section class="conversion-result" id="conversionProposalResult">${conversionResult ? readableConversionValue(conversionResult) : '<div class="conversion-empty">AI 匹配结果会在这里按推荐理由、风险和下一步呈现。</div>'}</section>
+      <section class="conversion-local-results">
+        <header><span>本地方案匹配</span><small>输入需求或点选筛选条件后，会从方案索引中即时筛选。</small></header>
+        <div id="conversionProposalLocalResults">${renderConversionPlanCards(initialPlans)}</div>
+      </section>
     </section>`;
 }
 
+function conversionJourneyData() {
+  return conversionData?.journey?.画板 || conversionData?.journey?.board || {};
+}
+
 function renderConversionJourney() {
-  const roles = conversionRoles();
-  const lanes = Object.entries(roles);
+  const board = conversionJourneyData();
+  const nodes = board.节点 || board.nodes || [];
+  const links = board.连线 || board.links || [];
+  if (nodes.length > 0) {
+    const roleGroups = {};
+    nodes.forEach(node => {
+      const role = (node.note && (node.note.role || node.note.角色)) || "通用";
+      if (!roleGroups[role]) roleGroups[role] = [];
+      roleGroups[role].push(node);
+    });
+    return `
+      <section class="conversion-journey-shell">
+        <header><span>用户旅程</span><h3>从公域咨询，到方案、决策与长期跟进</h3><p>先判断客户现在在哪个节点，再选择动作；不从第一句话直接跳到报价。</p></header>
+        <div class="conversion-journey-lanes">
+          ${Object.entries(roleGroups).map(([roleName, roleNodes]) => `
+            <section class="conversion-journey-lane">
+              <div class="conversion-journey-role"><strong>${escapeHtml(roleName)}</strong><span>${roleNodes.length} 个节点</span></div>
+              ${roleNodes.map((node, index) => `
+                <article>
+                  <b class="conversion-step-num">${String(index + 1).padStart(2, "0")}</b>
+                  <div>
+                    <strong>${escapeHtml((node.label || ["未命名"]).join(" · "))}</strong>
+                    ${node.sub ? `<p>${escapeHtml(node.sub)}</p>` : ""}
+                    ${node.note && node.note.signal ? `<div class="conversion-journey-signal"><b>信号：</b>${escapeHtml(node.note.signal)}</div>` : ""}
+                    ${node.note && node.note.action ? `<div class="conversion-journey-action"><b>动作：</b>${escapeHtml(node.note.action)}</div>` : ""}
+                    ${node.note && node.note.script ? `<div class="conversion-journey-script"><b>话术：</b>${escapeHtml(node.note.script)}</div>` : ""}
+                    ${node.note && node.note.method ? `<div class="conversion-journey-method"><b>方法：</b>${escapeHtml(node.note.method)}</div>` : ""}
+                  </div>
+                </article>`).join("")}
+            </section>`).join("")}
+        </div>
+      </section>`;
+  }
+  const lanes = DEFAULT_CONVERSION_JOURNEY_STAGES.reduce((groups, stage) => {
+    if (!groups[stage.role]) groups[stage.role] = [];
+    groups[stage.role].push(stage);
+    return groups;
+  }, {});
   return `
     <section class="conversion-journey-shell">
       <header><span>用户旅程</span><h3>从公域咨询，到方案、决策与长期跟进</h3><p>先判断客户现在在哪个节点，再选择动作；不从第一句话直接跳到报价。</p></header>
       <div class="conversion-journey-lanes">
-        ${lanes.map(([roleName, role]) => `
+        ${Object.entries(lanes).map(([roleName, stages]) => `
           <section class="conversion-journey-lane">
-            <div class="conversion-journey-role"><strong>${escapeHtml(roleName)}</strong><span>${Number(role.问题数 || 0)} 个问题</span></div>
-            ${(role.环节 || []).map((stage, index) => `
-              <article><b>${String(index + 1).padStart(2, "0")}</b><div><strong>${escapeHtml(stage.名称 || "")}</strong><p>${escapeHtml(stage.原则 || "")}</p></div></article>`).join("")}
+            <div class="conversion-journey-role"><strong>${escapeHtml(roleName)}</strong><span>${stages.length} 个节点</span></div>
+            ${stages.map((stage) => `
+              <article>
+                <b class="conversion-step-num">${escapeHtml(stage.n)}</b>
+                <div>
+                  <strong>${escapeHtml(stage.title)}</strong>
+                  <div class="conversion-journey-signal"><b>进入信号：</b>${escapeHtml(stage.signal)}</div>
+                  <div class="conversion-journey-branch yes"><b>是：</b>${escapeHtml(stage.yes)}</div>
+                  <div class="conversion-journey-branch no"><b>否：</b>${escapeHtml(stage.no)}</div>
+                  <div class="conversion-journey-action"><b>下一步：</b>${escapeHtml(stage.next)}</div>
+                  <div class="conversion-journey-copy"><b>可复制话术：</b>${escapeHtml(stage.copy)} <button class="conversion-btn" type="button" data-copy-journey="${escapeHtml(stage.copy)}">复制</button></div>
+                  <div class="conversion-journey-method"><b>背后的判断：</b>${escapeHtml(stage.method)}</div>
+                </div>
+              </article>`).join("")}
           </section>`).join("")}
       </div>
     </section>`;
@@ -8945,6 +9811,7 @@ function bindConversionWorkspace() {
   $$("[data-conversion-role]").forEach((button) => button.addEventListener("click", () => {
     conversionRole = button.dataset.conversionRole;
     conversionResult = null;
+    conversionActiveStageIndex = 0;
     renderConversionHub();
   }));
   $("#conversionSearchBtn")?.addEventListener("click", async () => {
@@ -8965,7 +9832,7 @@ function bindConversionWorkspace() {
       $("#conversionSearchResult").innerHTML = `<div class="conversion-empty danger">${escapeHtml(error.message)}</div>`;
     } finally {
       button.disabled = false;
-      button.textContent = "查找回复话术";
+      button.textContent = "AI 智能建议";
     }
   });
   $("#conversionProposalBtn")?.addEventListener("click", async () => {
@@ -8986,15 +9853,86 @@ function bindConversionWorkspace() {
       $("#conversionProposalResult").innerHTML = `<div class="conversion-empty danger">${escapeHtml(error.message)}</div>`;
     } finally {
       button.disabled = false;
-      button.textContent = "开始匹配方案";
+      button.textContent = "AI 策划匹配";
     }
   });
+  $("#conversionLocalSearchBtn")?.addEventListener("click", () => {
+    const question = $("#conversionQuestion")?.value.trim() || "";
+    const rows = matchConversionHistories(question, conversionRole);
+    const target = $("#conversionHistoryResults");
+    if (target) target.innerHTML = renderConversionHistoryCards(rows);
+    const status = $("#conversionStatusline");
+    if (status) status.textContent = `当前身份：${conversionRole} · 从 ${formatNumber(conversionHistories().length)} 条历史问答中匹配到 ${rows.length} 条。`;
+  });
+  function renderLocalProposalMatches() {
+    const demand = $("#conversionDemand")?.value.trim() || "";
+    const filters = $$(".conversion-filter-chip.active").map(chip => chip.dataset.filter || "");
+    const rows = matchConversionPlans(demand, filters);
+    const target = $("#conversionProposalLocalResults");
+    if (target) target.innerHTML = renderConversionPlanCards(rows);
+    const status = $("#conversionProposalStatus");
+    if (status) status.textContent = `当前方案库 ${formatNumber(conversionPlans().length)} 份 · 本地匹配 ${rows.length} 份。`;
+  }
+  $("#conversionMatchProposalBtn")?.addEventListener("click", renderLocalProposalMatches);
+  // 阶段点击切换
+  $$("[data-conversion-stage]").forEach((button) => button.addEventListener("click", () => {
+    conversionActiveStageIndex = Number(button.dataset.conversionStage);
+    renderConversionHub();
+  }));
+  // SOP 回复复制
+  function findConversionAnswer(answerId) {
+    const roles = conversionRoles();
+    const role = roles[conversionRole] || Object.values(roles)[0] || {};
+    const stages = role.环节 || [];
+    for (const stage of stages) {
+      for (const question of (stage.问答 || [])) {
+        const found = (question.回复 || []).find(a => a.id === answerId);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  $$("[data-copy-answer]").forEach((button) => button.addEventListener("click", () => {
+    const answer = findConversionAnswer(button.dataset.copyAnswer);
+    if (answer) {
+      copyText(answer.内容 || "", "已复制回复");
+    }
+  }));
+  $$("[data-copy-history]").forEach((button) => button.addEventListener("click", () => {
+    copyText(button.dataset.copyHistory || "", "已复制历史回复");
+  }));
+  $$("[data-copy-journey]").forEach((button) => button.addEventListener("click", () => {
+    copyText(button.dataset.copyJourney || "", "已复制旅程话术");
+  }));
+  // SOP 回复点赞
+  $$("[data-like-answer]").forEach((button) => button.addEventListener("click", () => {
+    const b = button.querySelector("b");
+    if (b) b.textContent = String(Number(b.textContent || 0) + 1);
+    button.classList.add("liked");
+    toast("已点赞");
+  }));
+  // 筛选标签切换
+  $$(".conversion-filter-chip").forEach((chip) => chip.addEventListener("click", () => {
+    chip.classList.toggle("active");
+    renderLocalProposalMatches();
+  }));
 }
 
 function renderConversionHub() {
   const content = $("#conversionContent");
   if (!content) return;
   $$("[data-conversion-module]").forEach((button) => button.classList.toggle("active", button.dataset.conversionModule === conversionModule));
+  const titleMap = {
+    search: ["客户怎么回", "选择当前身份，粘贴客户原话，直接得到建议回复和下一步。"],
+    sop: ["转化 SOP", "运营负责公域搞流量和客资交接，策划师负责方案到成交；新人可以直接照着执行。"],
+    proposal: ["按客户需求找方案", "说清楚真实需求，从本地方案源中匹配最合适的方案。"],
+    journey: ["用户旅程", "从公域获客到方案、决策与长期跟进，查看判断分支和对应 SOP。"]
+  };
+  const pageTitle = $("#conversionPageTitle");
+  const pageSub = $("#conversionPageSub");
+  const meta = titleMap[conversionModule] || titleMap.search;
+  if (pageTitle) pageTitle.textContent = meta[0];
+  if (pageSub) pageSub.textContent = meta[1];
   if (!conversionData?.ok) {
     content.innerHTML = `
       <div class="conversion-offline">
@@ -9009,6 +9947,23 @@ function renderConversionHub() {
       window.setTimeout(() => loadConversionHub(true), 2200);
     });
     return;
+  }
+  const roles = conversionRoles();
+  const roleEntries = Object.entries(roles);
+  const frontRole = roles["前端运营"] || Object.values(roles)[0] || {};
+  const backRole = roles["后端转化"] || Object.values(roles)[1] || {};
+  const frontCount = Number(frontRole.问题数 || 0) || (frontRole.环节 || []).reduce((sum, s) => sum + (s.问答 || []).length, 0);
+  const backCount = Number(backRole.问题数 || 0) || (backRole.环节 || []).reduce((sum, s) => sum + (s.问答 || []).length, 0);
+  const planCount = conversionPlans().length || Number(conversionData?.plans?.状态?.索引方案 || 0);
+  const countBox = $("#conversionCountBox");
+  if (countBox) {
+    countBox.hidden = false;
+    const shotEl = $("#conversionShotCount");
+    const convertEl = $("#conversionConvertCount");
+    const proposalEl = $("#conversionProposalCount");
+    if (shotEl) shotEl.textContent = formatNumber(frontCount);
+    if (convertEl) convertEl.textContent = formatNumber(backCount);
+    if (proposalEl) proposalEl.textContent = formatNumber(planCount);
   }
   content.innerHTML = conversionModule === "sop"
     ? renderConversionSop()
@@ -9037,44 +9992,6 @@ async function loadConversionHub(force = false) {
     status.classList.toggle("offline", !conversionData?.ok);
   }
   renderConversionHub();
-}
-
-async function ensureEmbeddedConversionApp(force = false) {
-  const frame = $("#conversionAppFrame");
-  const status = $("#conversionEmbeddedStatus");
-  if (!frame) return;
-  if (!force && frame.dataset.ready === "1") return;
-  try {
-    let snapshot = await api("/api/conversion/snapshot");
-    if (!snapshot?.ok) {
-      await api("/api/conversion/start", { method: "POST" });
-      await new Promise((resolve) => window.setTimeout(resolve, 1800));
-      snapshot = await api("/api/conversion/snapshot");
-    }
-    if (!snapshot?.ok) throw new Error(snapshot?.error || "流量转化模块尚未就绪");
-    const theme = document.body.dataset.theme || "neo";
-    frame.src = `/conversion-integrated/?embedded=1&theme=${encodeURIComponent(theme)}${force ? `&retry=${Date.now()}` : ""}`;
-  } catch (error) {
-    if (status) {
-      status.hidden = false;
-      status.innerHTML = `流量转化暂时无法加载。<button type="button" id="retryConversionEmbedBtn">重试</button>`;
-      $("#retryConversionEmbedBtn")?.addEventListener("click", () => ensureEmbeddedConversionApp(true));
-    }
-  }
-}
-
-function prepareEmbeddedConversionApp() {
-  const frame = $("#conversionAppFrame");
-  const status = $("#conversionEmbeddedStatus");
-  if (!frame) return;
-  frame.addEventListener("load", () => {
-    frame.dataset.ready = "1";
-    syncConversionTheme();
-    if (status) status.hidden = true;
-  });
-  frame.addEventListener("error", () => {
-    frame.dataset.ready = "0";
-  });
 }
 
 async function copyMobileConversionEntry() {
@@ -9219,16 +10136,16 @@ const PLUGIN_MARKET_ITEMS = [
     name: "团建 GPT 数字作品生产助手",
     type: "browser",
     typeLabel: "Chrome / Edge 扩展",
-    version: "0.2.2",
+    version: "0.2.31",
     status: "可用",
     statusTone: "ready",
     description: "在 ChatGPT 右侧提供素材库和成品库，支持筛选、拖入真实附件、生产指令、下载打包与使用次数回填。",
     capabilities: ["素材传 GPT", "全库标签筛选", "生成结果下载", "生产历史"],
-    localPath: "D:\\AICode\\工具开发\\projects\\teambuilding-gpt-production-extension",
-    installPath: "D:\\AICode\\工具开发\\projects\\teambuilding-gpt-production-extension\\releases\\0.2.2",
+    localPath: "D:\\AICode\\工具开发\\projects\\teambuilding-workflow-dashboard\\src\\integrations\\gpt-production-extension",
+    installPath: "D:\\AICode\\工具开发\\projects\\teambuilding-workflow-dashboard\\src\\integrations\\gpt-production-extension",
     sourceUrl: "https://github.com/zwmopen/teambuilding-gpt-production-extension",
-    releaseUrl: "https://github.com/zwmopen/teambuilding-gpt-production-extension/releases/tag/v0.2.2",
-    sourceLabel: "开源仓库"
+    releaseUrl: "https://github.com/zwmopen/teambuilding-gpt-production-extension/releases/tag/v0.2.31",
+    sourceLabel: "内置集成"
   },
   {
     id: "jianghu-conversion",
@@ -9410,7 +10327,7 @@ function activateTab(name) {
     }
   }
   if (name === "conversion") {
-    ensureEmbeddedConversionApp().catch(() => {});
+    loadConversionHub().catch(() => {});
   }
   if (name === "workflow" && !logsRendered) {
     renderLogs();
@@ -9429,6 +10346,7 @@ function activateTab(name) {
       if ($("#dedupSummary")) $("#dedupSummary").textContent = `防重复账本读取失败：${error.message}`;
     });
   }
+  showAssistantTipForActiveView();
   saveLocalState({ activeTab: name });
 }
 
@@ -9905,7 +10823,7 @@ function bindEvents() {
       else gptTestExpandedCategories.add(categoryPath);
       renderGptTestMaterials();
       if (category?.loaded === false && gptTestExpandedCategories.has(categoryPath)) {
-        await loadDashboard(false, categoryPath);
+        await loadMaterialCategory(categoryPath);
         renderGptTestMaterials();
       }
       return;
@@ -9918,7 +10836,7 @@ function bindEvents() {
       let category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
       if (category?.loaded === false) {
         gptTestExpandedCategories.add(categoryPath);
-        await loadDashboard(false, categoryPath);
+        await loadMaterialCategory(categoryPath);
         category = dashboard?.materials?.categories?.find((item) => item.path === categoryPath);
       }
       (category?.items || []).forEach((item) => {
@@ -10181,6 +11099,35 @@ function bindEvents() {
       distributionCollectionTypeFilter = stageTypeFilter.dataset.stageTypeFilter;
       packageDevicePickerCollectionName = "";
       renderDistribution();
+    }
+    const renameBtn = event.target.closest("[data-rename-collection]");
+    if (renameBtn) {
+      const oldName = renameBtn.dataset.renameCollection;
+      const newName = prompt("输入新的作品集名称：", oldName);
+      if (newName && newName !== oldName) {
+        api("/api/distribution/rename-collection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ collection: oldName, newName })
+        }).then(() => {
+          toast(`已重命名为 ${newName}`);
+          loadDashboard(true).then(renderDistribution);
+        }).catch((err) => toast(`重命名失败：${err.message || err}`, { tone: "error" }));
+      }
+    }
+    const deleteBtn = event.target.closest("[data-delete-collection]");
+    if (deleteBtn) {
+      const collName = deleteBtn.dataset.deleteCollection;
+      if (confirm(`确认删除空作品集「${collName}」？\n\n只能删除不含图片的空作品集。`)) {
+        api("/api/distribution/delete-collection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ collection: collName, confirmed: true })
+        }).then(() => {
+          toast(`已删除空作品集 ${collName}`);
+          loadDashboard(true).then(renderDistribution);
+        }).catch((err) => toast(`删除失败：${err.message || err}`, { tone: "error" }));
+      }
     }
     const openStageRoot = event.target.closest("[data-open-stage-root]");
     if (openStageRoot) openPath(dashboard?.distribution?.stageRoots?.[openStageRoot.dataset.openStageRoot]);
@@ -10618,6 +11565,31 @@ function bindEvents() {
       input.dispatchEvent(new Event("blur", { bubbles: true }));
     });
   });
+  $("#gptCopyMasterPromptBtn")?.addEventListener("click", () => {
+    copyText($("#gptMasterPromptRules")?.value || currentGptMasterPrompt(), "初始化提示词已复制");
+  });
+  $("#gptRestoreMasterPromptBtn")?.addEventListener("click", () => {
+    if (gptAutoRunning) {
+      showWorkbenchAssistantBubble("当前作品正在执行，只允许查看和复制提示词；作品闭环后再恢复默认。", { duration: 4200 });
+      return;
+    }
+    if ($("#gptMasterPromptRules")) $("#gptMasterPromptRules").value = GPT_CURRENT_MASTER_PROMPT;
+    saveGptAutoSettings();
+    toast(`已恢复 V${GPT_CURRENT_MASTER_PROMPT_VERSION} 初始化提示词`);
+  });
+  $("#gptSaveMasterPromptBtn")?.addEventListener("click", () => {
+    if (gptAutoRunning) {
+      showWorkbenchAssistantBubble("当前作品正在执行，只允许查看和复制提示词；作品闭环后再保存修改。", { duration: 4200 });
+      return;
+    }
+    const value = String($("#gptMasterPromptRules")?.value || "").trim();
+    if (!value) {
+      showWorkbenchAssistantBubble("初始化提示词不能为空；可以点击“恢复 V4.5”。", { duration: 4200, tone: "warning" });
+      return;
+    }
+    saveGptAutoSettings();
+    toast(value === GPT_CURRENT_MASTER_PROMPT ? `V${GPT_CURRENT_MASTER_PROMPT_VERSION} 初始化提示词已保存` : "自定义初始化提示词已保存");
+  });
   [
     "#productionTemplateRoot", "#productionPackedRoot", "#productionBasePromptRules", "#productionReserveThreshold",
     "#productionReserveCategory", "#productionItemsPerCollection", "#productionScheduleTime",
@@ -10723,10 +11695,13 @@ function bindEvents() {
     if (gptSemiAutoPendingTask && key !== "semi-auto") {
       gptSemiAutoPendingTask = null;
     }
+    if (gptMultiRunState) {
+      const switchedRun = TBGptAccountRotation.rotationRunAfterModeSwitch(gptMultiRunState, key);
+      if (switchedRun) persistGptMultiRun(switchedRun);
+    }
     gptAutoSettings.mode = key;
     applyGptModeProfile(key);
     if ($("#gptProductionMode")) $("#gptProductionMode").value = key;
-    if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = key;
     // Per-window mode: persist this mode on the current account so switching
     // to another window and back restores each window's own mode.
     const currentAccount = gptAccounts.find((item) => item.id === activeGptAccountId);
@@ -10738,18 +11713,6 @@ function bindEvents() {
     showWorkbenchAssistantBubble(`已切换到“${gptModeProfiles[key]?.name || GPT_MODE_DEFINITIONS[key].defaultName}”。新任务会绑定当前账号窗口。`, { duration: 3600 });
   };
   $("#gptProductionMode")?.addEventListener("change", handleGptModeChange);
-  // Settings-panel mode dropdown: preview only, does NOT change the actual production mode
-  $("#gptProductionModeSetting")?.addEventListener("change", (event) => {
-    if (gptAutoRunning) {
-      renderGptAutoSettings();
-      showWorkbenchAssistantBubble("当前作品正在运行，不能切换生产模式；暂停或完成后再切换。", { duration: 4200 });
-      return;
-    }
-    const key = normalizeGptProductionMode(event.target?.value);
-    gptSettingsPreviewMode = key;
-    renderGptModeProfile();
-    updateModeQuickTabs(key);
-  });
   $("#gptModeInfoBtn")?.addEventListener("click", () => {
     const popover = $("#gptModeInfoPopover");
     if (popover) popover.hidden = !popover.hidden;
@@ -10773,7 +11736,7 @@ function bindEvents() {
       name: trimmed,
       useCurrentSession: baseProfile.useCurrentSession !== false,
       confirmText: baseProfile.confirmText || "1",
-      copyPrompt: baseProfile.copyPrompt || "给我一份小红书文案",
+      copyPrompt: normalizeGptCopyPrompt(baseProfile.copyPrompt),
       steps: normalizeGptWorkflowSteps(baseProfile.steps),
       isCustom: true,
       baseMode: baseKey
@@ -10829,7 +11792,7 @@ function bindEvents() {
         name: GPT_MODE_DEFINITIONS[key]?.defaultName || modeName,
         useCurrentSession: true,
         confirmText: "1",
-        copyPrompt: "给我一份小红书文案",
+        copyPrompt: GPT_PUBLISH_COPY_PROMPT,
         steps: defaultGptWorkflowSteps()
       };
       saveGptModeProfiles();
@@ -10848,10 +11811,39 @@ function bindEvents() {
       const key = normalizeGptProductionMode(tab.dataset.mode);
       if (key === activeSettingsModeKey()) return;
       gptSettingsPreviewMode = key;
-      if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = key;
       renderGptModeProfile();
       updateModeQuickTabs(key);
     });
+  });
+  $("#gptPatrolAllowlist")?.addEventListener("change", (event) => {
+    const values = String(event.currentTarget.value || "").split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    savePatrolAllowlist(values);
+    gptPatrolDiscovery = null;
+    renderGptPatrolDiscovery();
+    $("#gptPatrolDiscoverStatus").textContent = "准入名单已保存；请重新只读扫描";
+  });
+  $("#gptPatrolDiscoverBtn")?.addEventListener("click", () => {
+    discoverCurrentAccountPatrolConversations();
+  });
+  $("#gptPatrolConversationList")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-patrol-toggle]");
+    if (!button || !gptPatrolDiscovery) return;
+    const templates = gptPatrolDiscovery.conversations.filter((item) => item.titleMatched);
+    const item = templates[Number(button.dataset.patrolToggle || -1)];
+    if (!item) return;
+    const values = new Set(patrolAllowlist());
+    if (item.eligible) values.delete(item.url);
+    else values.add(item.url);
+    const allowlist = savePatrolAllowlist([...values]);
+    $("#gptPatrolAllowlist").value = allowlist.join("\n");
+    gptPatrolDiscovery.conversations = gptPatrolDiscovery.conversations.map((candidate) => ({
+      ...candidate,
+      explicitlyAllowed: allowlist.includes(candidate.url) || allowlist.includes(candidate.title),
+      eligible: candidate.titleMatched && (allowlist.includes(candidate.url) || allowlist.includes(candidate.title))
+    }));
+    gptPatrolDiscovery.eligibleCount = gptPatrolDiscovery.conversations.filter((candidate) => candidate.eligible).length;
+    renderGptPatrolDiscovery();
+    $("#gptPatrolDiscoverStatus").textContent = `准入名单已更新：${gptPatrolDiscovery.eligibleCount} 个对话可续接；当前仍未执行任何对话动作`;
   });
   $("#gptAddModeWorkflowStepBtn")?.addEventListener("click", () => {
     if (gptAutoRunning) {
@@ -10930,24 +11922,100 @@ function bindEvents() {
       });
     }
   });
+
+  // ── Prompt expand/collapse: inline expansion for workflow step prompts ──
+  function togglePromptExpand(row, editor, presetSelect, stepIndex, actionLabel, options = {}) {
+    if (!editor || !row) return;
+    const existing = row.querySelector(".gpt-workflow-prompt-expanded");
+    if (existing) {
+      existing.remove();
+      const btn = row.querySelector("[data-workflow-prompt-edit]");
+      if (btn) btn.textContent = "编辑提示词";
+      return;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.className = "gpt-workflow-prompt-expanded";
+    const originalValue = editor.value || "";
+    const presetValue = presetSelect?.value || "custom";
+    wrapper.innerHTML = `
+      <div class="gpt-workflow-prompt-expanded-header">
+        <span class="gpt-workflow-prompt-expanded-title">第${stepIndex}步 · ${escapeHtml(actionLabel || "提示词")}</span>
+        <span class="gpt-workflow-prompt-expanded-count">${originalValue.length} 字</span>
+      </div>
+      <div class="gpt-workflow-prompt-expanded-preset">
+        <label>提示词来源</label>
+        <select class="gpt-workflow-prompt-expanded-preset-select">
+          <option value="custom"${presetValue === "custom" ? " selected" : ""}>自定义</option>
+          <option value="default"${presetValue === "default" ? " selected" : ""}>默认</option>
+        </select>
+      </div>
+      <textarea class="gpt-workflow-prompt-expanded-textarea" rows="8" placeholder="点击输入提示词内容..."></textarea>
+      <div class="gpt-workflow-prompt-expanded-actions">
+        <button type="button" class="gpt-workflow-prompt-expanded-cancel dialog-secondary">取消</button>
+        <button type="button" class="gpt-workflow-prompt-expanded-save primary-button">保存并收起</button>
+      </div>`;
+    const mainRow = row.querySelector(".gpt-workflow-main");
+    if (mainRow && mainRow.nextSibling) {
+      row.insertBefore(wrapper, mainRow.nextSibling);
+    } else {
+      row.appendChild(wrapper);
+    }
+    const ta = wrapper.querySelector(".gpt-workflow-prompt-expanded-textarea");
+    const charCount = wrapper.querySelector(".gpt-workflow-prompt-expanded-count");
+    ta.value = originalValue;
+    ta.readOnly = options.readOnly === true;
+    wrapper.querySelector(".gpt-workflow-prompt-expanded-preset-select").disabled = options.readOnly === true;
+    wrapper.querySelector(".gpt-workflow-prompt-expanded-save").hidden = options.readOnly === true;
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.addEventListener("input", () => {
+      charCount.textContent = `${ta.value.length} 字`;
+    });
+    const presetEl = wrapper.querySelector(".gpt-workflow-prompt-expanded-preset-select");
+    const save = () => {
+      editor.value = ta.value;
+      if (presetSelect) presetSelect.value = presetEl.value;
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      wrapper.remove();
+      const btn = row.querySelector("[data-workflow-prompt-edit]");
+      if (btn) btn.textContent = "编辑提示词";
+    };
+    const cancel = () => {
+      wrapper.remove();
+      const btn = row.querySelector("[data-workflow-prompt-edit]");
+      if (btn) btn.textContent = "编辑提示词";
+    };
+    wrapper.querySelector(".gpt-workflow-prompt-expanded-save").addEventListener("click", save);
+    wrapper.querySelector(".gpt-workflow-prompt-expanded-cancel").addEventListener("click", cancel);
+    wrapper.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { cancel(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { save(); }
+    });
+    const btn = row.querySelector("[data-workflow-prompt-edit]");
+    if (btn) btn.textContent = "收起编辑";
+  }
+
   // ── Click handler: move up/down, delete, and drag-and-drop ──
   $("#gptModeWorkflowEditor")?.addEventListener("click", (event) => {
     const row = event.target.closest(".gpt-workflow-step");
-    if (!row || gptAutoRunning) return;
-    const move = event.target.closest("[data-workflow-move]")?.dataset.workflowMove;
+    if (!row) return;
+    const promptEdit = event.target.closest("[data-workflow-prompt-edit]");
+    if (promptEdit) {
+      const editor = row.querySelector('[data-workflow-field="text"]');
+      const presetSelect = row.querySelector('[data-workflow-field="textPreset"]');
+      const stepIndex = Number(row.dataset.workflowIndex) + 2;
+      const actionLabel = row.querySelector('[data-workflow-field="action"]')?.selectedOptions?.[0]?.textContent || "";
+      togglePromptExpand(row, editor, presetSelect, stepIndex, actionLabel, { readOnly: gptAutoRunning });
+      return;
+    }
+    if (gptAutoRunning) return;
     const remove = event.target.closest("[data-workflow-remove]");
-    if (!move && !remove) return;
+    if (!remove) return;
     const steps = normalizeGptWorkflowSteps(readGptModeWorkflowFromUi());
     const index = Number(row.dataset.workflowIndex);
     if (!Number.isInteger(index) || !steps[index]) return;
-    if (remove) {
-      if (steps.length <= 1) return;
-      steps.splice(index, 1);
-    } else {
-      const nextIndex = move === "up" ? index - 1 : index + 1;
-      if (nextIndex < 0 || nextIndex >= steps.length) return;
-      [steps[index], steps[nextIndex]] = [steps[nextIndex], steps[index]];
-    }
+    if (steps.length <= 1) return;
+    steps.splice(index, 1);
     const key = activeGptModeKey();
     gptModeProfiles[key] = { ...(gptModeProfiles[key] || {}), steps };
     saveGptModeProfiles();
@@ -11047,6 +12115,8 @@ function bindEvents() {
     const accountId = activeGptAccountId;
     const runtime = readGptWindowRuntime(accountId);
     if (runtime.stoppedByUser) {
+      gptAutoPaused = false;
+      gptQueuePaused = false;
       writeGptWindowRuntime(accountId, { stoppedByUser: false, pausedByUser: false, status: "idle", currentStage: "等待启动" });
       setContinuousGptProductionArmed(isContinuousGptMode());
       updateGptTestQueueStatus("已启动当前账号窗口；正在恢复到上次安全检查点。");
@@ -11160,12 +12230,12 @@ function bindEvents() {
   });
   [
     "#gptProductionMode",
-    "#gptProductionModeSetting", "#gptQuotaReminderEnabled",
+    "#gptQuotaReminderEnabled",
     "#gptAutoTaskTimeout", "#gptAutoAccountLimit", "#gptParallelWorkers", "#gptUploadLimit", "#gptGenerationLimit", "#gptQuotaWindowHours",
     "#gptMinimumImageCount", "#gptIdleUnloadMinutes", "#gptDownloadRoot", "#gptProductRoot",
     "#gptPromptLibraryEnabled", "#gptMessageDownloadsEnabled", "#gptScheduledEnabled", "#gptScheduledTime", "#gptScheduledJitter", "#gptSchedulePlan",
     "#gptLaunchAtLogin", "#gptContinuousAutoStart", "#gptContinuousWorkHoursEnabled", "#gptContinuousWorkStart", "#gptContinuousWorkEnd",
-    "#gptExtraPromptRules", "#gptModeProfileName", "#gptModeStartBehavior"
+    "#gptExtraPromptRules", "#gptModeStartBehavior"
   ].forEach((selector) => {
     $(selector)?.addEventListener("change", () => {
       if (gptAutoRunning) {
@@ -11187,9 +12257,8 @@ function bindEvents() {
         clearTimeout(gptContinuousLaunchTimer);
         gptContinuousLaunchTimer = null;
       }
-      gptTestQueue = [];
-      gptTestQueueIndex = 0;
-      gptCurrentManualTask = null;
+      // Settings and mode changes must not erase a paused/recoverable queue.
+      // Queue rebuilding belongs to explicit material selection/start actions.
       updateGptTestQueueStatus();
       toast("自动生产设置已保存");
     });
@@ -11495,6 +12564,7 @@ function bindEvents() {
   $$("[data-conversion-module]").forEach((button) => button.addEventListener("click", () => {
     conversionModule = button.dataset.conversionModule;
     conversionResult = null;
+    conversionActiveStageIndex = 0;
     renderConversionHub();
   }));
   $("#conversionMobileEntryBtn")?.addEventListener("click", copyMobileConversionEntry);
@@ -11551,13 +12621,19 @@ function bindEvents() {
     if (target?.kind !== "gpt-browser-profile") return;
     removeGptAccount(target.accountId);
   });
-  $("#contextModeSettings")?.addEventListener("click", () => {
+  $("#contextModeSettings")?.addEventListener("click", async () => {
     const target = contextMenuTarget;
     hideContextMenu();
-  if (target?.kind !== "gpt-production-mode") return;
+    if (target?.kind === "gpt-browser-profile") {
+      await switchGptAccount(target.accountId, { silent: true, resumeWindow: false });
+      renderGptAutoSettings();
+      openPageSettings("gptAuto");
+      showWorkbenchAssistantBubble(`${gptAccounts.find((item) => item.id === target.accountId)?.name || "当前账号窗口"} 的生产模式与额度设置已打开。`, { duration: 4200 });
+      return;
+    }
+    if (target?.kind !== "gpt-production-mode") return;
     const key = activeGptModeKey(target.mode);
     if ($("#gptProductionMode")) $("#gptProductionMode").value = key;
-    if ($("#gptProductionModeSetting")) $("#gptProductionModeSetting").value = key;
     applyGptModeProfile(key);
     renderGptAutoSettings();
     openPageSettings("gptAuto");
@@ -11573,7 +12649,7 @@ function bindEvents() {
       name: GPT_MODE_DEFINITIONS[key].defaultName,
       useCurrentSession: true,
       confirmText: "1",
-      copyPrompt: "给我一份小红书文案",
+      copyPrompt: GPT_PUBLISH_COPY_PROMPT,
       steps: defaultGptWorkflowSteps()
     };
     saveGptModeProfiles();
@@ -11638,7 +12714,6 @@ window.gptWorkbench?.onWindowRestored?.(() => {
   restoreEmbeddedGptView();
 });
 bindPaneResizers();
-prepareEmbeddedConversionApp();
 window.addEventListener("message", (event) => {
   if (event.origin === window.location.origin && event.data?.type === "tb-workbench-quota-updated") {
     const quotaId = String(event.data.accountId || "");
@@ -11655,8 +12730,6 @@ window.addEventListener("message", (event) => {
     return;
   }
   if (event.origin !== window.location.origin || event.data?.type !== "jianghu-theme-ready") return;
-  const frame = $("#conversionAppFrame");
-  if (frame) frame.dataset.themeSynced = document.body.dataset.theme || "neo";
   syncConversionTheme();
 });
 window.addEventListener("desktop-gpt-transfer-result", (event) => {
@@ -11717,8 +12790,18 @@ loadDashboard()
       && !currentGptQueueIntegrityBlock()) {
       setContinuousGptProductionArmed(true);
       scheduleContinuousGptProduction(1800);
-    } else if (gptQueuePaused) {
-      showWorkbenchAssistantBubble("发现未完成的单帖队列，已停在安全检查点；点击“继续”后才会恢复，不会自动上传下一帖。", { duration: 0, tone: "warning" });
+    } else {
+      // A previous continuous/rotation session may have left the durable arm
+      // bit behind.  The restored per-window mode is authoritative: manual,
+      // one-shot and single-account modes must never inherit that scheduler.
+      if (!isContinuousGptMode()) {
+        setContinuousGptProductionArmed(false);
+        clearTimeout(gptContinuousLaunchTimer);
+        gptContinuousLaunchTimer = null;
+      }
+      if (gptQueuePaused) {
+        showWorkbenchAssistantBubble("发现未完成的单帖队列，已停在安全检查点；点击“继续”后才会恢复，不会自动上传下一帖。", { duration: 0, tone: "warning" });
+      }
     }
     window.gptWorkbench?.setLaunchAtLogin?.(gptAutoSettings.launchAtLogin !== false).catch(() => {});
     window.addEventListener("online", () => {
@@ -11733,6 +12816,22 @@ loadDashboard()
       }
     }, 60_000);
     window.setInterval(() => refreshExpandedGptMaterialTrees().catch(() => {}), 15_000);
+    let lastMaterialStaleTime = dashboard?.materialCacheStaleTime || 0;
+    window.setInterval(() => {
+      if (document.hidden) return;
+      const activeView = $(".view.active")?.id || "";
+      if (!["dashboardView", "distributionView", "gptProductionTestView"].includes(activeView)) return;
+      fetch("/api/dashboard")
+        .then((r) => r.json())
+        .then((data) => {
+          const staleTime = data?.materialCacheStaleTime || 0;
+          if (staleTime > lastMaterialStaleTime) {
+            lastMaterialStaleTime = staleTime;
+            loadDashboard("materials").catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }, 8_000);
     startGptQuotaUsageRefresh();
     window.setInterval(() => {
       window.gptWorkbench?.releaseIdle?.(gptAutoSettings.idleUnloadMinutes || 30).catch(() => {});
@@ -11793,3 +12892,83 @@ window.setTimeout(() => {
       showSystemNotice("关联文件夹没有保存", error.message, { tone: "danger" });
     }
   });
+
+// === Diagnostic & Auto-Recovery System ===
+// Expose diagnostic function on window for external debugging
+window.tbGptDiagnostic = async function(accountId = activeGptAccountId) {
+  if (!window.gptWorkbench?.diagnostic) {
+    return { ok: false, error: "diagnostic method not available in this version" };
+  }
+  try {
+    const result = await window.gptWorkbench.diagnostic(accountId);
+    console.log("[TB Diagnostic]", JSON.stringify(result, null, 2));
+    return result;
+  } catch (error) {
+    return { ok: false, error: error.message, accountId };
+  }
+};
+
+// Auto-retry: when productionReady fails, wait and retry instead of pausing
+let gptProductionRetryTimer = null;
+let gptProductionRetryCount = 0;
+const GPT_PRODUCTION_MAX_RETRIES = 3;
+const GPT_PRODUCTION_RETRY_DELAY = 30_000;
+
+function scheduleGptProductionRetry(accountId, attempt = 1) {
+  if (gptProductionRetryTimer) return;
+  gptProductionRetryCount = attempt;
+  const accountName = gptAccounts.find((item) => item.id === accountId)?.name || accountId;
+  showWorkbenchAssistantBubble(
+    `${accountName} 尚未就绪，${GPT_PRODUCTION_RETRY_DELAY / 1000} 秒后自动重试 (第 ${attempt}/${GPT_PRODUCTION_MAX_RETRIES} 次)...`,
+    { duration: GPT_PRODUCTION_RETRY_DELAY, tone: "info" }
+  );
+  gptProductionRetryTimer = setTimeout(async () => {
+    gptProductionRetryTimer = null;
+    const preflight = await window.gptWorkbench.status(accountId).catch(() => null);
+    if (preflight?.productionReady) {
+      gptProductionRetryCount = 0;
+      showWorkbenchAssistantBubble(`${accountName} 已就绪，自动恢复生产。`, { duration: 3000, tone: "success" });
+      gptQueuePaused = false;
+      persistGptQueue();
+      sendNextGptTestTask({ userInitiated: false, continuousResume: true }).catch(() => {});
+    } else if (attempt < GPT_PRODUCTION_MAX_RETRIES) {
+      scheduleGptProductionRetry(accountId, attempt + 1);
+    } else {
+      gptProductionRetryCount = 0;
+      const reasons = preflight?.notReadyReasons || [];
+      const reason = preflight?.authenticationRequired
+        ? `${accountName}需要先完成登录或验证码`
+        : reasons.length
+          ? `${accountName}未就绪: ${reasons.join("; ")}`
+          : `${accountName}的生产助手尚未就绪`;
+      gptQueuePaused = true;
+      persistGptQueue();
+      updateGptTestQueueStatus(reason);
+      showWorkbenchAssistantBubble(`${reason}；已暂停，请手动处理后再继续。`, { duration: 0, tone: "warning" });
+    }
+  }, GPT_PRODUCTION_RETRY_DELAY);
+}
+
+// Queue auto-recovery: check every 2 minutes if GPT is ready but queue is paused
+let gptQueueRecoveryTimer = null;
+window.setInterval(async () => {
+  if (!gptQueuePaused || gptAutoRunning || gptAutoPaused) return;
+  if (!isContinuousGptMode() || !isContinuousGptProductionArmed()) return;
+  if (gptProductionRetryTimer) return; // retry already in progress
+  if (gptWindowIsUserStopped(activeGptAccountId) || gptWindowIsUserPaused(activeGptAccountId)) return;
+  const preflight = await window.gptWorkbench.status(activeGptAccountId).catch(() => null);
+  if (preflight?.productionReady) {
+    gptQueueRecoveryTimer = setTimeout(() => {
+      gptQueueRecoveryTimer = null;
+      if (!gptQueuePaused || gptAutoRunning) return;
+      const stillReady = window.gptWorkbench?.status?.(activeGptAccountId).catch(() => null);
+      if (stillReady?.productionReady) {
+        showWorkbenchAssistantBubble("检测到 GPT 已就绪，自动恢复暂停的队列。", { duration: 4000, tone: "success" });
+        gptQueuePaused = false;
+        gptProductionRetryCount = 0;
+        persistGptQueue();
+        sendNextGptTestTask({ userInitiated: false, continuousResume: true }).catch(() => {});
+      }
+    }, 3000);
+  }
+}, 120_000);

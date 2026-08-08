@@ -19,9 +19,9 @@ const {
   appendWorkflowOperation,
   classifyCollectionName,
   confirmOfficialUpload,
-  ensureWorkflowCompatibilityLinks,
   getWorkflowStageRoots,
   getDistributionSnapshot,
+  inspectSource,
   markOfficialUsed,
   moveCollectionSourceToStage,
   readWorkflowOperations,
@@ -52,6 +52,13 @@ const {
   rollingQuotaStatus
 } = require("./lib/gpt-production-orchestrator");
 const {
+  normalizeWorkPackageTitle,
+  publishTitleFromClipboard
+} = require("./lib/work-package-title");
+const {
+  formatPortInUseMessage
+} = require("./lib/workbench-port");
+const {
   downloadBackup,
   importLifeGameConfig,
   publicStatus: publicCloudBackupStatus,
@@ -66,6 +73,17 @@ const {
   inspectProductionQuality,
   qualityReportText
 } = require("./lib/production-quality");
+
+// --- 分模块路由（渐进式拆分，每拆一个域加一行 require） ---
+const juguangRoute = require("./server/routes/juguang");
+const wechatDraftRoute = require("./server/routes/wechat-draft");
+const backupRoute = require("./server/routes/backup");
+const settingsRoute = require("./server/routes/settings");
+const distributionRoute = require("./server/routes/distribution");
+const productionRoute = require("./server/routes/production");
+const gptExtensionRoute = require("./server/routes/gpt-extension");
+const conversionRoute = require("./server/routes/conversion");
+const { resolveAuthorizedDownloadRoot } = require("./lib/gpt-download-root");
 
 const PORT = Number(process.env.PORT || 4327);
 const LISTEN_HOST = process.env.TB_WORKBENCH_HOST || "127.0.0.1";
@@ -109,6 +127,7 @@ const MATERIAL_GLOBAL_INDEX_FILE = path.join(DATA_ROOT, "material-global-index.j
 const GPT_QUOTA_LEDGER_FILE = path.join(DATA_ROOT, "gpt-production-quota.json");
 const GPT_PRODUCTION_CHECKPOINT_FILE = path.join(DATA_ROOT, "gpt-production-checkpoints.json");
 const GPT_PRODUCTION_ARCHIVE_LOG_FILE = path.join(DATA_ROOT, "gpt-production-archive.jsonl");
+const GPT_CONVERSATION_LOG_FILE = path.join(DATA_ROOT, "gpt-conversation-log.jsonl");
 const WORKPKG_SCRIPT_ROOT = path.join(DATA_ROOT, "work-package");
 const WORKPKG_CONFIG_FILE = process.env.TEAMBUILDING_WORKPKG_CONFIG_FILE || path.join(WORKPKG_SCRIPT_ROOT, "workpkg_config.json");
 const DOWNLOAD_ROOT = process.env.TEAMBUILDING_DOWNLOAD_ROOT || WORKPKG_SCRIPT_ROOT;
@@ -994,8 +1013,13 @@ function writeGptProductionCheckpoint(body = {}) {
 function findRecoverableImageBatch(body = {}) {
   const expected = Math.max(1, Math.min(30, Number(body.expectedImageCount || 0)));
   const requestedRoot = String(body.downloadRoot || "").trim();
-  const roots = [...new Set([requestedRoot, DOWNLOAD_ROOT].filter(Boolean).map((item) => path.resolve(item)))]
-    .filter((item) => isPathInside(path.resolve(DOWNLOAD_ROOT), item) && exists(item) && fs.statSync(item).isDirectory());
+  const configuredRoot = String(readJson(WORKPKG_CONFIG_FILE, {}).image_inbox_path || "").trim();
+  const authorizedRequestedRoot = resolveAuthorizedDownloadRoot(requestedRoot, {
+    defaultRoot: DOWNLOAD_ROOT,
+    configuredRoot
+  });
+  const roots = [...new Set([authorizedRequestedRoot, path.resolve(DOWNLOAD_ROOT)].filter(Boolean))]
+    .filter((item) => exists(item) && fs.statSync(item).isDirectory());
   const groups = new Map();
   for (const root of roots) {
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -1274,10 +1298,11 @@ function saveExtensionCopyText(body = {}) {
     throw new Error("本轮文案批次号无效，未创建 TXT");
   }
   const requestedRoot = String(body.downloadRoot || "").trim();
-  const targetRoot = requestedRoot ? path.resolve(requestedRoot) : path.resolve(DOWNLOAD_ROOT);
-  if (!isPathInside(path.resolve(DOWNLOAD_ROOT), targetRoot)) {
-    throw new Error("文案暂存目录必须位于工作台下载目录内");
-  }
+  const configuredRoot = String(readJson(WORKPKG_CONFIG_FILE, {}).image_inbox_path || "").trim();
+  const targetRoot = resolveAuthorizedDownloadRoot(requestedRoot, {
+    defaultRoot: DOWNLOAD_ROOT,
+    configuredRoot
+  });
   const stagingDir = path.join(targetRoot, ".gpt-copy-staging");
   fs.mkdirSync(stagingDir, { recursive: true });
   const target = path.join(stagingDir, `${batchId}.txt`);
@@ -1366,6 +1391,11 @@ function runExtensionWorkPackage(body = {}) {
     ? path.resolve(effectiveRequestedDownloadRoot)
     : path.resolve(DOWNLOAD_ROOT);
   const effectiveProductRoot = path.resolve(effectiveRequestedProductRoot);
+  const stageRoots = getWorkflowStageRoots(effectiveProductRoot);
+  const configuredPackedRoot = String(getPageSettings()?.production?.packedRoot || "").trim();
+  const effectivePortfolioOutputRoot = configuredPackedRoot
+    ? path.resolve(configuredPackedRoot)
+    : stageRoots.mobile;
   const configPath = path.join(DOWNLOAD_ROOT, "workpkg_config.json");
   const originalConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath) : null;
   let configRestored = false;
@@ -1381,12 +1411,19 @@ function runExtensionWorkPackage(body = {}) {
   // made a manual click diverge from an automatic run.
   if (!path.isAbsolute(effectiveDownloadRoot)) throw new Error("下载暂存目录必须是完整路径");
   if (!path.isAbsolute(effectiveProductRoot)) throw new Error("成品库目录必须是完整路径");
+  if (!isPathInside(effectiveProductRoot, effectivePortfolioOutputRoot)) {
+    throw new Error("作品集目录必须位于当前成品库内");
+  }
   fs.mkdirSync(effectiveDownloadRoot, { recursive: true });
   fs.mkdirSync(effectiveProductRoot, { recursive: true });
+  fs.mkdirSync(effectivePortfolioOutputRoot, { recursive: true });
   const config = readJson(configPath, {});
   config.image_inbox_path = effectiveDownloadRoot;
   config.library_path = effectiveProductRoot;
-  config.portfolio_output_path = effectiveProductRoot;
+  config.portfolio_output_path = effectivePortfolioOutputRoot;
+  config.portfolio_batch_size = Math.max(1, Math.min(100, Number(workspaceSettings?.workPackage?.batchSize || 7)));
+  config.portfolio_auto_group = workspaceSettings?.workPackage?.autoGroup !== false;
+  config.portfolio_auto_zip = workspaceSettings?.workPackage?.autoZip === true;
   writeJson(configPath, config);
   const batchId = String(body.batchId || "").trim();
   const expectedImageCount = Math.max(0, Number(body.expectedImageCount || 0));
@@ -1396,10 +1433,11 @@ function runExtensionWorkPackage(body = {}) {
   if (batchId && expectedImageCount < 1) {
     throw new Error("本次图片数量无效，已停止打包");
   }
+  const normalizedBodyTitle = normalizeWorkPackageTitle(body.title);
   const metadata = JSON.stringify({
     accountName: String(body.accountName || ""),
     conversationUrl: String(body.conversationUrl || ""),
-    title: String(body.title || ""),
+    title: normalizedBodyTitle,
     sourceMaterialPath: String(body.sourceMaterialPath || "")
   });
   const args = [
@@ -1416,7 +1454,7 @@ function runExtensionWorkPackage(body = {}) {
     // Writing it to the global download root made every custom/acceptance
     // download directory fail with TASK_MISSING even though all images existed.
     taskFile = path.join(effectiveDownloadRoot, `chatgpt-workpkg-task-${batchId}.json`);
-    const publishTitle = clipboardText.split(/\r?\n/).find((line) => line.trim())?.trim() || String(body.title || "").trim();
+    const publishTitle = publishTitleFromClipboard(clipboardText, normalizedBodyTitle);
     writeJson(taskFile, {
       version: 1,
       batchId,
@@ -1430,7 +1468,7 @@ function runExtensionWorkPackage(body = {}) {
       // into the output folder name. Matching the conversation title to the
       // publish title keeps the existing packager naming logic deterministic.
       conversationTitle: publishTitle,
-      title: String(body.title || ""),
+      title: normalizedBodyTitle,
       status: "ready",
       createdAt: new Date().toISOString()
     });
@@ -2708,6 +2746,42 @@ function parseCsv(text) {
 
 let materialPostCache = null;
 let materialLibraryCache = null;
+let materialWatcher = null;
+let materialCacheStaleTime = 0;
+let materialWatcherDebounce = null;
+
+function invalidateMaterialCache() {
+  materialLibraryCache = null;
+  materialCategoryCache.clear();
+  materialCacheStaleTime = Date.now();
+}
+
+function startMaterialWatcher() {
+  const root = getWorkspaceSettings().materialRoot;
+  if (!root || !exists(root)) return;
+  if (materialWatcher) {
+    try { materialWatcher.close(); } catch { /* ignore */ }
+    materialWatcher = null;
+  }
+  try {
+    materialWatcher = fs.watch(root, { recursive: true }, (eventType, filename) => {
+      if (!filename) return;
+      if (materialWatcherDebounce) clearTimeout(materialWatcherDebounce);
+      materialWatcherDebounce = setTimeout(() => {
+        invalidateMaterialCache();
+      }, 800);
+    });
+    materialWatcher.on("error", () => { /* ignore watcher errors, will restart on next refresh */ });
+  } catch {
+    /* recursive watch may not be supported on all platforms; fail silently */
+  }
+}
+
+function restartMaterialWatcherIfNeeded() {
+  const root = getWorkspaceSettings().materialRoot;
+  if (!root || !exists(root)) return;
+  if (!materialWatcher) startMaterialWatcher();
+}
 
 function materialTreeSignature(root) {
   if (!exists(root)) return "";
@@ -2826,8 +2900,9 @@ function getMaterialLibrary(force = false, selectedLibraryPath = "", options = {
     };
   }
 
+  const loadAll = Boolean(options.loadAll);
   const categories = descriptors.map((descriptor) => {
-    const loaded = descriptor.path === selectedCategory?.path;
+    const loaded = loadAll || descriptor.path === selectedCategory?.path;
     const posts = loaded ? getDetectedMaterialPosts(descriptor.path, force) : [];
     return categoryFromPosts(descriptor, posts, loaded);
   });
@@ -3759,7 +3834,10 @@ function readPromptFile(file) {
 function getDashboard(force = false, selectedLibraryPath = "") {
   ensureDataFiles();
   const state = readJson(STATE_FILE, {});
-  const materials = getMaterialLibrary(force, selectedLibraryPath || state.selectedMaterialCategoryPath || "");
+  // Keep first paint lightweight. Scan a category only after the renderer
+  // explicitly requests it; a stale saved selection must not trigger a full
+  // scan (especially when it points at a dot-prefixed holding folder).
+  const materials = getMaterialLibrary(force, selectedLibraryPath, { loadDefault: false });
   const templates = getTemplateLibrary();
   const products = getProductLibrary();
   const logs = getLogs();
@@ -3781,6 +3859,7 @@ function getDashboard(force = false, selectedLibraryPath = "") {
     all: countReserve(distribution.collections, "all")
   };
   distribution.automationHistory = recentAutomationLogs();
+  restartMaterialWatcherIfNeeded();
   return {
     appInfo: {
       name: "团建工作台",
@@ -3794,6 +3873,7 @@ function getDashboard(force = false, selectedLibraryPath = "") {
     projectRoot: PROJECT_ROOT,
     workspaceSettings,
     generatedAt: new Date().toISOString(),
+    materialCacheStaleTime,
     state,
     materials,
     templates,
@@ -3864,6 +3944,7 @@ function trashEditableWorkspaceDirectory(targetInput = "") {
 }
 
 function send(res, status, body, type = "application/json; charset=utf-8") {
+  if (res.headersSent) return;
   res.writeHead(status, {
     "Content-Type": type
   });
@@ -3887,6 +3968,7 @@ function extensionCorsHeaders(req) {
 }
 
 function sendExtensionJson(req, res, body, status = 200) {
+  if (res.headersSent) return;
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     ...extensionCorsHeaders(req)
@@ -4050,6 +4132,28 @@ html.embedded-host .main {
 html.embedded-host .side-bottom {
   background: color-mix(in srgb, var(--panel) 74%, transparent) !important;
 }
+html.embedded-host[data-workbench-theme="midnight"],
+html.embedded-host[data-workbench-theme="midnight"] body,
+html.embedded-host[data-workbench-theme="midnight"] .app,
+html.embedded-host[data-workbench-theme="midnight-glass"],
+html.embedded-host[data-workbench-theme="midnight-glass"] body,
+html.embedded-host[data-workbench-theme="midnight-glass"] .app {
+  color-scheme: dark;
+  --panel: rgba(18, 35, 49, .86);
+  --panel-light: rgba(29, 52, 67, .76);
+  --line: rgba(144, 193, 207, .2);
+  --ink: #edf6f7;
+  --muted: #b6c7cc;
+  --accent: #68b8ff;
+  --selection: rgba(64, 124, 158, .35);
+  color: var(--ink) !important;
+}
+html.embedded-host[data-workbench-theme="midnight"] :is(.card, .panel, .module, .side-bottom, input, textarea, select),
+html.embedded-host[data-workbench-theme="midnight-glass"] :is(.card, .panel, .module, .side-bottom, input, textarea, select) {
+  color: var(--ink) !important;
+  border-color: var(--line) !important;
+  background: color-mix(in srgb, var(--panel) 88%, transparent) !important;
+}
 @media (max-width: 900px) {
   html.embedded-host .side {
     padding: 12px 14px 6px !important;
@@ -4059,6 +4163,23 @@ html.embedded-host .side-bottom {
   }
 }
 </style>`;
+  const embeddedThemeScript = `
+<script id="workbench-theme-bridge">
+(function(){
+  function applyWorkbenchTheme(theme){
+    var value = String(theme || new URLSearchParams(location.search).get("theme") || "neo");
+    document.documentElement.classList.add("embedded-host");
+    document.documentElement.dataset.workbenchTheme = value;
+    document.documentElement.dataset.theme = value;
+  }
+  applyWorkbenchTheme(new URLSearchParams(location.search).get("theme"));
+  window.addEventListener("message", function(event){
+    if (event.origin !== window.location.origin || !event.data || event.data.type !== "jianghu-theme") return;
+    applyWorkbenchTheme(event.data.theme);
+  });
+  window.parent && window.parent.postMessage({ type: "jianghu-theme-ready" }, window.location.origin);
+})();
+</script>`;
   const rewritten = rewriteIntegratedConversionContent(source)
     .replaceAll(
       "正式SOP增强.js?v=20260718-scrollfix2",
@@ -4067,8 +4188,8 @@ html.embedded-host .side-bottom {
     .replaceAll('href="/', 'href="/conversion-integrated/')
     .replaceAll('src="/', 'src="/conversion-integrated/');
   return rewritten.includes("</head>")
-    ? rewritten.replace("</head>", `${seamlessEmbeddedStyle}</head>`)
-    : `${seamlessEmbeddedStyle}${rewritten}`;
+    ? rewritten.replace("</head>", `${seamlessEmbeddedStyle}${embeddedThemeScript}</head>`)
+    : `${seamlessEmbeddedStyle}${embeddedThemeScript}${rewritten}`;
 }
 
 function isIntegratedConversionCompatibilityPath(pathname) {
@@ -4083,12 +4204,14 @@ function proxyIntegratedConversion(req, res, parsed, pathname) {
   const canUseRewriteCache = req.method === "GET" && (upstreamPath === "/" || upstreamPath.endsWith(".js"));
   const cached = canUseRewriteCache ? conversionProxyCache.get(cacheKey) : null;
   if (cached && Date.now() - cached.savedAt < CONVERSION_CACHE_TTL_MS) {
-    res.writeHead(200, {
-      "Content-Type": cached.contentType,
-      "Content-Length": Buffer.byteLength(cached.content),
-      "Cache-Control": "private, max-age=60"
-    });
-    res.end(cached.content);
+    if (!res.headersSent) {
+      res.writeHead(200, {
+        "Content-Type": cached.contentType,
+        "Content-Length": Buffer.byteLength(cached.content),
+        "Cache-Control": "private, max-age=60"
+      });
+      res.end(cached.content);
+    }
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
@@ -4191,9 +4314,11 @@ async function requestConversionService(endpoint, options = {}) {
 
 async function getConversionSnapshot() {
   try {
-    const [health, sop, journey] = await Promise.all([
+    const [health, sop, search, plans, journey] = await Promise.all([
       requestConversionService("/api/健康", { timeoutMs: 5_000 }),
       requestConversionService("/api/正式SOP", { timeoutMs: 12_000 }),
+      requestConversionService("/api/搜索快照", { timeoutMs: 45_000 }),
+      requestConversionService("/api/方案索引", { timeoutMs: 30_000 }),
       requestConversionService("/api/用户旅程", { timeoutMs: 8_000 })
     ]);
     return {
@@ -4202,6 +4327,8 @@ async function getConversionSnapshot() {
       source: "团建工作台·流量转化",
       health,
       sop,
+      search,
+      plans,
       journey
     };
   } catch (error) {
@@ -4309,19 +4436,36 @@ function recentPublicTasks(tasks, limit = 12) {
     .map(publicTransferTask);
 }
 
+function resolveDistributionCollectionSource(collectionName) {
+  const name = String(collectionName || "").trim();
+  if (!name) throw new Error("请选择一个真实可用的作品集");
+  const libraryRoot = path.resolve(getWorkspaceSettings().workPackage.libraryPath);
+  const distribution = getDistributionSnapshot({ publishRoot: PUBLISH_ROOT, libraryRoot });
+  const collection = mergeCollectionLedger(distribution.collections || [])
+    .find((item) => String(item.name || "") === name);
+  if (!collection) throw new Error(`作品集不存在：${name}`);
+  if (collection.workflowStage !== "mobile"
+    || collection.sourceValid === false
+    || collection.dualPlatformEligible === false
+    || collection.automaticEligible !== true) {
+    const reason = (collection.exclusionReasons || []).join("；") || "作品集不在手机可分发阶段";
+    throw new Error(`作品集当前不可发送：${name}（${reason}）`);
+  }
+  const source = path.resolve(String(collection.sourcePath || ""));
+  const relative = path.relative(libraryRoot, source);
+  if (!source || !exists(source) || !relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`作品集源目录无效：${name}`);
+  }
+  return { collection, source };
+}
+
 function startDistributionTask(body = {}) {
   if (body.action !== "device-restock") {
     throw new Error("这个任务入口只用于手机作品包分发");
   }
-  const args = buildDistributionArgs(body);
   const trustedDevice = assertTrustedDeviceTarget(body.device);
-  if (String(body.collection || "").trim()) {
-    ensureWorkflowCompatibilityLinks({
-      publishRoot: PUBLISH_ROOT,
-      libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
-      collection: body.collection
-    });
-  }
+  const selected = resolveDistributionCollectionSource(body.collection);
+  const args = ["--source", selected.source, "--device", String(body.device || "").trim()];
   const taskId = `distribution-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   trimCompletedTasks(distributionTasks);
   const record = {
@@ -4331,6 +4475,7 @@ function startDistributionTask(body = {}) {
     device: String(body.device || "").trim(),
     deviceId: trustedDevice.id,
     collection: String(body.collection || "").trim(),
+    source: selected.source,
     contentType: body.type === "conversion" ? "精准流量" : "泛流量",
     state: "running",
     stage: "queued",
@@ -4342,7 +4487,11 @@ function startDistributionTask(body = {}) {
     startedAt: new Date().toISOString(),
     child: null
   };
-  const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "restock_device.py");
+  // The workbench is the source-of-truth for the current no-Junction
+  // distribution stages. Send the exact validated collection source instead
+  // of asking the legacy random-restock scanner to rediscover old platform
+  // entries, then move it only after the receiver commit succeeds.
+  const script = path.join(DEVICE_TRANSFER_ROOT, "scripts", "send_to_device.py");
   const child = childProcess.spawn(pythonExe(), [script, ...args], {
     cwd: DEVICE_TRANSFER_ROOT,
     env: {
@@ -4945,61 +5094,88 @@ function contentType(file) {
   return "application/octet-stream";
 }
 
+// 分模块路由共享上下文（只构造一次，各路由模块按需取用）
+const routeCtx = {
+  // 工具函数
+  send, sendJson, sendExtensionJson, extensionCorsHeaders, getBody,
+  isLoopbackAddress, isAllowedFile, isAllowedExternalTarget, isPathInside,
+  contentType, resolvePublicFile, getWorkspaceSettings,
+  getCloudBackupStatus, runCloudBackupNow, inspectLatestCloudBackup,
+  restoreLatestCloudBackup, getPageSettings, startLargeCloudBackup, readJson,
+  getLargeCloudBackupTask: () => largeCloudBackupTask,
+  saveWorkspaceSettings, savePageSettings, buildCloudBackupPayload, restoreBackupPayload,
+  updateCollectionLedger, collectionLedgerCsv, pickFolderWithWindowsDialog,
+  pickFileWithWindowsDialog, recentPublicTasks, startGenericTransfer,
+  cancelGenericTransfer, startDistributionTask, cancelDistributionTask,
+  runDistributionAction, buildDistributionArgs, exists, updateDeviceNote,
+  getDeviceStatus, parseOnlineDeviceStatus, registeredDevices,
+  maybeStartAutomaticDistribution, recentAutomationLogs,
+  // 路径常量
+  PROJECT_ROOT, DATA_ROOT, PUBLIC_ROOT, APP_ROOT, SKILL_ROOT,
+  CONVERSION_SERVICE_ORIGIN, CONVERSION_ASSISTANT_ROOT, CONVERSION_ASSISTANT_LAUNCHER,
+  RELEASE_ROOT, DEVICE_TRANSFER_ROOT, DEVICE_REGISTRY_FILE,
+  // 数据文件
+  STATE_FILE, PROMPTS_FILE, TASK_INDEX_FILE, APP_SETTINGS_FILE,
+  IMAGE_API_SECRET_FILE, WEBDAV_CONFIG_FILE, CLOUD_BACKUP_META_FILE,
+  CLOUD_LARGE_BACKUP_MANIFEST_FILE, IMAGE_REVIEW_ROOT, PRODUCTION_JOB_ROOT,
+  COLLECTION_LEDGER_FILE, DEVICE_PRESENCE_FILE, DEVICE_NOTES_FILE,
+  DISTRIBUTION_AUTOMATION_LOG_FILE, MOBILE_CONVERSION_TOKEN_FILE,
+  MATERIAL_SCAN_CACHE_FILE, MATERIAL_LIBRARY_CACHE_FILE,
+  DEDUP_LEDGER_FILE, EXTENSION_DOWNLOAD_LOG_FILE,
+  MATERIAL_USAGE_LEDGER_FILE, MATERIAL_METADATA_LEDGER_FILE,
+  MATERIAL_HASH_CACHE_FILE, MATERIAL_GLOBAL_INDEX_FILE,
+  GPT_QUOTA_LEDGER_FILE, GPT_PRODUCTION_CHECKPOINT_FILE,
+  GPT_PRODUCTION_ARCHIVE_LOG_FILE, GPT_CONVERSATION_LOG_FILE, WORKPKG_SCRIPT_ROOT, WORKPKG_CONFIG_FILE,
+  DOWNLOAD_ROOT, PUBLISH_ROOT,
+  // 运行时状态（引用类型，各路由模块可通过引用操作）
+  genericTransferTasks, distributionTasks, automaticDistributionSessions,
+  pendingProductionPlans, materialCategoryCache, deviceStatusCache,
+  deviceStatusPromise, materialGlobalIndexJob,
+  // 生产域函数与状态
+  productionJobs, productionAbortControllers,
+  createProductionPlans, publicProductionJob, safeProductionOptions,
+  productionResumeScope, saveProductionJob, updateProductionJob,
+  runProductionJob, productionWorkbenchProducts, packProductionWorks,
+  saveImageApiSecret, saveTextApiSecret,
+  publicImageApiSettings, publicTextApiSettings,
+  imageApiCredential, textApiCredential,
+  interpretWorkbenchAssistantCommand,
+  collectReferenceImages, materialFacts, buildProductionPrompt,
+  safeOutputName, generateImages, networkFetch,
+  normalizeImageApiConfig, normalizeTextApiConfig,
+  writeJson,
+  // GPT+扩展+去重域函数与状态
+  PORT,
+  readOnlineTemplates, updateOnlineTemplate,
+  extensionProductSnapshot, extensionProductTreeSnapshot,
+  runExtensionWorkPackage, saveExtensionCopyText,
+  readGptProductionCheckpoint, writeGptProductionCheckpoint,
+  findRecoverableImageBatch, gptQuotaSnapshot, appendGptQuotaEvent,
+  archiveMaterialAfterProduction, inspectGptWorkPackage,
+  recordMaterialUsage, checkMaterialUsage, updateMaterialMetadata,
+  getMaterialGlobalIndex,
+  publicDedupStatus, syncHistoricalDedupLedger, getDedupLedger,
+  isDownloadedText, registerDownloadedText,
+  // 转化域函数与状态
+  LISTEN_HOST,
+  hasMobileConversionAccess, mobileConversionToken, mobileConversionLink,
+  localIPv4Addresses, proxyIntegratedConversion,
+  isIntegratedConversionCompatibilityPath,
+  requestConversionService, getConversionSnapshot,
+};
+
 async function route(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = decodeURIComponent(parsed.pathname);
   const remoteRequest = !isLoopbackAddress(req.socket.remoteAddress);
 
-  if (pathname === "/mobile-conversion") {
-    if (!hasMobileConversionAccess(req, parsed)) {
-      return send(res, 403, "手机入口无效，请回到电脑端重新复制手机入口。", "text/plain; charset=utf-8");
-    }
-    res.writeHead(302, {
-      "Location": "/mobile-conversion/app",
-      "Set-Cookie": `tb_mobile_access=${encodeURIComponent(mobileConversionToken())}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`,
-      "Cache-Control": "no-store"
-    });
-    return res.end();
-  }
-
-  if (pathname.startsWith("/mobile-conversion/")) {
-    if (!hasMobileConversionAccess(req, parsed)) {
-      return send(res, 403, "手机入口无效，请回到电脑端重新复制手机入口。", "text/plain; charset=utf-8");
-    }
-    if (pathname === "/mobile-conversion/app" && req.method === "GET") {
-      const mobileFile = path.join(PUBLIC_ROOT, "mobile-conversion.html");
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-      return fs.createReadStream(mobileFile).pipe(res);
-    }
-    if (pathname === "/mobile-conversion/api/search" && req.method === "POST") {
-      const body = JSON.parse(await getBody(req, 64_000) || "{}");
-      const question = String(body.question || body.问题 || "").trim();
-      const role = body.role === "后端转化" ? "后端转化" : "前端运营";
-      if (!question) return send(res, 400, JSON.stringify({ error: "请先粘贴客户原话" }), "application/json; charset=utf-8");
-      if (question.length > 3_000) return send(res, 400, JSON.stringify({ error: "客户原话过长，请先精简到 3000 字以内" }), "application/json; charset=utf-8");
-      try {
-        return sendJson(res, await requestConversionService("/api/智能匹配", {
-          method: "POST",
-          body: { 问题: question, 身份: role },
-          timeoutMs: 60_000
-        }));
-      } catch (error) {
-        return send(res, 502, JSON.stringify({ error: error.message }), "application/json; charset=utf-8");
-      }
-    }
-    return send(res, 404, "not found", "text/plain; charset=utf-8");
-  }
+  if (await conversionRoute.handleEarly(req, res, pathname, parsed, routeCtx)) return;
 
   if (remoteRequest) {
     return send(res, 403, "此入口仅供本机使用。", "text/plain; charset=utf-8");
   }
 
-  if (pathname === "/conversion-integrated" || pathname.startsWith("/conversion-integrated/")) {
-    return proxyIntegratedConversion(req, res, parsed, pathname);
-  }
-  if (isIntegratedConversionCompatibilityPath(pathname)) {
-    return proxyIntegratedConversion(req, res, parsed, `/conversion-integrated${pathname}`);
-  }
+  if (await conversionRoute.handle(req, res, pathname, parsed, routeCtx)) return;
 
   if (req.method === "OPTIONS") {
     res.writeHead(204, extensionCorsHeaders(req));
@@ -5011,279 +5187,23 @@ async function route(req, res) {
     return sendExtensionJson(req, res, getDashboard(parsed.query.refresh === "materials", libraryPath));
   }
 
-  if (pathname === "/api/gpt-online-templates" && req.method === "GET") {
-    return sendExtensionJson(req, res, readOnlineTemplates());
+  if (pathname === "/api/materials/all") {
+    return sendExtensionJson(req, res, getMaterialLibrary(parsed.query.refresh === "1", "", { loadAll: true }));
   }
 
-  if (pathname === "/api/gpt-online-templates" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    return sendExtensionJson(req, res, { ok: true, ...updateOnlineTemplate(body) });
-  }
-
-  if (pathname === "/api/conversion/snapshot" && req.method === "GET") {
-    return sendJson(res, await getConversionSnapshot());
-  }
-
-  if (pathname === "/api/conversion/mobile-link" && req.method === "GET") {
-    return sendJson(res, {
-      ok: true,
-      enabled: LISTEN_HOST === "0.0.0.0" || LISTEN_HOST === "::",
-      url: mobileConversionLink(),
-      network: localIPv4Addresses()[0] || "",
-      note: "手机与电脑需连接同一 Wi-Fi；链接只允许进入流量转化。"
-    });
-  }
-
-  if (pathname === "/api/conversion/proposal" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const demand = String(body.demand || body.需求 || "").trim();
-    if (!demand) return send(res, 400, JSON.stringify({ error: "请先写下客户需求" }), "application/json; charset=utf-8");
-    if (demand.length > 6_000) return send(res, 400, JSON.stringify({ error: "客户需求过长，请先精简到 6000 字以内" }), "application/json; charset=utf-8");
-    try {
-      return sendJson(res, await requestConversionService("/api/方案策划", {
-        method: "POST",
-        body: { 需求: demand },
-        timeoutMs: 90_000
-      }));
-    } catch (error) {
-      return send(res, 502, JSON.stringify({ error: error.message }), "application/json; charset=utf-8");
+  if (pathname === "/api/materials") {
+    const libraryPath = parsed.query.library ? decodeURIComponent(parsed.query.library) : "";
+    if (libraryPath) {
+      return sendExtensionJson(req, res, getMaterialLibrary(parsed.query.refresh === "1", libraryPath));
     }
+    // 不带 library 参数时只返回分类索引（不加载帖子），避免一次性扫描所有分类阻塞服务器
+    return sendExtensionJson(req, res, getMaterialLibrary(parsed.query.refresh === "1", "", {
+      loadAll: false,
+      loadDefault: false
+    }));
   }
 
-  if (pathname === "/api/conversion/search" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const question = String(body.question || body.问题 || "").trim();
-    const role = body.role === "后端转化" ? "后端转化" : "前端运营";
-    if (!question) return send(res, 400, JSON.stringify({ error: "请先输入客户问题" }), "application/json; charset=utf-8");
-    if (question.length > 3_000) return send(res, 400, JSON.stringify({ error: "客户问题过长，请先精简到 3000 字以内" }), "application/json; charset=utf-8");
-    try {
-      return sendJson(res, await requestConversionService("/api/智能匹配", {
-        method: "POST",
-        body: { 问题: question, 身份: role },
-        timeoutMs: 60_000
-      }));
-    } catch (error) {
-      return send(res, 502, JSON.stringify({ error: error.message }), "application/json; charset=utf-8");
-    }
-  }
-
-  if (pathname === "/api/conversion/start" && req.method === "POST") {
-    if (!exists(CONVERSION_ASSISTANT_LAUNCHER)) {
-      return send(res, 404, JSON.stringify({ error: "流量转化模块暂时无法启动" }), "application/json; charset=utf-8");
-    }
-    childProcess.spawn("wscript.exe", [CONVERSION_ASSISTANT_LAUNCHER], {
-      cwd: CONVERSION_ASSISTANT_ROOT,
-      detached: true,
-      stdio: "ignore"
-    }).unref();
-    return sendJson(res, { ok: true });
-  }
-
-  if (pathname === "/api/extension/workspace" && req.method === "GET") {
-    const settings = getWorkspaceSettings();
-    return sendExtensionJson(req, res, {
-      generatedAt: new Date().toISOString(),
-      settings,
-      products: extensionProductSnapshot(),
-      dedup: publicDedupStatus()
-    });
-  }
-
-  if (pathname === "/api/extension/settings" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const settings = saveWorkspaceSettings(body);
-    return sendExtensionJson(req, res, {
-      ok: true,
-      settings,
-      products: extensionProductSnapshot(),
-      dedup: publicDedupStatus()
-    });
-  }
-
-  if (pathname === "/api/extension/products" && req.method === "GET") {
-    const collection = parsed.query.collection ? decodeURIComponent(parsed.query.collection) : "";
-    return sendExtensionJson(req, res, {
-      generatedAt: new Date().toISOString(),
-      products: extensionProductSnapshot(collection)
-    });
-  }
-
-  if (pathname === "/api/extension/product-tree" && req.method === "GET") {
-    const target = parsed.query.path ? decodeURIComponent(parsed.query.path) : "";
-    return sendExtensionJson(req, res, {
-      generatedAt: new Date().toISOString(),
-      tree: extensionProductTreeSnapshot(target)
-    });
-  }
-
-  if (pathname === "/api/extension/work-package" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 256_000) || "{}");
-    return sendExtensionJson(req, res, await runExtensionWorkPackage(body));
-  }
-
-  if (pathname === "/api/extension/save-copy-text" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 256_000) || "{}");
-    try {
-      return sendExtensionJson(req, res, saveExtensionCopyText(body));
-    } catch (error) {
-      return sendExtensionJson(req, res, { error: error.message }, 400);
-    }
-  }
-
-  if (pathname === "/api/extension/save-generated-image" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 42_000_000) || "{}");
-    const filename = String(body.filename || "").trim();
-    const safeName = path.basename(filename);
-    if (safeName !== filename
-      || !/^chatgpt-workpkg-\d{8}-\d{6}-[a-z0-9]{4}-\d+-of-\d+\.(?:png|jpe?g|webp)$/i.test(safeName)) {
-      return send(res, 400, JSON.stringify({ error: "生成图片文件名无效" }));
-    }
-    if (!/^image\/(?:png|jpe?g|webp)$/i.test(String(body.contentType || ""))) {
-      return send(res, 400, JSON.stringify({ error: "生成图片类型无效" }));
-    }
-    const bytes = Buffer.from(String(body.data || ""), "base64");
-    if (bytes.length < 1_000 || bytes.length > 30_000_000) {
-      return send(res, 400, JSON.stringify({ error: "生成图片大小无效" }));
-    }
-    try {
-      const metadata = await sharp(bytes).metadata();
-      if (!["png", "jpeg", "webp"].includes(String(metadata.format || ""))
-        || Number(metadata.width || 0) < 256 || Number(metadata.height || 0) < 256) {
-        return send(res, 400, JSON.stringify({ error: "生成图片内容校验失败" }));
-      }
-      const requestedRoot = String(body.downloadRoot || "").trim();
-      const targetRoot = requestedRoot ? path.resolve(requestedRoot) : path.resolve(DOWNLOAD_ROOT);
-      if (!isPathInside(path.resolve(DOWNLOAD_ROOT), targetRoot)) {
-        return send(res, 400, JSON.stringify({ error: "图片暂存目录必须位于工作台下载目录内" }));
-      }
-      fs.mkdirSync(targetRoot, { recursive: true });
-      const target = path.join(targetRoot, safeName);
-      fs.writeFileSync(target, bytes, { flag: "wx" });
-      return sendExtensionJson(req, res, {
-        ok: true,
-        filename: target,
-        bytes: bytes.length,
-        width: metadata.width,
-        height: metadata.height,
-        format: metadata.format
-      });
-    } catch (error) {
-      if (error?.code === "EEXIST") {
-        return send(res, 409, JSON.stringify({ error: "同批次图片已经存在，请重新恢复任务" }));
-      }
-      return send(res, 400, JSON.stringify({ error: `生成图片保存失败：${error.message}` }));
-    }
-  }
-
-  if (pathname === "/api/gpt-production/checkpoint" && req.method === "GET") {
-    const requestId = parsed.query.requestId ? decodeURIComponent(parsed.query.requestId) : "";
-    return sendExtensionJson(req, res, { ok: true, checkpoint: readGptProductionCheckpoint(requestId) });
-  }
-
-  if (pathname === "/api/gpt-production/history" && req.method === "GET") {
-    const saved = readJson(GPT_PRODUCTION_CHECKPOINT_FILE, { version: 1, items: {} });
-    const items = Object.values(saved.items || {}).sort((left, right) =>
-      String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
-    ).slice(0, 200).map((item) => {
-      const packagePath = String(item.packagePath || "").trim();
-      const packageInspection = inspectGptWorkPackage(packagePath, Number(item.plannedImageCount || 0));
-      return {
-        requestId: item.requestId,
-        stage: packagePath && !packageInspection.valid ? "成品缺 TXT 或图片，已暂停" : item.stage,
-        percent: item.percent,
-        plannedImageCount: item.plannedImageCount,
-        downloadedImageCount: Array.isArray(item.downloadedFiles) ? item.downloadedFiles.length : 0,
-        downloadRoot: item.downloadRoot,
-        copyTextLength: String(item.copyText || "").trim().length,
-        packagePath,
-        packageValid: packagePath ? packageInspection.valid : false,
-        packageImageCount: packageInspection.imageCount,
-        packageTextCount: packageInspection.textCount,
-        packageExpectedImageCount: packageInspection.expectedImageCount,
-        packageValidatedByRecord: packageInspection.validatedByPackageRecord === true,
-        conversationUrl: item.conversationUrl,
-        sourceMaterialPath: item.sourceMaterialPath || "",
-        updatedAt: item.updatedAt
-      };
-    });
-    return sendExtensionJson(req, res, { ok: true, items });
-  }
-
-  if (pathname === "/api/gpt-production/checkpoint" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 512_000) || "{}");
-    return sendExtensionJson(req, res, { ok: true, checkpoint: writeGptProductionCheckpoint(body) });
-  }
-
-  if (pathname === "/api/gpt-production/recover-image-batch" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    return sendExtensionJson(req, res, { ok: true, batch: findRecoverableImageBatch(body) });
-  }
-
-  if (pathname === "/api/gpt-production/quota" && req.method === "GET") {
-    const accountId = parsed.query.account ? decodeURIComponent(parsed.query.account) : "";
-    return sendExtensionJson(req, res, { ok: true, quota: gptQuotaSnapshot(accountId) });
-  }
-
-  if (pathname === "/api/gpt-production/quota-event" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    try {
-      return sendExtensionJson(req, res, { ok: true, quota: appendGptQuotaEvent(body) });
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
-
-  if (pathname === "/api/gpt-production/archive-material" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    try {
-      return sendExtensionJson(req, res, { ok: true, archive: archiveMaterialAfterProduction(body) });
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
-
-  if (pathname === "/api/extension/material-use" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    try {
-      return sendExtensionJson(req, res, { ok: true, record: recordMaterialUsage(body) });
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
-
-  if (pathname === "/api/extension/material-usage-check" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    try {
-      return sendExtensionJson(req, res, { ok: true, ...checkMaterialUsage(body) });
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
-
-  if (pathname === "/api/extension/material-metadata" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    try {
-      return sendExtensionJson(req, res, { ok: true, record: updateMaterialMetadata(body) });
-    } catch (error) {
-      return sendExtensionJson(req, res, { error: error.message }, 400);
-    }
-  }
-
-  if (pathname === "/api/extension/material-index" && req.method === "GET") {
-    return sendExtensionJson(req, res, {
-      ok: true,
-      index: getMaterialGlobalIndex({ refresh: parsed.query.refresh === "true" })
-    });
-  }
-
-  if (pathname === "/api/extension/move-entry" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    try {
-      return sendExtensionJson(req, res, { ok: true, ...moveWorkspaceEntry(body) });
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
+  if (await gptExtensionRoute.handle(req, res, pathname, parsed, routeCtx)) return;
 
   if (pathname === "/api/materials" && req.method === "GET") {
     ensureDataFiles();
@@ -5301,13 +5221,7 @@ async function route(req, res) {
     });
   }
 
-  if (pathname === "/api/juguang") {
-    return sendJson(res, getJuguangSnapshot(PROJECT_ROOT));
-  }
-
-  if (pathname === "/api/juguang/keywords") {
-    return sendJson(res, queryKeywords({ text: parsed.query.q || "", limit: parsed.query.limit || 20 }, PROJECT_ROOT));
-  }
+  if (await juguangRoute.handle(req, res, pathname, parsed, routeCtx)) return;
 
   if (pathname === "/api/state" && req.method === "POST") {
     const body = JSON.parse(await getBody(req) || "{}");
@@ -5365,943 +5279,17 @@ async function route(req, res) {
     return sendJson(res, result);
   }
 
-  if (pathname === "/api/settings/paths" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    return sendJson(res, { ok: true, settings: saveWorkspaceSettings(body) });
-  }
-  if (pathname === "/api/page-settings" && req.method === "GET") {
-    return sendJson(res, { ok: true, settings: getPageSettings() });
-  }
-  if (pathname === "/api/page-settings" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    return sendJson(res, { ok: true, settings: savePageSettings(body) });
-  }
+  if (await settingsRoute.handle(req, res, pathname, parsed, routeCtx)) return;
 
-  if (pathname === "/api/local-backup/export" && req.method === "GET") {
-    return sendJson(res, { ok: true, backup: buildCloudBackupPayload() });
-  }
+  if (await productionRoute.handle(req, res, pathname, parsed, routeCtx)) return;
 
-  if (pathname === "/api/local-backup/import" && req.method === "POST") {
-    try {
-      const body = JSON.parse(await getBody(req, 8_000_000) || "{}");
-      const payload = body.backup || body;
-      const restored = restoreBackupPayload(payload);
-      return sendJson(res, {
-        ok: true,
-        restoredRecords: restored.restored,
-        localSnapshot: restored.localSnapshot,
-        message: `已恢复 ${restored.restored} 份本地设置和记录`
-      });
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }), "application/json; charset=utf-8");
-    }
-  }
+  if (await backupRoute.handle(req, res, pathname, parsed, routeCtx)) return;
 
-  if (pathname === "/api/production/plan" && req.method === "POST") {
-    try {
-      const body = JSON.parse(await getBody(req, 256_000) || "{}");
-      return sendJson(res, { ok: true, plan: await createProductionPlans(body) });
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
+  if (await distributionRoute.handle(req, res, pathname, parsed, routeCtx)) return;
 
-  if (pathname === "/api/production/workspace" && req.method === "GET") {
-    return sendJson(res, { ok: true, workspace: productionWorkbenchProducts() });
-  }
 
-  if (pathname === "/api/production/tasks" && req.method === "GET") {
-    return sendJson(res, {
-      ok: true,
-      tasks: [...productionJobs.values()]
-        .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
-        .map(publicProductionJob)
-    });
-  }
 
-  if (pathname === "/api/production/pack" && req.method === "POST") {
-    try {
-      const body = JSON.parse(await getBody(req, 256_000) || "{}");
-      return sendJson(res, packProductionWorks(body.paths));
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
-
-  if (pathname === "/api/production/run" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 256_000) || "{}");
-    const planBundle = pendingProductionPlans.get(String(body.planId || ""));
-    if (!planBundle) return send(res, 409, JSON.stringify({ error: "出图计划已失效，请重新点击生成计划" }));
-    if (!body.confirmed) return send(res, 409, JSON.stringify({ error: "请先查看并确认出图计划" }));
-    const job = {
-      id: `${Date.now().toString(36)}-${crypto.randomBytes(4).toString("hex")}`,
-      planId: planBundle.id,
-      mode: planBundle.mode,
-      status: "running",
-      phase: "starting",
-      message: "已确认计划，正在准备生产",
-      progress: 0,
-      total: planBundle.totals.images,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      outputRoots: [],
-      results: [],
-      failures: [],
-      qualityReports: [],
-      workRoots: {},
-      planBundle,
-      options: safeProductionOptions({ ...body, runScope: "calibration" }),
-      cancelRequested: false,
-      error: ""
-    };
-    productionJobs.set(job.id, job);
-    saveProductionJob(job);
-    pendingProductionPlans.delete(planBundle.id);
-    runProductionJob(job, planBundle, { ...body, runScope: "calibration" }).catch((error) => {
-      updateProductionJob(job, {
-        status: "failed",
-        phase: "failed",
-        finishedAt: new Date().toISOString(),
-        message: "生产中断，已生成的文件仍保留在待审区。",
-        error: String(error?.message || error).slice(0, 1000)
-      });
-    }).finally(() => productionAbortControllers.delete(job.id));
-    return sendJson(res, { ok: true, job: publicProductionJob(job) });
-  }
-
-  const productionJobMatch = pathname.match(/^\/api\/production\/jobs\/([^/]+)$/);
-  if (productionJobMatch && req.method === "GET") {
-    const job = productionJobs.get(decodeURIComponent(productionJobMatch[1]));
-    if (!job) return send(res, 404, JSON.stringify({ error: "没有找到这次生产任务" }));
-    return sendJson(res, { ok: true, job: publicProductionJob(job) });
-  }
-
-  const resumeProductionJobMatch = pathname.match(/^\/api\/production\/jobs\/([^/]+)\/resume$/);
-  if (resumeProductionJobMatch && req.method === "POST") {
-    const job = productionJobs.get(decodeURIComponent(resumeProductionJobMatch[1]));
-    if (!job) return send(res, 404, JSON.stringify({ error: "没有找到这次生产任务" }));
-    if (job.status === "running") return send(res, 409, JSON.stringify({ error: "这次任务仍在生产中" }));
-    if (!job.planBundle || !job.options) return send(res, 409, JSON.stringify({ error: "旧任务没有可恢复的生产计划" }));
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const resumeScope = productionResumeScope(job);
-    const retryOptions = safeProductionOptions({
-      ...job.options,
-      ...body,
-      prompt: body.prompt || job.options.prompt,
-      quality: body.quality || job.options.quality,
-      outputPrefix: job.options.outputPrefix,
-      runScope: resumeScope
-    });
-    job.cancelRequested = false;
-    runProductionJob(job, job.planBundle, retryOptions).catch((error) => {
-      updateProductionJob(job, {
-        status: "failed",
-        phase: "failed",
-        finishedAt: new Date().toISOString(),
-        message: "继续生产时发生中断，已完成文件仍保留。",
-        error: String(error?.message || error).slice(0, 1000)
-      });
-    }).finally(() => productionAbortControllers.delete(job.id));
-    return sendJson(res, { ok: true, job: publicProductionJob(job) });
-  }
-
-  const cancelProductionJobMatch = pathname.match(/^\/api\/production\/jobs\/([^/]+)\/cancel$/);
-  if (cancelProductionJobMatch && req.method === "POST") {
-    const job = productionJobs.get(decodeURIComponent(cancelProductionJobMatch[1]));
-    if (!job) return send(res, 404, JSON.stringify({ error: "没有找到这次生产任务" }));
-    if (job.status !== "running") return sendJson(res, { ok: true, job: publicProductionJob(job) });
-    job.cancelRequested = true;
-    productionAbortControllers.get(job.id)?.abort();
-    updateProductionJob(job, {
-      message: "已收到停止请求；完成当前页面后停止，已生成内容不会删除。"
-    });
-    return sendJson(res, { ok: true, job: publicProductionJob(job) });
-  }
-
-  if (pathname === "/api/image-api/config" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const config = saveImageApiSecret(body);
-    const previous = readJson(APP_SETTINGS_FILE, {});
-    writeJson(APP_SETTINGS_FILE, { ...previous, imageApi: config });
-    return sendJson(res, { ok: true, imageApi: publicImageApiSettings(config) });
-  }
-
-  if (pathname === "/api/text-api/config" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const config = saveTextApiSecret(body);
-    const previous = readJson(APP_SETTINGS_FILE, {});
-    writeJson(APP_SETTINGS_FILE, { ...previous, textApi: config });
-    return sendJson(res, { ok: true, textApi: publicTextApiSettings(config) });
-  }
-
-  if (pathname === "/api/workbench-assistant/interpret" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 16_000) || "{}");
-    try {
-      return sendJson(res, {
-        ok: true,
-        interpretation: await interpretWorkbenchAssistantCommand(body.command)
-      });
-    } catch (error) {
-      return send(res, 503, JSON.stringify({
-        error: "智能理解暂时不可用",
-        detail: String(error?.message || error).slice(0, 300)
-      }));
-    }
-  }
-
-  if (pathname === "/api/image-api/test" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const config = normalizeImageApiConfig(body);
-    const apiKey = imageApiCredential(config.provider, body.apiKey);
-    if (!apiKey) {
-      if (body.quiet) return sendJson(res, { ok: false, available: false, modelAvailable: false, models: [], error: "未配置本机密钥" });
-      return send(res, 400, JSON.stringify({ error: "没有找到这个平台的本机密钥" }));
-    }
-    try {
-      const response = await networkFetch(`${config.baseUrl}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-        signal: AbortSignal.timeout(30_000)
-      });
-      if (!response.ok) {
-        if (body.quiet) return sendJson(res, {
-          ok: false,
-          available: false,
-          modelAvailable: false,
-          models: [],
-          error: `连接失败（HTTP ${response.status}）`
-        });
-        return send(res, 502, JSON.stringify({ error: `连接失败（HTTP ${response.status}）` }));
-      }
-      const data = await response.json();
-      const models = Array.isArray(data.data) ? data.data.map((item) => item.id).filter(Boolean).slice(0, 50) : [];
-      return sendJson(res, { ok: true, available: true, modelAvailable: !models.length || models.includes(config.model), models });
-    } catch (error) {
-      if (body.quiet) return sendJson(res, {
-        ok: false,
-        available: false,
-        modelAvailable: false,
-        models: [],
-        error: String(error?.message || "连接失败").slice(0, 300)
-      });
-      return send(res, 502, JSON.stringify({ error: String(error?.message || "连接失败").slice(0, 300) }));
-    }
-  }
-
-  if (pathname === "/api/text-api/test" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const config = normalizeTextApiConfig(body);
-    const apiKey = textApiCredential(config.provider, body.apiKey);
-    if (!apiKey) {
-      if (body.quiet) return sendJson(res, { ok: false, available: false, modelAvailable: false, models: [], error: "未配置本机文案密钥" });
-      return send(res, 400, JSON.stringify({ error: "没有找到这个文案平台的本机密钥" }));
-    }
-    try {
-      const response = await networkFetch(`${config.baseUrl}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-        signal: AbortSignal.timeout(30_000)
-      });
-      if (!response.ok) {
-        if (body.quiet) return sendJson(res, {
-          ok: false,
-          available: false,
-          modelAvailable: false,
-          models: [],
-          error: `连接失败（HTTP ${response.status}）`
-        });
-        return send(res, 502, JSON.stringify({ error: `连接失败（HTTP ${response.status}）` }));
-      }
-      const data = await response.json();
-      const models = Array.isArray(data.data) ? data.data.map((item) => item.id).filter(Boolean).slice(0, 50) : [];
-      return sendJson(res, { ok: true, available: true, modelAvailable: !models.length || models.includes(config.model), models });
-    } catch (error) {
-      if (body.quiet) return sendJson(res, {
-        ok: false,
-        available: false,
-        modelAvailable: false,
-        models: [],
-        error: String(error?.message || "连接失败").slice(0, 300)
-      });
-      return send(res, 502, JSON.stringify({ error: String(error?.message || "连接失败").slice(0, 300) }));
-    }
-  }
-
-  if (pathname === "/api/image-api/generate" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 256_000) || "{}");
-    const config = normalizeImageApiConfig(body);
-    const apiKey = imageApiCredential(config.provider, body.apiKey);
-    const materialPath = path.resolve(String(body.materialPath || ""));
-    const templatePath = path.resolve(String(body.templatePath || ""));
-    if (!body.confirmed) return send(res, 409, JSON.stringify({ error: "请先确认出图计划，再开始校准" }));
-    if (!isAllowedFile(materialPath) || !exists(materialPath)) return send(res, 400, JSON.stringify({ error: "请选择真实存在的素材文件夹" }));
-    if (!isAllowedFile(templatePath) || !exists(templatePath)) return send(res, 400, JSON.stringify({ error: "请选择真实存在的模板文件夹" }));
-    const stage = body.stage === "inner" ? "inner" : "cover";
-    const templateImages = collectReferenceImages(templatePath, stage === "cover" ? 1 : 2);
-    const materialImages = collectReferenceImages(materialPath, 6);
-    if (!templateImages.length || !materialImages.length) return send(res, 400, JSON.stringify({ error: "模板或素材文件夹中没有可用图片" }));
-    const facts = materialFacts(materialPath);
-    const prompt = buildProductionPrompt({ ...body, stage }, facts);
-    const folderName = `${new Date().toISOString().slice(0, 10).replaceAll("-", "")}_${safeOutputName(path.basename(materialPath))}_${safeOutputName(path.basename(templatePath))}`;
-    const outputRoot = path.join(IMAGE_REVIEW_ROOT, folderName, stage === "cover" ? "封面校准" : "内页校准");
-    let results;
-    try {
-      results = await generateImages({
-        config, apiKey, prompt,
-        referencePaths: [...templateImages, ...materialImages].slice(0, 8),
-        outputRoot, count: body.count
-      });
-    } catch (error) {
-      const timedOut = error?.cause?.code === "UND_ERR_CONNECT_TIMEOUT" || /timeout|timed out/i.test(String(error?.message || ""));
-      const message = timedOut
-        ? "生图平台连接超时，系统已经自动重试；请稍后再次开始，当前素材和模板选择不会丢失。"
-        : String(error?.message || "生图失败，请稍后重试");
-      return send(res, 502, JSON.stringify({ error: message }));
-    }
-    const report = {
-      status: "review-ready",
-      createdAt: new Date().toISOString(),
-      stage,
-      materialPath,
-      templatePath,
-      provider: config.provider,
-      model: config.model,
-      requestedCount: Number(body.count) || 1,
-      rules: { templateClass: "A", materialClass: "B", historicalResultsClass: "C", officialLibraryWritten: false },
-      results
-    };
-    fs.mkdirSync(outputRoot, { recursive: true });
-    writeJson(path.join(outputRoot, "生成记录.json"), report);
-    return sendJson(res, {
-      ok: true,
-      status: report.status,
-      outputRoot,
-      results: results.map((item) => ({ ...item, previewUrl: `/file?path=${encodeURIComponent(item.outputFile)}` }))
-    });
-  }
-
-  if (pathname === "/api/cloud-backup/status" && req.method === "GET") {
-    return sendJson(res, getCloudBackupStatus());
-  }
-
-  if (pathname === "/api/cloud-backup/config" && req.method === "POST") {
-    try {
-      const body = JSON.parse(await getBody(req, 32_000) || "{}");
-      const config = saveManualConfig(WEBDAV_CONFIG_FILE, body);
-      await testCloudBackupConnection(config);
-      return sendJson(res, publicCloudBackupStatus(config, {
-        lastResult: "坚果云配置已加密保存在当前 Windows 账户，并已通过连接测试"
-      }));
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message || "坚果云配置没有保存" }));
-    }
-  }
-
-  if (pathname === "/api/cloud-backup/import-life-game" && req.method === "POST") {
-    try {
-      const config = await importLifeGameConfig(WEBDAV_CONFIG_FILE);
-      return sendJson(res, publicCloudBackupStatus(config, {
-        lastBackupAt: "",
-        lastBackupFile: "",
-        lastResult: "已安全导入人生游戏系统的坚果云配置"
-      }));
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message || "坚果云配置没有导入" }));
-    }
-  }
-
-  if (pathname === "/api/cloud-backup/test" && req.method === "POST") {
-    try {
-      const config = readSecureConfig(WEBDAV_CONFIG_FILE);
-      if (!config) throw new Error("请先配置坚果云 WebDAV");
-      await testCloudBackupConnection(config);
-      return sendJson(res, { ok: true, message: "坚果云连接正常" });
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message || "坚果云连接失败" }));
-    }
-  }
-
-  if (pathname === "/api/cloud-backup/run" && req.method === "POST") {
-    try {
-      return sendJson(res, await runCloudBackupNow());
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message || "坚果云备份失败" }));
-    }
-  }
-  if (pathname === "/api/cloud-backup/inspect-latest" && req.method === "POST") {
-    try {
-      return sendJson(res, await inspectLatestCloudBackup());
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message || "云端备份无法读取" }));
-    }
-  }
-  if (pathname === "/api/cloud-backup/restore-latest" && req.method === "POST") {
-    try {
-      const body = JSON.parse(await getBody(req, 8_000) || "{}");
-      if (body.confirmed !== true) throw new Error("恢复前需要明确确认");
-      return sendJson(res, await restoreLatestCloudBackup());
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message || "云端备份恢复失败" }));
-    }
-  }
-  if (pathname === "/api/cloud-backup/run-large" && req.method === "POST") {
-    try {
-      const settings = getPageSettings().backup || {};
-      if (!settings.sourceRoot) throw new Error("请先设置方案/大文件来源目录");
-      return sendJson(res, { ok: true, task: startLargeCloudBackup() });
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message || "大文件备份启动失败" }));
-    }
-  }
-  if (pathname === "/api/cloud-backup/large-status" && req.method === "GET") {
-    return sendJson(res, {
-      task: largeCloudBackupTask || readJson(CLOUD_LARGE_BACKUP_MANIFEST_FILE, {}).lastTask || null
-    });
-  }
-
-  if (pathname === "/api/dedup/status" && req.method === "GET") {
-    return sendJson(res, publicDedupStatus());
-  }
-
-  if (pathname === "/api/dedup/sync" && req.method === "POST") {
-    return sendJson(res, publicDedupStatus(syncHistoricalDedupLedger()));
-  }
-
-  if (pathname === "/api/dedup/export" && req.method === "GET") {
-    res.writeHead(200, {
-      "Content-Type": "application/json; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="teambuilding-dedup-ledger.json"',
-      "Cache-Control": "no-store"
-    });
-    return res.end(JSON.stringify(getDedupLedger(), null, 2));
-  }
-
-  if (pathname === "/api/dedup/check-text" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 256_000) || "{}");
-    const result = isDownloadedText(getDedupLedger(), String(body.text || ""));
-    return sendExtensionJson(req, res, {
-      duplicate: result.duplicate,
-      textHash: result.textHash,
-      record: result.record ? {
-        title: result.record.title,
-        path: result.record.path,
-        recordedAt: result.record.recordedAt,
-        source: result.record.source
-      } : null
-    });
-  }
-
-  if (pathname === "/api/dedup/register-download" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 256_000) || "{}");
-    if (!String(body.text || "").trim()) {
-      return send(res, 400, JSON.stringify({ error: "文案内容不能为空" }));
-    }
-    const result = registerDownloadedText(DEDUP_LEDGER_FILE, body.text, {
-      title: body.title,
-      path: body.path,
-      conversationUrl: body.conversationUrl
-    });
-    return sendJson(res, {
-      duplicate: result.duplicate,
-      textHash: result.textHash,
-      status: publicDedupStatus(result.ledger)
-    });
-  }
-
-  if (pathname === "/api/extension/download-event" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 256_000) || "{}");
-    const filename = path.resolve(String(body.filename || "").trim());
-    if (!filename || !isPathInside(path.resolve(DOWNLOAD_ROOT), filename)) {
-      return send(res, 400, JSON.stringify({ error: "只记录下载目录中的文件" }));
-    }
-    const saved = readJson(EXTENSION_DOWNLOAD_LOG_FILE, { version: 1, events: [] });
-    const event = {
-      downloadId: Number(body.downloadId || 0),
-      requestId: String(body.requestId || ""),
-      filename,
-      url: String(body.url || ""),
-      finalUrl: String(body.finalUrl || ""),
-      totalBytes: Number(body.totalBytes || 0),
-      conversationUrl: String(body.conversationUrl || ""),
-      completedAt: String(body.completedAt || new Date().toISOString()),
-      exists: exists(filename)
-    };
-    saved.events = [...(saved.events || []), event].slice(-500);
-    saved.updatedAt = new Date().toISOString();
-    fs.mkdirSync(path.dirname(EXTENSION_DOWNLOAD_LOG_FILE), { recursive: true });
-    writeJson(EXTENSION_DOWNLOAD_LOG_FILE, saved);
-    return sendExtensionJson(req, res, { ok: true, event });
-  }
-
-  if (pathname === "/api/extension/info" && req.method === "GET") {
-    return sendExtensionJson(req, res, {
-      name: "团建工作台 · GPT 助手",
-      path: "D:\\AICode\\工具开发\\projects\\teambuilding-gpt-production-extension\\src",
-      modules: ["最新版会话树", "成品区", "素材区", "生产去重状态", "上传到当前 GPT"],
-      localApi: `http://127.0.0.1:${PORT}`
-    });
-  }
-
-  if (pathname === "/api/collections/ledger" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    return sendJson(res, { ok: true, record: updateCollectionLedger(body) });
-  }
-
-  if (pathname === "/api/collections/export" && req.method === "GET") {
-    res.writeHead(200, {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="collection-ledger.csv"',
-      "Cache-Control": "no-store"
-    });
-    return res.end(collectionLedgerCsv());
-  }
-
-  if (pathname === "/api/pick-folder" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 8_000) || "{}");
-    const selectedPath = await pickFolderWithWindowsDialog(body.description || "选择文件夹");
-    return sendJson(res, { ok: true, path: selectedPath });
-  }
-  if (pathname === "/api/pick-file" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 8_000) || "{}");
-    const selectedPath = await pickFileWithWindowsDialog(body.title || "选择要传送的文件");
-    return sendJson(res, { ok: true, path: selectedPath });
-  }
-  if (pathname === "/api/transfers" && req.method === "GET") {
-    return sendJson(res, recentPublicTasks(genericTransferTasks));
-  }
-  if (pathname === "/api/transfers" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 16_000) || "{}");
-    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认本次文件传送" }));
-    return sendJson(res, startGenericTransfer(body.source, body.device));
-  }
-  if (pathname.startsWith("/api/transfers/") && req.method === "DELETE") {
-    const taskId = decodeURIComponent(pathname.slice("/api/transfers/".length));
-    const record = genericTransferTasks.get(taskId);
-    if (!record) return sendJson(res, { ok: true, removed: false });
-    if (["running", "cancelling"].includes(record.state)) {
-      return send(res, 409, JSON.stringify({ error: "进行中的任务不能清除，请先停止" }));
-    }
-    genericTransferTasks.delete(taskId);
-    return sendJson(res, { ok: true, removed: true });
-  }
-  if (pathname.startsWith("/api/transfers/") && req.method === "GET") {
-    const taskId = decodeURIComponent(pathname.slice("/api/transfers/".length));
-    const record = genericTransferTasks.get(taskId);
-    if (!record) return send(res, 404, JSON.stringify({ error: "传送任务不存在" }));
-    return sendJson(res, publicTransferTask(record));
-  }
-  if (pathname.startsWith("/api/transfers/") && pathname.endsWith("/cancel") && req.method === "POST") {
-    const taskId = decodeURIComponent(
-      pathname.slice("/api/transfers/".length, -"/cancel".length)
-    );
-    return sendJson(res, cancelGenericTransfer(taskId));
-  }
-  if (pathname === "/api/distribution/tasks" && req.method === "GET") {
-    return sendJson(res, recentPublicTasks(distributionTasks));
-  }
-  if (pathname === "/api/distribution/tasks" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    if (body.confirmed !== true) {
-      return send(res, 409, JSON.stringify({ error: "需要在界面确认本次真实分发" }));
-    }
-    return sendJson(res, startDistributionTask(body));
-  }
-  if (pathname.startsWith("/api/distribution/tasks/") && req.method === "DELETE") {
-    const taskId = decodeURIComponent(pathname.slice("/api/distribution/tasks/".length));
-    const record = distributionTasks.get(taskId);
-    if (!record) return sendJson(res, { ok: true, removed: false });
-    if (["running", "cancelling"].includes(record.state)) {
-      return send(res, 409, JSON.stringify({ error: "进行中的任务不能清除，请先停止" }));
-    }
-    distributionTasks.delete(taskId);
-    return sendJson(res, { ok: true, removed: true });
-  }
-  if (pathname.startsWith("/api/distribution/tasks/") && pathname.endsWith("/cancel") && req.method === "POST") {
-    const taskId = decodeURIComponent(
-      pathname.slice("/api/distribution/tasks/".length, -"/cancel".length)
-    );
-    return sendJson(res, cancelDistributionTask(taskId));
-  }
-  if (pathname.startsWith("/api/distribution/tasks/") && req.method === "GET") {
-    const taskId = decodeURIComponent(pathname.slice("/api/distribution/tasks/".length));
-    const record = distributionTasks.get(taskId);
-    if (!record) return send(res, 404, JSON.stringify({ error: "分发任务不存在" }));
-    return sendJson(res, publicTransferTask(record));
-  }
-  if (pathname === "/api/distribution/action" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要在界面确认本次真实分发" }));
-    const result = await runDistributionAction(buildDistributionArgs(body));
-    if (body.action === "official-reserve") {
-      const sourceMatch = String(result.output || "").match(/^原合集地址：(.+)$/m);
-      const sourcePath = sourceMatch?.[1]?.trim();
-      if (sourcePath && isAllowedFile(sourcePath) && exists(sourcePath)) {
-        childProcess.spawn("explorer.exe", [sourcePath], {
-          detached: true,
-          windowsHide: true,
-          stdio: "ignore"
-        }).unref();
-      }
-    }
-    return sendJson(res, result);
-  }
-  if (pathname === "/api/devices/note" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 8_000) || "{}");
-    return sendJson(res, updateDeviceNote(body));
-  }
-  if (pathname === "/api/distribution/check" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 8_000) || "{}");
-    const includeInventory = body.inventory === true;
-    const [inventory, deviceStatus] = await Promise.all([
-      includeInventory ? runDistributionAction(["--check"]) : Promise.resolve({ ok: true, output: "" }),
-      getDeviceStatus(body.force === true)
-    ]);
-    const onlineDevices = deviceStatus.onlineDevices || parseOnlineDeviceStatus(deviceStatus.output);
-    const registryDevices = registeredDevices();
-    const automationTriggered = maybeStartAutomaticDistribution(onlineDevices);
-    return sendJson(res, {
-      ok: true,
-      output: inventory.output,
-      statusOutput: deviceStatus.output,
-      registered: registryDevices.length,
-      online: onlineDevices.length,
-      onlineDevices,
-      registeredDevices: registryDevices,
-      automationTriggered,
-      automationHistory: recentAutomationLogs(),
-      inventoryScanned: includeInventory
-    });
-  }
-  if (pathname === "/api/distribution/confirm-official" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认电脑上传已经完成" }));
-    return sendJson(res, confirmOfficialUpload({
-      publishRoot: PUBLISH_ROOT,
-      collection: body.collection
-    }));
-  }
-  if (pathname === "/api/distribution/mark-used" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认作品已经使用" }));
-    return sendJson(res, markOfficialUsed({
-      publishRoot: PUBLISH_ROOT,
-      libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
-      collection: body.collection
-    }));
-  }
-  if (pathname === "/api/distribution/classify" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认同步修改真实文件夹名称" }));
-    try {
-      return sendJson(res, renameCollectionType({
-        publishRoot: PUBLISH_ROOT,
-        libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
-        collection: body.collection,
-        type: body.type
-      }));
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
-  if (pathname === "/api/distribution/reconcile-folders" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    if (body.confirmed !== true) return send(res, 409, JSON.stringify({ error: "需要确认按历史记录整理真实文件夹" }));
-    return sendJson(res, reconcileWorkflowFolders({
-      publishRoot: PUBLISH_ROOT,
-      libraryRoot: getWorkspaceSettings().workPackage.libraryPath,
-      apply: true
-    }));
-  }
-
-  // ─── 微信公众号草稿发布器 ──────────────────────────
-  if (pathname === "/api/wechat-draft/settings" && req.method === "GET") {
-    return sendJson(res, wechatDraft.getWechatSettings());
-  }
-  if (pathname === "/api/wechat-draft/settings" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    return sendJson(res, wechatDraft.saveWechatSettings(body));
-  }
-  if (pathname === "/api/wechat-draft/set-secret" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const envVar = String(body.envVar || "").trim();
-    const value = String(body.value || "").trim();
-    if (!envVar || !value) {
-      return send(res, 400, JSON.stringify({ success: false, error: "envVar 和 value 不能为空" }));
-    }
-    if (!/^[A-Z_][A-Z0-9_]*$/i.test(envVar)) {
-      return send(res, 400, JSON.stringify({ success: false, error: "环境变量名格式不合法" }));
-    }
-    try {
-      const setxPath = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "setx.exe");
-      childProcess.execSync(`"${setxPath}" ${envVar} "${value.replace(/"/g, '\\"')}"`, { windowsHide: true });
-      process.env[envVar] = value;
-      return sendJson(res, { success: true, message: `环境变量 ${envVar} 已设置，重启工作台后永久生效` });
-    } catch (error) {
-      return send(res, 500, JSON.stringify({ success: false, error: error.message }));
-    }
-  }
-  // 账号状态检查：返回每个账号的 AppID 和 AppSecret 环境变量配置情况
-  if (pathname === "/api/wechat-draft/account-status" && req.method === "GET") {
-    const settings = wechatDraft.getWechatSettings();
-    const accountKeys = Object.keys(settings.accounts || {});
-    const status = accountKeys.map((key) => {
-      const acc = settings.accounts[key];
-      const envVar = acc.appSecretEnv || `WECHAT_${key.toUpperCase()}_APP_SECRET`;
-      return {
-        key,
-        name: acc.name || key,
-        appId: acc.appId || "",
-        appIdSet: !!(acc.appId && acc.appId.trim()),
-        appSecretEnv: envVar,
-        appSecretSet: !!process.env[envVar],
-        ready: !!(acc.appId && acc.appId.trim() && process.env[envVar])
-      };
-    });
-    return sendJson(res, {
-      defaultAccount: settings.defaultAccount || "main",
-      accounts: status,
-      anyReady: status.some((s) => s.ready),
-      allReady: status.length > 0 && status.every((s) => s.ready)
-    });
-  }
-  // 测试连接：调用微信 API 获取 access_token，验证配置是否有效
-  if (pathname === "/api/wechat-draft/test-connection" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 8_000) || "{}");
-    const settings = wechatDraft.getWechatSettings();
-    const accountKey = body.account || settings.defaultAccount || "main";
-    const account = settings.accounts?.[accountKey];
-    if (!account || !account.appId) {
-      return send(res, 400, JSON.stringify({ success: false, error: `账号 ${accountKey} 未配置 AppID，请先在账号设置中填写` }));
-    }
-    const envVar = account.appSecretEnv || `WECHAT_${accountKey.toUpperCase()}_APP_SECRET`;
-    const appSecret = process.env[envVar] || "";
-    if (!appSecret) {
-      return send(res, 400, JSON.stringify({
-        success: false,
-        error: `环境变量 ${envVar} 未设置。请回到账号设置重新填写 AppSecret 并保存，然后重启工作台。`
-      }));
-    }
-    try {
-      await wechatDraft.getAccessToken(account.appId, appSecret);
-      return sendJson(res, {
-        success: true,
-        message: `连接成功！账号「${account.name || accountKey}」的 AppID 和 AppSecret 验证通过，可以创建草稿了。`
-      });
-    } catch (error) {
-      const errMsg = String(error.message || error);
-      let hint = "";
-      if (errMsg.includes("40164")) {
-        hint = "问题原因：当前电脑的 IP 地址不在公众号白名单里。请到公众号后台 → 开发 → 基本配置 → IP白名单，添加本机 IP。";
-      } else if (errMsg.includes("40001") || errMsg.includes("40125")) {
-        hint = "问题原因：AppSecret 不正确。请到公众号后台重新复制 AppSecret，回到账号设置重新填写。";
-      } else if (errMsg.includes("40013")) {
-        hint = "问题原因：AppID 不正确。请检查 AppID 是否以 wx 开头，是否复制完整。";
-      }
-      return send(res, 400, JSON.stringify({ success: false, error: errMsg, hint }));
-    }
-  }
-  if (pathname === "/api/wechat-draft/history" && req.method === "GET") {
-    return sendJson(res, { records: wechatDraft.getDraftHistory(50) });
-  }
-  if (pathname.startsWith("/api/wechat-draft/posts/") && req.method === "GET") {
-    const collectionName = decodeURIComponent(pathname.slice("/api/wechat-draft/posts/".length));
-    const settings = getWorkspaceSettings();
-    const libraryRoot = settings.workPackage.libraryPath;
-    const collectionPath = path.join(libraryRoot, "微信公众号", collectionName);
-    // 安全检查：防止路径穿越
-    if (/[\\/]wp-content|[\\/]system32/i.test(collectionPath)) {
-      return send(res, 400, JSON.stringify({ error: "无效的作品集名称" }));
-    }
-    try {
-      const result = wechatDraft.scanCollectionPosts(collectionPath);
-      return sendJson(res, result);
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
-  if (pathname === "/api/wechat-draft/image-preview" && req.method === "GET") {
-    // 图片预览：通过文件路径返回图片内容
-    const imgPath = parsed.query.path;
-    if (!imgPath || !isAllowedFile(imgPath)) return send(res, 403, JSON.stringify({ error: "path not allowed" }));
-    if (!fs.existsSync(imgPath)) return send(res, 404, JSON.stringify({ error: "file not found" }));
-    const ext = path.extname(imgPath).toLowerCase();
-    const mimeTypes = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" };
-    const mime = mimeTypes[ext] || "application/octet-stream";
-    const buffer = fs.readFileSync(imgPath);
-    res.writeHead(200, { "Content-Type": mime, "Cache-Control": "max-age=3600" });
-    res.end(buffer);
-    return;
-  }
-  if (pathname === "/api/wechat-draft/create" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 256_000) || "{}");
-    // 获取账号配置
-    const settings = wechatDraft.getWechatSettings();
-    const accountKey = body.account || settings.defaultAccount || "main";
-    const account = settings.accounts?.[accountKey];
-    if (!body.dryRun && (!account || !account.appId)) {
-      return send(res, 400, JSON.stringify({ error: `账号 ${accountKey} 未配置 AppID` }));
-    }
-    // 读取 AppSecret（从环境变量）
-    let appSecret = "";
-    if (!body.dryRun && account) {
-      const envVar = account.appSecretEnv || `WECHAT_${accountKey.toUpperCase()}_APP_SECRET`;
-      appSecret = process.env[envVar] || "";
-      if (!appSecret) {
-        return send(res, 400, JSON.stringify({ error: `环境变量 ${envVar} 未设置，无法获取 AppSecret` }));
-      }
-    }
-    try {
-      const result = await wechatDraft.createDraftTask({
-        postPath: body.postPath,
-        title: body.title,
-        body: body.body,
-        account: accountKey,
-        dryRun: body.dryRun !== false,
-        forceCreate: body.forceCreate === true,
-        appId: account?.appId,
-        appSecret
-      });
-      return sendJson(res, result);
-    } catch (error) {
-      return send(res, 400, JSON.stringify({ error: error.message }));
-    }
-  }
-
-  // ─── 微信公众号草稿 - 批量队列 ──────────────────────
-  if (pathname === "/api/wechat-draft/batch/create" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 256_000) || "{}");
-    const posts = Array.isArray(body.posts) ? body.posts : [];
-    if (!posts.length) {
-      return send(res, 400, JSON.stringify({ error: "帖子列表不能为空" }));
-    }
-    const batchId = wechatDraft.createBatchQueue(posts);
-    return sendJson(res, { batchId, count: posts.length });
-  }
-
-  if (pathname === "/api/wechat-draft/batch/status" && req.method === "GET") {
-    const queue = wechatDraft.getBatchQueue();
-    const summary = {
-      batchId: queue.batchId,
-      status: queue.status,
-      total: queue.items.length,
-      pending: queue.items.filter((it) => it.status === "pending").length,
-      success: queue.items.filter((it) => it.status === "success").length,
-      failed: queue.items.filter((it) => it.status === "failed").length,
-      skipped: queue.items.filter((it) => it.status === "skipped").length,
-      processing: queue.items.filter((it) => it.status === "processing").length,
-      items: queue.items
-    };
-    return sendJson(res, summary);
-  }
-
-  if (pathname === "/api/wechat-draft/batch/process-next" && req.method === "POST") {
-    const body = JSON.parse(await getBody(req, 64_000) || "{}");
-    const queue = wechatDraft.getBatchQueue();
-    if (!queue.batchId) {
-      return sendJson(res, { done: true, message: "没有活跃的批量队列" });
-    }
-    const nextItem = queue.items.find((it) => it.status === "pending");
-    if (!nextItem) {
-      wechatDraft.updateBatchStatus(queue.batchId, "completed");
-      return sendJson(res, { done: true, message: "所有帖子已处理完毕" });
-    }
-
-    // 标记为处理中
-    wechatDraft.updateBatchItem(queue.batchId, nextItem.id, { status: "processing" });
-    if (queue.status !== "running") {
-      wechatDraft.updateBatchStatus(queue.batchId, "running");
-    }
-
-    // 获取账号配置
-    const settings = wechatDraft.getWechatSettings();
-    const accountKey = body.account || settings.defaultAccount || "main";
-    const account = settings.accounts?.[accountKey];
-    const dryRun = body.dryRun !== false;
-
-    if (!dryRun && (!account || !account.appId)) {
-      wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
-        status: "failed",
-        error: `账号 ${accountKey} 未配置 AppID`,
-        processedAt: new Date().toISOString()
-      });
-      return sendJson(res, { done: false, item: nextItem, error: `账号 ${accountKey} 未配置 AppID` });
-    }
-
-    // 读取 AppSecret
-    let appSecret = "";
-    if (!dryRun && account) {
-      const envVar = account.appSecretEnv || `WECHAT_${accountKey.toUpperCase()}_APP_SECRET`;
-      appSecret = process.env[envVar] || "";
-      if (!appSecret) {
-        wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
-          status: "failed",
-          error: `环境变量 ${envVar} 未设置`,
-          processedAt: new Date().toISOString()
-        });
-        return sendJson(res, { done: false, item: nextItem, error: `环境变量 ${envVar} 未设置` });
-      }
-    }
-
-    try {
-      const result = await wechatDraft.createDraftTask({
-        postPath: nextItem.postPath,
-        title: nextItem.title,
-        body: nextItem.body,
-        account: accountKey,
-        dryRun,
-        forceCreate: body.forceCreate === true,
-        appId: account?.appId,
-        appSecret
-      });
-
-      if (result.success) {
-        wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
-          status: "success",
-          draftMediaId: result.draftMediaId,
-          processedAt: new Date().toISOString()
-        });
-      } else if (result.duplicate) {
-        wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
-          status: "skipped",
-          error: result.message || "重复帖子已跳过",
-          processedAt: new Date().toISOString()
-        });
-      } else {
-        wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
-          status: "failed",
-          error: result.error || "未知错误",
-          processedAt: new Date().toISOString()
-        });
-      }
-
-      const updatedQueue = wechatDraft.getBatchQueue();
-      const remaining = updatedQueue.items.filter((it) => it.status === "pending").length;
-      return sendJson(res, {
-        done: remaining === 0,
-        item: updatedQueue.items.find((it) => it.id === nextItem.id),
-        remaining,
-        result
-      });
-    } catch (error) {
-      wechatDraft.updateBatchItem(queue.batchId, nextItem.id, {
-        status: "failed",
-        error: error.message,
-        processedAt: new Date().toISOString()
-      });
-      return sendJson(res, { done: false, item: nextItem, error: error.message });
-    }
-  }
-
-  if (pathname === "/api/wechat-draft/batch/cancel" && req.method === "POST") {
-    const queue = wechatDraft.getBatchQueue();
-    if (queue.batchId) {
-      wechatDraft.updateBatchStatus(queue.batchId, "cancelled");
-    }
-    return sendJson(res, { ok: true });
-  }
-
-  if (pathname === "/api/wechat-draft/batch/clear" && req.method === "POST") {
-    wechatDraft.clearBatchQueue();
-    return sendJson(res, { ok: true });
-  }
+  if (await wechatDraftRoute.handle(req, res, pathname, parsed, routeCtx)) return;
 
   if (pathname === "/api/open" && req.method === "POST") {
     const body = JSON.parse(await getBody(req) || "{}");
@@ -6319,6 +5307,7 @@ async function route(req, res) {
   }
 
   if (pathname === "/file") {
+    if (res.headersSent) return;
     const target = parsed.query.path ? decodeURIComponent(parsed.query.path) : "";
     if (!target || !isAllowedFile(target) || !exists(target)) return send(res, 404, "not found", "text/plain; charset=utf-8");
     res.writeHead(200, {
@@ -6329,7 +5318,9 @@ async function route(req, res) {
     return fs.createReadStream(target).pipe(res);
   }
 
+  if (res.headersSent) return;
   const file = resolvePublicFile(pathname);
+  if (!file) return send(res, 404, "not found", "text/plain; charset=utf-8");
   res.writeHead(200, { "Content-Type": contentType(file), "Cache-Control": "no-store" });
   fs.createReadStream(file).pipe(res);
 }
@@ -6337,8 +5328,18 @@ async function route(req, res) {
 const httpServer = http.createServer((req, res) => {
   route(req, res).catch((error) => {
     console.error(error);
+    if (res.headersSent) return;
     send(res, 500, JSON.stringify({ error: error.message }));
   });
+});
+
+httpServer.on("error", (error) => {
+  if (error?.code === "EADDRINUSE") {
+    console.error(formatPortInUseMessage(PORT));
+    process.exitCode = 1;
+    return;
+  }
+  throw error;
 });
 
 if (require.main === module) {
@@ -6351,6 +5352,7 @@ if (require.main === module) {
     cloudBackupTimer.unref?.();
     setTimeout(runScheduledCloudBackup, 8_000).unref?.();
     setTimeout(warmIntegratedConversionCache, 1_200).unref?.();
+    startMaterialWatcher();
   });
 }
 

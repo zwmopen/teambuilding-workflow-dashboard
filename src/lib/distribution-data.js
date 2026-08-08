@@ -156,8 +156,7 @@ function inspectSource(sourcePath, cache) {
     const itemDirectories = children.filter((entry) => (
       entry.isDirectory() || entry.isSymbolicLink()
     ));
-    result.itemCount = itemDirectories.length;
-    result.items = itemDirectories.slice(0, 50).map((entry) => {
+    const inspectedItems = itemDirectories.map((entry) => {
       const itemPath = path.join(sourcePath, entry.name);
       let previewPath = "";
       let imageCount = 0;
@@ -174,6 +173,8 @@ function inspectSource(sourcePath, cache) {
       }
       return { name: entry.name, path: itemPath, previewPath, textPath, imageCount };
     });
+    result.itemCount = inspectedItems.filter((item) => item.imageCount > 0).length;
+    result.items = inspectedItems.slice(0, 50);
     const stack = [sourcePath];
     while (stack.length) {
       const current = stack.pop();
@@ -303,51 +304,6 @@ function confirmOfficialUpload(options = {}) {
   };
 }
 
-function removeMatchingLink(entryPath, sourcePath) {
-  try {
-    const stat = fs.lstatSync(entryPath);
-    if (!stat.isSymbolicLink()) return false;
-    if (normalizeRealPath(fs.realpathSync.native(entryPath)) !== normalizeRealPath(sourcePath)) return false;
-    fs.unlinkSync(entryPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function replaceDirectoryLink(entryPath, sourcePath, shouldExist) {
-  try {
-    const stat = fs.lstatSync(entryPath);
-    if (!stat.isSymbolicLink()) {
-      if (shouldExist) throw new Error(`兼容入口被真实文件夹占用：${entryPath}`);
-      return false;
-    }
-    fs.unlinkSync(entryPath);
-  } catch (error) {
-    if (error?.code !== "ENOENT" && !/lstat/.test(String(error?.message || ""))) throw error;
-  }
-  if (!shouldExist) return true;
-  fs.mkdirSync(path.dirname(entryPath), { recursive: true });
-  fs.symlinkSync(sourcePath, entryPath, process.platform === "win32" ? "junction" : "dir");
-  return true;
-}
-
-function syncLegacyLinksForStage(publishRoot, collection, sourcePath, stage) {
-  const desired = {
-    xhs: stage === "mobile",
-    douyin: stage === "mobile",
-    officialAccount: stage === "mobile" || stage === "official",
-    douyinArchive: false
-  };
-  Object.entries(desired).forEach(([key, shouldExist]) => {
-    replaceDirectoryLink(
-      path.join(publishRoot, PLATFORM_DIRS[key], collection),
-      sourcePath,
-      shouldExist
-    );
-  });
-}
-
 function archiveAndRemoveCollection(sourcePath, archiveRoot, collection) {
   const targetPath = path.join(archiveRoot, `${collection}.zip`);
   const temporaryPath = path.join(archiveRoot, `.${collection}.${Date.now()}.tmp.zip`);
@@ -403,20 +359,6 @@ function readWorkflowOperations(stageRoots) {
     .reverse();
 }
 
-function ensureWorkflowCompatibilityLinks(options = {}) {
-  const publishRoot = path.resolve(options.publishRoot || "");
-  const libraryRoot = path.resolve(options.libraryRoot || "");
-  const collection = String(options.collection || "").trim();
-  const snapshot = getDistributionSnapshot({ publishRoot, libraryRoot });
-  const item = snapshot.collections.find((entry) => entry.name === collection);
-  if (!item?.sourceValid || item.workflowStage !== "mobile") {
-    throw new Error("该作品当前不在抖音小红书文件夹");
-  }
-  const sourcePath = fs.realpathSync.native(item.sourcePath);
-  syncLegacyLinksForStage(publishRoot, collection, sourcePath, "mobile");
-  return { ok: true, collection, sourcePath };
-}
-
 function moveCollectionSourceToStage(options = {}) {
   const publishRoot = path.resolve(options.publishRoot || "");
   const libraryRoot = path.resolve(options.libraryRoot || "");
@@ -445,16 +387,11 @@ function moveCollectionSourceToStage(options = {}) {
     if (targetStat.isSymbolicLink()) fs.unlinkSync(targetPath);
     else throw new Error("目标文件夹已经是原始作品位置");
   }
-  Object.values(PLATFORM_DIRS).forEach((relativeDirectory) => {
-    removeMatchingLink(path.join(publishRoot, relativeDirectory, collection), sourcePath);
-  });
   if (!fs.existsSync(sourcePath)) throw new Error("移动前原始作品已经不存在");
   if (stage === "used") {
     archiveAndRemoveCollection(sourcePath, targetDirectory, collection);
-    syncLegacyLinksForStage(publishRoot, collection, targetPath, stage);
   } else {
     fs.renameSync(sourcePath, targetPath);
-    syncLegacyLinksForStage(publishRoot, collection, targetPath, stage);
   }
   appendWorkflowOperation(stageRoots, {
     action: stage === "used" ? "压缩归档并删除源文件夹" : "移动到微信公众号",
@@ -489,16 +426,7 @@ function renameCollectionType(options = {}) {
   if (targetName === collection) return { ok: true, collection, targetName, sourcePath, targetPath: sourcePath };
   const targetPath = path.join(path.dirname(sourcePath), targetName);
   if (fs.existsSync(targetPath)) throw new Error(`已存在同名作品集：${targetName}`);
-  Object.values(PLATFORM_DIRS).forEach((relativeDirectory) => {
-    const legacyPath = path.join(publishRoot, relativeDirectory, collection);
-    try {
-      if (fs.lstatSync(legacyPath).isSymbolicLink()) fs.unlinkSync(legacyPath);
-    } catch {
-      // Missing or non-link compatibility entries are left untouched.
-    }
-  });
   fs.renameSync(sourcePath, targetPath);
-  syncLegacyLinksForStage(publishRoot, targetName, targetPath, item.workflowStage);
   appendWorkflowOperation(stageRoots, {
     action: "修改作品集分类",
     collection,
@@ -556,7 +484,6 @@ function reconcileWorkflowFolders(options = {}) {
         status: apply ? "removed-after-verified-archive" : "planned-archive-cleanup"
       };
       if (apply) {
-        syncLegacyLinksForStage(publishRoot, collection, archivePath, "used");
         fs.rmSync(sourcePath, { recursive: true, force: false });
       }
       actions.push(action);
@@ -592,7 +519,6 @@ function reconcileWorkflowFolders(options = {}) {
       if (apply) {
         if (stage === "used") archiveAndRemoveCollection(sourcePath, stageRoots.used, collection);
         else fs.renameSync(sourcePath, targetPath);
-        syncLegacyLinksForStage(publishRoot, collection, targetPath, stage);
       }
       actions.push(action);
     });
@@ -855,7 +781,6 @@ module.exports = {
   appendWorkflowOperation,
   classifyCollectionName,
   confirmOfficialUpload,
-  ensureWorkflowCompatibilityLinks,
   getWorkflowStageRoots,
   getDistributionSnapshot,
   markOfficialUsed,
